@@ -1926,13 +1926,17 @@ async function dispatchAgentSetup(parsed: ParsedArgs): Promise<unknown> {
     || optionValue(args, '--from-env') !== undefined
     || optionValue(args, '--engine') !== undefined;
   const state = createOneShotState(parsed.options);
+  // The explicit `agent-setup --engine connector …` is the desktop/website one-shot:
+  // start the bridge AND open the wallet UI wired to it (openDesktopApp). The Android
+  // launcher goes through runAiConnectorsLauncher, which never sets this flag.
+  const engineConnector = optionValue(args, '--engine')?.trim().toLowerCase() === 'connector';
   if (nonInteractive) {
-    return await runAgentSetup(state, args, { detached: true });
+    return await runAgentSetup(state, args, { detached: true, openDesktopApp: engineConnector });
   }
   ensureTtyOrExit('agent-setup');
   let result: JsonRecord | null = null;
   await withCancelGuard(async () => {
-    result = await runAgentSetup(state, args, { detached: true });
+    result = await runAgentSetup(state, args, { detached: true, openDesktopApp: engineConnector });
   });
   return result ?? NO_OUTPUT;
 }
@@ -1998,6 +2002,43 @@ function aiConnectorsLaunchUrl(options: GlobalOptions, connector: AgentConnector
   return url.toString();
 }
 
+// Desktop/website Plan-Connector launch URL: the approval workspace (/app) wired to
+// this local bridge (bridgeUrl + token). Mirrors aiConnectorsLaunchUrl but targets the
+// desktop app instead of the Android QR page.
+function desktopConnectorLaunchUrl(options: GlobalOptions, connector: AgentConnector): string {
+  const url = new URL(options.walletHostLaunchBase ?? options.walletHostUrl);
+  url.pathname = '/app';
+  url.searchParams.set('bridgeUrl', options.bridgeUrl);
+  url.searchParams.set('connector', connector);
+  setWalletHostLaunchToken(url, options.token);
+  return url.toString();
+}
+
+// Bring up the wallet UI (Render-hosted or local fallback — ensureBrowserHostDetached
+// resolves which) and open it already wired to this bridge. This is what makes the
+// single `agent-setup --engine connector` command "do everything" on desktop: the
+// freshly-opened tab carries the live bridgeUrl + token, so a stale persisted bridge
+// URL in an old tab no longer matters.
+async function openDesktopConnectorApp(options: GlobalOptions, connector: AgentConnector): Promise<JsonRecord> {
+  const walletHost = await ensureBrowserHostDetached(options);
+  const launchUrl = desktopConnectorLaunchUrl(options, connector);
+  const openError = await tryOpenUrl(launchUrl);
+  printSection('Plan Connector');
+  for (const notice of walletHost.notices) console.log(notice);
+  console.log(openError
+    ? `Open manually: ${launchUrl}`
+    : `Opened the Agentic app wired to this bridge (Plan Connector · ${connectorLabel(connector)}).`);
+  console.log('Keep this terminal open so the local bridge stays running.');
+  if (openError) console.log(`Browser open failed: ${openError}`);
+  return {
+    opened: !openError,
+    url: launchUrl,
+    connector,
+    ...(walletHost.notices.length > 0 ? { notices: walletHost.notices } : {}),
+    ...(openError ? { openError } : {}),
+  };
+}
+
 async function dispatchAgentDisconnect(parsed: ParsedArgs): Promise<unknown> {
   return clearAgentSetup(parsed.options);
 }
@@ -2005,7 +2046,7 @@ async function dispatchAgentDisconnect(parsed: ParsedArgs): Promise<unknown> {
 async function runAgentSetup(
   state: TerminalAppState,
   args: string[] = [],
-  options: { detached?: boolean } = {},
+  options: { detached?: boolean; openDesktopApp?: boolean } = {},
 ): Promise<JsonRecord | null> {
   if (args.includes('--clear')) {
     return clearAgentSetup(state.options);
@@ -2028,11 +2069,21 @@ async function runAgentSetup(
       model: '',
       ...(connectorPath ? { connectorPath } : {}),
     };
-    return applyAgentSetup(state.options, config, {
+    const applied = await applyAgentSetup(state.options, config, {
       ensureBridge: options.detached
         ? () => ensureBridgeDetached(state.options)
         : () => ensureBridge(state),
     });
+    // Desktop one-command: also bring up the wallet UI and open it ALREADY wired to
+    // this local bridge (bridgeUrl + token in the launch URL), so the user does not
+    // have to separately run `app` or hand-carry the bridge token into the website.
+    // The Android /aiconnectors QR path opens its own page, so it never sets
+    // openDesktopApp and is unaffected.
+    if (options.openDesktopApp && !state.options.json) {
+      const opened = await openDesktopConnectorApp(state.options, connector);
+      return { ...(applied ?? {}), ...opened };
+    }
+    return applied;
   }
 
   const fromEnv = optionValue(args, '--from-env');

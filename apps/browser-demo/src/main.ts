@@ -624,6 +624,8 @@ import {
   type ConnectorCreateStatusKind,
   type ActionCategory,
   ACTION_CATEGORIES,
+  ACTION_TYPE_CATEGORY,
+  isStatefulActionCategory,
   connectorsForCategory,
   formCategories,
   formMatchesCategory,
@@ -1536,6 +1538,8 @@ const PROTOCOL_CONNECTOR_PREFS_STORAGE_KEY = 'solana-agent-wallet-protocol-conne
 const PLANNER_HOUSE_RULES_MAX = 1000;
 const FAILURE_POLICIES_STORAGE_KEY = 'solana-agent-wallet-failure-policies-v1';
 const PROGRAM_RULES_STORAGE_KEY = 'solana-agent-wallet-program-rules-v1';
+const POSITIONS_STORAGE_KEY = 'solana-agent-wallet-positions-v1';
+const POSITIONS_CLOSED_STORAGE_KEY = 'solana-agent-wallet-positions-closed-v1';
 const TOKEN_RULES_STORAGE_KEY = 'solana-agent-wallet-token-rules-v1';
 const SPEND_CAPS_STORAGE_KEY = 'solana-agent-wallet-spend-caps-v1';
 const SLIPPAGE_CAP_STORAGE_KEY = 'solana-agent-wallet-slippage-cap-v1';
@@ -1999,6 +2003,10 @@ interface Toast {
   actionReForeground?: boolean;
   key?: string;
   dismissAfterMs?: number;
+  /** When set, the toast shows a Copy button that copies this value (e.g. a long
+   * CLI command the user must run). Uses the shared [data-copy] click handler. */
+  copyValue?: string;
+  copyLabel?: string;
 }
 
 interface ToastOptions {
@@ -2009,6 +2017,8 @@ interface ToastOptions {
   actionReForeground?: boolean;
   key?: string;
   dismissAfterMs?: number;
+  copyValue?: string;
+  copyLabel?: string;
 }
 
 const LOCAL_WORKSPACE_BOUNDARY_TOAST_KEY = 'local-workspace-boundary';
@@ -2215,6 +2225,60 @@ interface PreparedAction {
   // handling in the Chat tab even after the originating message is capped/deleted.
   chatOriginated?: boolean;
   importedToCloudAt?: string;
+}
+
+// A stateful position opened after a single signature (Limit/DCA/Lend/Borrow/Stake/LP/Perps).
+// Seeded from the opening PreparedAction; lives in the Positions tab until closed → then Done.
+type PositionStatus = 'open' | 'closed';
+type PositionSectionId = 'orders' | 'lending' | 'borrowing' | 'staking' | 'liquidity' | 'perps';
+interface PositionRecord {
+  id: string; // = the opening action id
+  category: ActionCategory;
+  kind: string; // PreparedActionKind of the opening action
+  connector?: string; // protocol id (jupiter, kamino, …) parsed from the kind
+  summary: string;
+  params: Record<string, unknown>;
+  walletAddress: string;
+  cluster: Cluster;
+  openedAt: string;
+  txid?: string;
+  status: PositionStatus;
+  closedAt?: string;
+}
+
+// A normalized, enriched live position/order row rendered in the Positions tab.
+interface PositionDetail {
+  label: string;
+  value: string;
+  tone?: 'good' | 'warn' | 'bad';
+}
+interface PositionLiveRow {
+  section: PositionSectionId;
+  id: string; // orderId / positionAddress
+  connectorId: string;
+  kind: ActionCategory;
+  title: string;
+  status?: string;
+  details: PositionDetail[];
+  progress?: { current: number; total: number };
+  distancePct?: number | null; // limit: % from trigger
+  cancel?: { kind: PreparedActionKind; orderId: string; outputMint?: string };
+  extras?: Array<{ kind: string; label: string; orderId: string }>; // secondary manage actions (edit, collect fees…)
+}
+interface PositionsLiveEntry {
+  rows: PositionLiveRow[];
+  fetchedAt: number;
+  loading: boolean;
+  error?: string;
+  cluster: Cluster;
+}
+
+// Snapshot of a position's live metrics captured when the user manages/closes it, so the Done card
+// can show the real numbers (DCA cycles, spent, fill price) keyed by the order/position id.
+interface PositionClosedMetrics {
+  title?: string;
+  details: PositionDetail[];
+  progress?: { current: number; total: number };
 }
 
 interface RecurringPayment {
@@ -2601,6 +2665,7 @@ interface CompletedPlanRecord {
   workflowSource?: WorkflowRecordSource;
   decisionProofVerified?: boolean;
   decisionProofMessage?: string;
+  positionMetrics?: PositionClosedMetrics;
   importedToCloudAt?: string;
 }
 
@@ -3136,6 +3201,12 @@ interface DemoState {
   recurringView: RecurringView;
   activeRecurringCardId: string;
   artifactView: ArtifactView;
+  // Live stateful positions (Limit/DCA/Lend/Borrow/Stake/LP/Perps) opened after signing.
+  positions: PositionRecord[];
+  lastPositionFocusId: string;
+  positionsCategory: PositionSectionId;
+  positionsLive: Partial<Record<PositionSectionId, PositionsLiveEntry>>;
+  positionsClosed: Record<string, { kind: string; metrics: PositionClosedMetrics }>;
   completedPlanFilter: CompletedPlanFilter;
   selectedRuntimePath: RuntimePathId;
   recentCopyId: string;
@@ -4288,6 +4359,11 @@ const state: DemoState = {
   recurringView: 'create',
   activeRecurringCardId: '',
   artifactView: 'create',
+  positions: [],
+  lastPositionFocusId: '',
+  positionsCategory: 'orders',
+  positionsLive: {},
+  positionsClosed: {},
   completedPlanFilter: 'all',
   selectedRuntimePath: 'exec',
   recentCopyId: '',
@@ -5405,6 +5481,9 @@ function hydrateLocalWorkspaceForWallet(): void {
   const recovered = recoverInterruptedAgentReviews(mergeGeneratedPlans(cloudPlans, localPlans), { staleAfterMs: 0 });
   state.generatedPlans = recovered.records;
   state.localCompletedPlans = loadLocalCompletedPlans(state.address);
+  state.positions = loadPositions(state.address);
+  state.positionsClosed = loadPositionsClosed(state.address);
+  state.positionsLive = {}; // old wallet's live data must not bleed across a switch
   refreshBrowserWorkflowData();
   if (recovered.changed) saveGeneratedPlans();
   selectFallbackGeneratedPlan();
@@ -19895,7 +19974,7 @@ function websitePlanConnectorSetupPanel(scope: string): string {
       <div class="plan-connector-summary">
         <span>Plan Connector</span>
         <strong>${escapeHtml(setup.connected ? `${connectorLabel} connected` : 'Use your computer plan from the website')}</strong>
-        <p>Run a lightweight local connector for Codex, Claude, or Gemini. The website sends AI Connector requests to that local bridge instead of storing a provider API key.</p>
+        <p>Run a lightweight local connector for Codex, Claude, or Gemini. The website sends AI Connector requests to that local bridge instead of storing a provider API key. The one command starts the bridge and opens a browser tab already wired to your plan.</p>
       </div>
 
       <label class="field compact plan-connector-command-picker">
@@ -19928,8 +20007,8 @@ function websitePlanConnectorSetupPanel(scope: string): string {
 
       <ol class="local-runtime-steps compact website-plan-connector-steps">
         <li>Choose the plan connector and copy the command.</li>
-        <li>Paste it in Terminal and keep that process running.</li>
-        <li>Return here and refresh to confirm the planner.</li>
+        <li>Paste it in Terminal and keep that process running — it opens a browser tab already connected to your plan.</li>
+        <li>Use that connected tab (or refresh here) to confirm the planner.</li>
       </ol>
 
       <p class="ai-security-note compact">Plan Connector changes only the AI Connector route. Approvals, submissions, signatures, repeat payments, and proofs remain separate wallet workflow actions.</p>
@@ -22506,6 +22585,19 @@ function shouldUsePairedConnectorChat(): boolean {
   return state.aiSettings.mode === 'device-agent' && Boolean(state.aiSettings.pairedBridge);
 }
 
+// True for STANDALONE Device Agent (on-device API key, not paired to a desktop
+// connector). The on-device runtime has no conversational chat engine of its own —
+// the `'chat'` device-agent method is paired-connector-only — so we reuse the
+// already-shipped on-device PLANNER (generatePlan), exactly the path New Request
+// uses successfully on every surface (android/iOS/tauri/browser native). No cloud
+// relay and no new native binary required. A real on-device chat agent is a
+// separate follow-up; until then each chat turn becomes a device-agent plan turn.
+function shouldUseDeviceAgentPlannerChat(): boolean {
+  return state.aiSettings.mode === 'device-agent'
+    && !state.aiSettings.pairedBridge
+    && canUseDeviceAgentNative();
+}
+
 // Local-bridge / Plan Connector chat streams through the user's own bridge and
 // needs no cloud sign-in — only a reachable bridge/connector. Hosted BYOK chat
 // goes through the Cloud relay, which is server-gated behind a signed-in
@@ -22519,6 +22611,17 @@ function chatReadinessError(): string | null {
     return (pairedBridgeActive() && refreshRelayPresence())
       ? null
       : t('Open the connector page on your computer (and keep it awake) to use Plan Connector.');
+  }
+  // Standalone Device Agent runs the on-device planner (no cloud relay). Never gate
+  // it behind a Hosted BYOK / cloud sign-in — that was the misleading error users hit.
+  if (state.aiSettings.mode === 'device-agent' && !state.aiSettings.pairedBridge) {
+    if (!deviceAgentConfiguredForCurrentRequests()) {
+      return t('Connect Device Agent (add an AI key) in Preferences → AI connector to chat.');
+    }
+    if (!canUseDeviceAgentNative()) {
+      return t('Device Agent runtime is not available here. Open the app, or switch to Plan Connector or Hosted BYOK for chat.');
+    }
+    return null;
   }
   const readiness = chatHostedRelayReadinessError({
     mode: state.aiSettings.mode,
@@ -22582,8 +22685,100 @@ async function runPairedConnectorChat(
   }
 }
 
+// --- Standalone Device Agent chat (reuse the on-device planner) ---------------
+// Build an AiPlanRequest from a chat turn using the SAME prompt→template inference
+// New Request uses (inferTemplateIdForPrompt / inferredTemplateParameters), so a
+// "swap 0.01 SOL to USDC" chat message infers the swap template and the on-device
+// model fills it in identically. Prior turns ride along as lightweight context.
+function buildDeviceAgentChatPlanRequest(request: AgentChatRequest): AiPlanRequest {
+  const messages = request.messages ?? [];
+  const lastUser = [...messages].reverse().find((m) => m.role === 'user');
+  const prompt = (lastUser?.content ?? '').trim();
+  const templateId = inferTemplateIdForPrompt(prompt, 'custom-request');
+  const template = templateById(templateId);
+  const parameters = inferredTemplateParameters(template, prompt);
+  const priorTurns = messages
+    .slice(0, -1)
+    .slice(-6)
+    .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+    .join('\n');
+  const userNotes = priorTurns ? `${priorTurns}\n\nUser: ${prompt}` : prompt;
+  return {
+    prompt: prompt || template.description,
+    userNotes,
+    template: {
+      id: template.id,
+      category: template.category,
+      title: template.title,
+      description: template.description,
+      actionType: template.actionType,
+      risk: template.risk,
+    },
+    parameters,
+  };
+}
+
+// Only transfer/swap kinds can materialize from chat (mapProposedActionToChatProposal
+// + normalizeProposalParams enforce this allow-list). A device-agent plan of any other
+// actionType becomes an answer-only reply with no approval card.
+function isActionablePlanForChat(plan: AgentPlan): boolean {
+  return isPreparedActionKind(plan.actionType) && CHAT_PROPOSAL_KINDS.has(plan.actionType);
+}
+
+function agentPlanToChatProposedAction(plan: AgentPlan): AgentChatProposedAction | undefined {
+  if (!isActionablePlanForChat(plan)) return undefined;
+  return {
+    kind: plan.actionType,
+    summary: (plan.intent || plan.templateTitle || plan.actionType).slice(0, 140),
+    params: { ...plan.parameters },
+    requiresApproval: true,
+    cluster: state.cluster,
+  };
+}
+
+function agentPlanToChatResult(plan: AgentPlan): AgentChatResult {
+  const proposedAction = agentPlanToChatProposedAction(plan);
+  const intent = (plan.intent || '').trim();
+  const answer = proposedAction
+    ? `${intent || tf('Prepared a {action} for your review.', { action: plan.actionType })}\n\n${t('Review the action below and approve to sign.')}`
+    : (intent || t('I could not turn that into an on-chain action. Try a swap, a send, or ask about a specific protocol.'));
+  return {
+    answer,
+    ...(proposedAction ? { proposedAction } : {}),
+    checkedAt: new Date().toISOString(),
+    source: 'ai',
+  };
+}
+
+// Forward one chat turn to the STANDALONE on-device planner and feed the single
+// {answer, proposedAction?} result into the streaming handlers — same adaptation
+// shape as runPairedConnectorChat, but the AI call runs on-device via
+// generateDeviceAgentPlan (android/iOS/tauri/browser native), no relay.
+async function runDeviceAgentPlannerChat(
+  request: AgentChatRequest,
+  handlers: ChatStreamHandlers,
+  options: { signal?: AbortSignal } = {},
+): Promise<void> {
+  const planRequest = buildDeviceAgentChatPlanRequest(request);
+  const plan = await generateDeviceAgentPlan(planRequest, options.signal ? { signal: options.signal } : {});
+  if (options.signal?.aborted) return;
+  const result = agentPlanToChatResult(plan);
+  if (result.answer) handlers.onToken?.(result.answer);
+  if (result.proposedAction) handlers.onProposal?.(result.proposedAction);
+  handlers.onDone?.(result);
+}
+
 // Turn a raw stream/transport error into product-grade copy.
 function friendlyChatError(raw: string): string {
+  // Standalone Device Agent never talks to the Cloud relay, so it must never surface
+  // the Hosted BYOK / "sign in" copy. Map a missing-connector error, otherwise show
+  // the (redacted) on-device error as-is.
+  if (shouldUseDeviceAgentPlannerChat()) {
+    if (/key is required|key required|api key/i.test(raw) && !chatCurrentAiConnectorConfigured()) {
+      return t(CHAT_AI_CONNECTOR_REQUIRED);
+    }
+    return raw;
+  }
   if (/key is required|key required|api key/i.test(raw) && !chatCurrentAiConnectorConfigured()) {
     return t(CHAT_AI_CONNECTOR_REQUIRED);
   }
@@ -23019,6 +23214,9 @@ async function runChatStream(sessionId: string, assistantId: string): Promise<vo
     } else if (shouldUsePairedConnectorChat()) {
       // Native paired Plan Connector → forward to the desktop connector (non-streaming).
       await runPairedConnectorChat(request, handlers, { signal: abort.signal });
+    } else if (shouldUseDeviceAgentPlannerChat()) {
+      // Standalone Device Agent → reuse the on-device planner (non-streaming), no relay.
+      await runDeviceAgentPlannerChat(request, handlers, { signal: abort.signal });
     } else {
       // Ensure the native cloud Bearer token is hydrated before the first request
       // (iOS cold-launch race) so we don't 401 with a misleading "sign in" error.
@@ -32087,6 +32285,7 @@ function completedPlanMobileSummaryRows(plan: CompletedPlanRecord): CompletedPla
     copyName: record.copyName,
     copyActions: record.copyActions,
   });
+  rows.push(...completedPlanTerminalDetailRows(plan));
   return rows;
 }
 
@@ -32324,6 +32523,37 @@ function completedPlanRecordRef(plan: CompletedPlanRecord): CompletedPlanRecordR
   return { label: 'Record', value: t('Local done work') };
 }
 
+// Action-tailored terminal row for a stateful position's Done card (limit/dca/lend/borrow).
+// Rendered from the completed record's own actionKind (metadata/params are not carried into the
+// record), so it states WHAT happened; richer live metrics (cycles, filled price) need a
+// position↔order linkage the record doesn't preserve and are a separate follow-up.
+function completedPlanTerminalOutcome(kind: string): string {
+  if (/trigger_cancel|trigger_withdraw_order/.test(kind)) return t('Limit order cancelled');
+  if (/recurring_cancel|recurring_withdraw/.test(kind)) return t('Recurring (DCA) cancelled');
+  if (/lend_earn_withdraw|lend_earn_redeem/.test(kind)) return t('Withdrawn from lending');
+  if (/lend_borrow_repay/.test(kind)) return t('Loan repaid');
+  if (/lend_borrow_withdraw_collateral/.test(kind)) return t('Collateral withdrawn');
+  if (/trigger_single|trigger_oco|trigger_otoco/.test(kind)) return t('Limit order placed');
+  if (/recurring_create/.test(kind)) return t('Recurring (DCA) started');
+  if (/lend_earn_deposit|lend_earn_mint/.test(kind)) return t('Supplied to lending');
+  if (/lend_borrow_borrow|lend_borrow_create/.test(kind)) return t('Loan opened');
+  return '';
+}
+function completedPlanTerminalDetailRows(plan: CompletedPlanRecord): Array<{ label: string; value: string; tone?: 'amount' }> {
+  const kind = plan.actionKind;
+  if (!kind || !isStatefulActionCategory(ACTION_TYPE_CATEGORY[kind])) return [];
+  const rows: Array<{ label: string; value: string; tone?: 'amount' }> = [];
+  const outcome = completedPlanTerminalOutcome(kind);
+  if (outcome) rows.push({ label: t('Outcome'), value: outcome });
+  // Real numbers captured when the position was managed (DCA cycles, spend, fill price, …).
+  const metrics = plan.positionMetrics;
+  if (metrics) {
+    if (metrics.progress) rows.push({ label: t('Cycles'), value: `${metrics.progress.current}/${metrics.progress.total}` });
+    for (const d of metrics.details) rows.push({ label: positionDetailLabel(d.label), value: d.value });
+  }
+  return rows;
+}
+
 function completedPlanSummaryGrid(plan: CompletedPlanRecord): string {
   const record = completedPlanRecordRef(plan);
   const connectorRead = completedPlanConnectorRead(plan);
@@ -32367,6 +32597,7 @@ function completedPlanSummaryGrid(plan: CompletedPlanRecord): string {
       copyActions: record.copyActions,
     },
   ];
+  rows.push(...completedPlanTerminalDetailRows(plan));
   return `
     <dl class="completed-history-summary-grid" aria-label="${escapeHtml(t('Done work summary'))}">
       ${rows.map(completedPlanSummaryItem).join('')}
@@ -33663,6 +33894,76 @@ function bind(): void {
       if (!id || state.activeRecurringCardId === id) return;
       state.activeRecurringCardId = id;
       render();
+    });
+  }
+
+  // Positions tab: "Manage" routes to the action's New Request form (where the cancel/withdraw/repay
+  // sub-actions live, re-entering Needs Approval); "Move to Done" closes the card and shows the receipt.
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-position-manage]')) {
+    button.addEventListener('click', () => {
+      const id = button.dataset.positionManage;
+      const position = id ? state.positions.find((p) => p.id === id) : undefined;
+      if (!position) return;
+      state.createActionCategory = position.category;
+      state.oneTimePlanView = 'create';
+      state.activeTab = 'agent';
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-position-close]')) {
+    button.addEventListener('click', () => {
+      const id = button.dataset.positionClose;
+      const position = id ? state.positions.find((p) => p.id === id) : undefined;
+      if (!position) return;
+      position.status = 'closed';
+      position.closedAt = new Date().toISOString();
+      savePositions();
+      delete state.positionsLive[sectionForCategory(position.category)]; // re-read on return so it doesn't resurface
+      state.activeTab = 'completed';
+      state.completedPlanFilter = 'receipts';
+      state.lastCompletedFocusId = position.id;
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-positions-tab]')) {
+    button.addEventListener('click', () => {
+      const id = button.dataset.positionsTab as PositionSectionId | undefined;
+      if (!id || state.positionsCategory === id) return;
+      state.positionsCategory = id;
+      render(); // panel lazy-fetches the section on first view
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-positions-refresh]')) {
+    button.addEventListener('click', () => {
+      const id = button.dataset.positionsRefresh as PositionSectionId | undefined;
+      if (!id) return;
+      void fetchPositionCategory(id, true);
+    });
+  }
+
+  // Cancel/withdraw/repay from a live position card → route to that action's form (where the manage
+  // sub-action + order selection live), re-entering Needs Approval → sign.
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-position-cancel]')) {
+    button.addEventListener('click', () => {
+      const kind = button.dataset.positionCancelKind;
+      if (!kind) return;
+      const orderId = button.dataset.positionCancelOrderId ?? '';
+      // Snapshot the live row's metrics keyed by the id we pass to the form, so the Done card can
+      // show the real numbers (cycles, spend, price) once this close action signs. ONLY for the
+      // primary CLOSE action (data-position-capture) — not Edit/Collect extras, which aren't closes.
+      if (orderId && button.dataset.positionCapture === '1') {
+        const liveRow = Object.values(state.positionsLive)
+          .flatMap((e) => e?.rows ?? [])
+          .find((r) => r.cancel?.orderId === orderId || r.id === orderId);
+        if (liveRow) {
+          state.positionsClosed[orderId] = { kind, metrics: { title: liveRow.title, details: liveRow.details, progress: liveRow.progress } };
+          savePositionsClosed();
+        }
+      }
+      openManageForm(kind, orderId);
     });
   }
 
@@ -40444,7 +40745,581 @@ function completedPlanRecords(options: { includeLocalLedger?: boolean } = {}): C
   return mergeCompletedPlanRecords(records, localLedger);
 }
 
+// ---- Positions: stateful actions that open a managed position after a single signature ----
+// Kinds whose verb reduces/closes/manages an existing position (after signing → Done, not a new card).
+const POSITION_CLOSING_KIND_RE =
+  /(withdraw|redeem|cancel|repay|remove|_close|unstake|decrease|collect|claim|harvest|edit_order|reject|relinquish)/;
+
+function connectorIdForKind(kind: string): string | undefined {
+  const m = /^([a-z0-9]+)_/.exec(kind);
+  return m ? m[1] : undefined;
+}
+
+const SECTION_FOR_CATEGORY: Partial<Record<ActionCategory, PositionSectionId>> = {
+  limit: 'orders',
+  dca: 'orders',
+  lend: 'lending',
+  borrow: 'borrowing',
+  stake: 'staking',
+  lp: 'liquidity',
+  perps: 'perps',
+};
+
+function sectionForCategory(category: ActionCategory | undefined): PositionSectionId {
+  return (category && SECTION_FOR_CATEGORY[category]) || 'orders';
+}
+
+// An action OPENS a position when its category is stateful and the kind is not a close/reduce/manage verb.
+function actionOpensPosition(kind: string, category: ActionCategory | undefined): boolean {
+  if (!isStatefulActionCategory(category)) return false;
+  if (kind === 'jupiter_trigger_register_vault') return false; // vault setup, not an order
+  return !POSITION_CLOSING_KIND_RE.test(kind);
+}
+
+function upsertPositionFromAction(action: PreparedAction, category: ActionCategory): void {
+  const existing = state.positions.find((p) => p.id === action.id);
+  if (existing) {
+    existing.status = 'open';
+    existing.txid = action.txid ?? existing.txid;
+    if (action.summary) existing.summary = action.summary;
+    savePositions();
+    return;
+  }
+  state.positions = [
+    {
+      id: action.id,
+      category,
+      kind: action.kind,
+      connector: connectorIdForKind(action.kind),
+      summary: action.summary,
+      params: action.params ?? {},
+      walletAddress: action.walletAddress,
+      cluster: action.cluster,
+      openedAt: action.createdAt || action.updatedAt || new Date().toISOString(),
+      txid: action.txid,
+      status: 'open',
+    },
+    ...state.positions,
+  ];
+  savePositions();
+}
+
+// A manage/close action signed → close the most-recent matching open position (same category + connector).
+function closePositionsForManageAction(action: PreparedAction, category: ActionCategory): void {
+  const conn = connectorIdForKind(action.kind);
+  const match = state.positions.find(
+    (p) => p.status === 'open' && p.category === category && p.cluster === action.cluster && (!conn || p.connector === conn),
+  );
+  if (match) {
+    match.status = 'closed';
+    match.closedAt = new Date().toISOString();
+    savePositions();
+  }
+}
+
+function openPositions(): PositionRecord[] {
+  return state.positions.filter((p) => p.status === 'open' && p.cluster === state.cluster);
+}
+
+// A seeded position is a BRIDGE record covering the just-signed→on-chain gap. It's "pending" for this
+// window (shown while the live read catches up); after it, a successful live read supersedes it.
+const POSITION_PENDING_MS = 2 * 60_000;
+function positionIsRecentlyOpened(p: PositionRecord): boolean {
+  const t0 = new Date(p.openedAt).getTime();
+  return Number.isFinite(t0) && Date.now() - t0 < POSITION_PENDING_MS;
+}
+
+// Once a section has a successful live read, seeded bridge-records older than the pending window are
+// redundant (live is authoritative) — close them so they can't resurface on a later live error.
+function expireStaleSeededForSection(sectionId: PositionSectionId, cluster: Cluster): void {
+  const section = POSITIONS_SECTIONS.find((s) => s.id === sectionId);
+  if (!section) return;
+  const cutoff = Date.now() - POSITION_PENDING_MS;
+  let changed = false;
+  for (const p of state.positions) {
+    if (
+      p.status === 'open' &&
+      p.cluster === cluster &&
+      section.categories.includes(p.category) &&
+      new Date(p.openedAt).getTime() < cutoff
+    ) {
+      p.status = 'closed';
+      p.closedAt = new Date().toISOString();
+      changed = true;
+    }
+  }
+  if (changed) savePositions();
+}
+
+// ---- Positions live fetch (Jupiter read-facts + Birdeye USD enrichment) ----
+const POSITIONS_FRESH_MS = 30_000;
+
+async function connectorRead(
+  connectorId: string,
+  capability: string,
+  params: Record<string, unknown> = {},
+): Promise<Record<string, unknown> | null> {
+  if (!state.address) return null;
+  const body = JSON.stringify({
+    connectorId,
+    cluster: state.cluster,
+    walletAddress: state.address,
+    capability,
+    ...params,
+  });
+  if (cloudSessionMatchesWallet()) {
+    return cloudRequest<Record<string, unknown>>('/api/connector/read-facts', { method: 'POST', body });
+  }
+  if (state.bridgeActive && state.bridgeToken && isTrustedBridgeUrl(state.bridgeUrl)) {
+    return bridgeRequest<Record<string, unknown>>('/bridge/action/connector-read-facts', { method: 'POST', body });
+  }
+  return null; // not signed in / no bridge → keep seeded cards
+}
+
+function posArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? (value as Record<string, unknown>[]) : [];
+}
+function posNum(value: unknown, fallback = NaN): number {
+  const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  return Number.isFinite(n) ? n : fallback;
+}
+function posStr(value: unknown): string | undefined {
+  return typeof value === 'string' && value ? value : undefined;
+}
+function posUsd(n: number): string {
+  // Fixed en-US so the "$" symbol + separators stay consistent regardless of the user's browser locale.
+  return `$${n.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+}
+function posMint(mint?: string): string {
+  return mint ? `${mint.slice(0, 4)}…${mint.slice(-4)}` : '—';
+}
+async function posPrices(mints: Array<string | undefined>): Promise<Map<string, WalletBalancePriceInfo>> {
+  const list = [...new Set(mints.filter((m): m is string => Boolean(m)))];
+  if (!list.length) return new Map();
+  try {
+    return await fetchWalletBalancePriceInfoMap(list, state.cluster);
+  } catch {
+    return new Map();
+  }
+}
+
+async function parseLimitRows(res: Record<string, unknown> | null | undefined): Promise<PositionLiveRow[]> {
+  if (!res) return [];
+  const orders = posArray(((res.result ?? res) as Record<string, unknown>).orders);
+  if (!orders.length) return [];
+  const prices = await posPrices(orders.map((o) => posStr(o.triggerMint) ?? posStr(o.outputMint)));
+  return orders.map((o) => {
+    const orderId = posStr(o.orderId) ?? '';
+    const trigger = posNum(o.triggerPriceUsd);
+    const tMint = posStr(o.triggerMint) ?? posStr(o.outputMint);
+    const cur = tMint ? prices.get(tMint)?.priceUsd : undefined;
+    let distancePct: number | null = null;
+    if (Number.isFinite(trigger) && trigger > 0 && typeof cur === 'number') {
+      distancePct = ((trigger - cur) / trigger) * 100;
+    }
+    const details: PositionDetail[] = [];
+    if (Number.isFinite(trigger)) details.push({ label: 'Trigger price', value: posUsd(trigger) });
+    if (typeof cur === 'number') details.push({ label: 'Current price', value: posUsd(cur) });
+    if (posStr(o.remainingInputAmount)) {
+      details.push({ label: 'Size', value: `${o.remainingInputAmount} ${posMint(posStr(o.inputMint))}` });
+    }
+    return {
+      section: 'orders', id: orderId, connectorId: 'jupiter', kind: 'limit',
+      title: `${posMint(posStr(o.inputMint))} → ${posMint(posStr(o.outputMint))}`,
+      status: posStr(o.state), details, distancePct,
+      cancel: o.cancellable ? { kind: 'jupiter_trigger_cancel_order', orderId } : undefined,
+      extras: orderId ? [{ kind: 'jupiter_trigger_edit_order', label: t('Edit'), orderId }] : undefined,
+    };
+  });
+}
+
+async function parseDcaRows(res: Record<string, unknown> | null | undefined): Promise<PositionLiveRow[]> {
+  if (!res) return [];
+  const orders = posArray(((res.result ?? res) as Record<string, unknown>).orders);
+  if (!orders.length) return [];
+  const prices = await posPrices(orders.map((o) => posStr(o.inputMint)));
+  return orders.map((o) => {
+    const orderId = posStr(o.orderId) ?? '';
+    const total = posNum(o.numberOfOrders, 0);
+    const executedRaw = Math.max(0, posNum(o.executedOrders, 0));
+    const executed = total > 0 ? Math.min(executedRaw, total) : executedRaw; // never render "101/100"
+    const perCycle = posNum(o.amountPerCycle);
+    const inMint = posStr(o.inputMint);
+    const inPrice = inMint ? prices.get(inMint)?.priceUsd : undefined;
+    const details: PositionDetail[] = [];
+    if (posStr(o.amountPerCycle)) details.push({ label: 'Per cycle', value: `${o.amountPerCycle} ${posMint(inMint)}` });
+    if (Number.isFinite(perCycle) && typeof inPrice === 'number' && executed > 0) {
+      details.push({ label: 'Spent', value: posUsd(perCycle * executed * inPrice) });
+    }
+    if (posStr(o.nextExecutionAt)) details.push({ label: 'Next fill', value: formatDateTime(posStr(o.nextExecutionAt)!) });
+    return {
+      section: 'orders', id: orderId, connectorId: 'jupiter', kind: 'dca',
+      title: `${posMint(inMint)} → ${posMint(posStr(o.outputMint))}`,
+      status: posStr(o.status), details,
+      progress: total ? { current: executed, total } : undefined,
+      cancel: { kind: 'jupiter_recurring_cancel_order', orderId },
+    };
+  });
+}
+
+async function parseLendRows(res: Record<string, unknown> | null | undefined): Promise<PositionLiveRow[]> {
+  if (!res) return [];
+  const positions = posArray(res.positions);
+  if (!positions.length) return [];
+  const prices = await posPrices(positions.map((p) => posStr(p.assetMint)));
+  return positions.map((p) => {
+    const supplied = posNum(p.underlyingAmount);
+    const price = posStr(p.assetMint) ? prices.get(posStr(p.assetMint)!)?.priceUsd : undefined;
+    const sym = posStr(p.tokenSymbol) ?? posMint(posStr(p.assetMint));
+    const details: PositionDetail[] = [];
+    if (posStr(p.underlyingAmount)) details.push({ label: 'Supplied', value: `${p.underlyingAmount} ${sym}` });
+    if (Number.isFinite(supplied) && typeof price === 'number') details.push({ label: 'Value', value: posUsd(supplied * price) });
+    if (typeof p.apy === 'number') details.push({ label: 'APY', value: `${(p.apy as number).toFixed(2)}%`, tone: p.apy >= 0 ? 'good' : 'warn' });
+    return {
+      section: 'lending', id: posStr(p.shareMint) ?? posStr(p.assetMint) ?? sym, connectorId: 'jupiter', kind: 'lend',
+      title: `${sym} supplied`, status: 'earning', details,
+      cancel: { kind: 'jupiter_lend_earn_withdraw', orderId: posStr(p.assetMint) ?? '' },
+    };
+  });
+}
+
+function parseBorrowRows(res: Record<string, unknown> | null | undefined): PositionLiveRow[] {
+  if (!res) return [];
+  return posArray(res.positions).map((p) => {
+    const status = posStr(p.liquidationStatus);
+    const tone: PositionDetail['tone'] =
+      status === 'safe' ? 'good' : status === 'at_risk' ? 'warn' : status === 'liquidatable' || status === 'liquidated' ? 'bad' : undefined;
+    const health = p.healthRatio == null ? null : posNum(p.healthRatio);
+    const details: PositionDetail[] = [];
+    if (posStr(p.debtValueUsd)) details.push({ label: 'Debt', value: posUsd(posNum(p.debtValueUsd, 0)) });
+    else if (posStr(p.debtAmount)) details.push({ label: 'Debt', value: String(p.debtAmount) });
+    if (posStr(p.collateralValueUsd)) details.push({ label: 'Collateral', value: posUsd(posNum(p.collateralValueUsd, 0)) });
+    if (health != null && Number.isFinite(health)) details.push({ label: 'Health', value: health.toFixed(2), tone });
+    const borrowId = posStr(p.positionAddress) ?? '';
+    return {
+      section: 'borrowing', id: posStr(p.positionAddress) ?? String(p.positionId ?? ''), connectorId: 'jupiter', kind: 'borrow',
+      title: posStr(p.healthRatioText) ?? 'Borrow position', status, details,
+      cancel: { kind: 'jupiter_lend_borrow_repay', orderId: borrowId },
+      extras: borrowId
+        ? [
+            { kind: 'jupiter_lend_borrow_deposit_collateral', label: t('Add collateral'), orderId: borrowId },
+            { kind: 'jupiter_lend_borrow_withdraw_collateral', label: t('Withdraw collateral'), orderId: borrowId },
+            { kind: 'jupiter_lend_borrow_borrow', label: t('Borrow more'), orderId: borrowId },
+          ]
+        : undefined,
+    };
+  });
+}
+
+// Stake reads have per-connector shapes (marinade snapshot, jito jitoSol, sanctum rows[]); parse
+// defensively — unknown shape contributes nothing → seeded fallback. No manage button v1.
+function parseStakeRows(connectorId: string, res: Record<string, unknown> | null | undefined): PositionLiveRow[] {
+  if (!res) return [];
+  const r = (res.result ?? res) as Record<string, unknown>;
+  const rows: PositionLiveRow[] = [];
+  if (posStr(r.msolBalance) || posStr(r.estimatedSolValue)) {
+    const details: PositionDetail[] = [];
+    if (posStr(r.msolBalance)) details.push({ label: 'mSOL', value: String(r.msolBalance) });
+    if (posStr(r.estimatedSolValue)) details.push({ label: 'Est. SOL', value: String(r.estimatedSolValue) });
+    rows.push({ section: 'staking', id: `${connectorId}-msol`, connectorId, kind: 'stake', title: 'Marinade staked', details, cancel: { kind: 'marinade_liquid_unstake', orderId: '' } });
+  }
+  const jitoSol = r.jitoSol as Record<string, unknown> | undefined;
+  if (jitoSol && posStr(jitoSol.amount)) {
+    rows.push({ section: 'staking', id: `${connectorId}-jitosol`, connectorId, kind: 'stake', title: 'JitoSOL', details: [{ label: 'Balance', value: String(jitoSol.amount) }], cancel: { kind: 'jito_unstake_jitosol', orderId: '' } });
+  }
+  for (const lst of posArray(r.rows)) {
+    if (!posStr(lst.amount)) continue;
+    const sym = posStr(lst.symbol) ?? posMint(posStr(lst.mint));
+    rows.push({ section: 'staking', id: `${connectorId}-${posStr(lst.mint) ?? sym}`, connectorId, kind: 'stake', title: sym, details: [{ label: 'Balance', value: `${lst.amount} ${sym}` }], cancel: { kind: 'sanctum_unstake_lst_to_sol', orderId: posStr(lst.mint) ?? '' } });
+  }
+  return rows;
+}
+
+async function parseLpRows(connectorId: string, res: Record<string, unknown> | null | undefined): Promise<PositionLiveRow[]> {
+  if (!res) return [];
+  const positions = posArray(((res.result ?? res) as Record<string, unknown>).positions);
+  if (!positions.length) return [];
+  const mints: Array<string | undefined> = [];
+  for (const p of positions) for (const ta of posArray(p.tokenAmounts)) mints.push(posStr(ta.mint));
+  const prices = await posPrices(mints);
+  return positions.map((p, i) => {
+    const parts: string[] = [];
+    let usd = 0;
+    let hasUsd = false;
+    for (const ta of posArray(p.tokenAmounts)) {
+      const m = posStr(ta.mint);
+      const sym = posStr(ta.symbol) ?? posMint(m);
+      if (posStr(ta.amount)) parts.push(`${ta.amount} ${sym}`);
+      const amt = posNum(ta.amount);
+      const price = m ? prices.get(m)?.priceUsd : undefined;
+      if (Number.isFinite(amt) && typeof price === 'number') {
+        usd += amt * price;
+        hasUsd = true;
+      }
+    }
+    const details: PositionDetail[] = [];
+    if (parts.length) details.push({ label: 'Liquidity', value: parts.join(' + ') });
+    if (hasUsd) details.push({ label: 'Value', value: posUsd(usd) });
+    if (typeof p.inRange === 'boolean') {
+      details.push({ label: 'Range', value: p.inRange ? t('In range') : t('Out of range'), tone: p.inRange ? 'good' : 'warn' });
+    }
+    const removeKind =
+      connectorId === 'meteora' ? 'meteora_remove_liquidity'
+      : connectorId === 'orca' ? 'orca_decrease_liquidity'
+      : connectorId === 'raydium' ? 'raydium_remove_liquidity'
+      : undefined;
+    const removeId = connectorId === 'meteora' ? (posStr(p.positionAddress) ?? '') : (posStr(p.positionMint) ?? posStr(p.positionAddress) ?? '');
+    const collectKind =
+      connectorId === 'meteora' ? 'meteora_claim_fees'
+      : connectorId === 'orca' ? 'orca_collect_fees'
+      : connectorId === 'raydium' ? 'raydium_collect_fees'
+      : undefined;
+    const rewardsKind =
+      connectorId === 'meteora' ? 'meteora_claim_rewards'
+      : connectorId === 'orca' ? 'orca_collect_rewards'
+      : connectorId === 'raydium' ? 'raydium_harvest'
+      : undefined;
+    const lpExtras: Array<{ kind: string; label: string; orderId: string }> = [];
+    if (collectKind && removeId) lpExtras.push({ kind: collectKind, label: t('Collect fees'), orderId: removeId });
+    if (rewardsKind && removeId) lpExtras.push({ kind: rewardsKind, label: t('Claim rewards'), orderId: removeId });
+    return {
+      section: 'liquidity' as PositionSectionId,
+      id: posStr(p.positionAddress) ?? posStr(p.positionMint) ?? `${connectorId}-${i}`,
+      connectorId,
+      kind: 'lp' as ActionCategory,
+      title: `${positionConnectorName(connectorId)} ${t('Liquidity')}`,
+      details,
+      ...(removeKind ? { cancel: { kind: removeKind as PreparedActionKind, orderId: removeId } } : {}),
+      ...(lpExtras.length ? { extras: lpExtras } : {}),
+    };
+  });
+}
+
+// Resilient multi-read: one connector throwing/timing-out must NOT lose the others (Promise.allSettled).
+async function settleReads(
+  promises: Array<Promise<Record<string, unknown> | null>>,
+): Promise<Array<Record<string, unknown> | null>> {
+  const results = await Promise.allSettled(promises);
+  return results.map((r) => (r.status === 'fulfilled' ? r.value : null));
+}
+
+async function fetchPositionCategory(section: PositionSectionId, force = false): Promise<void> {
+  if (section === 'perps' || !state.address) return;
+  const cluster = state.cluster;
+  const existing = state.positionsLive[section];
+  if (existing?.loading) return;
+  if (!force && existing && existing.cluster === cluster && !existing.error && Date.now() - existing.fetchedAt < POSITIONS_FRESH_MS) return;
+  state.positionsLive[section] = { rows: existing && existing.cluster === cluster ? existing.rows : [], fetchedAt: existing?.fetchedAt ?? 0, loading: true, error: existing?.error, cluster };
+  try {
+    let rows: PositionLiveRow[] = [];
+    if (section === 'orders') {
+      const [trig, rec] = await settleReads([
+        connectorRead('jupiter', 'trigger', { triggerOperation: 'orders', triggerState: 'open' }),
+        connectorRead('jupiter', 'recurring', { recurringOperation: 'orders', recurringState: 'active', recurringType: 'time' }),
+      ]);
+      if (trig === null && rec === null) throw new Error('signed-out');
+      rows = [...(await parseLimitRows(trig)), ...(await parseDcaRows(rec))];
+    } else if (section === 'lending') {
+      const res = await connectorRead('jupiter', 'earn');
+      if (res === null) throw new Error('signed-out');
+      rows = await parseLendRows(res);
+    } else if (section === 'borrowing') {
+      const res = await connectorRead('jupiter', 'positions');
+      if (res === null) throw new Error('signed-out');
+      rows = parseBorrowRows(res);
+    } else if (section === 'staking') {
+      const [m, j, s] = await settleReads([
+        connectorRead('marinade', 'positions'),
+        connectorRead('jito', 'positions'),
+        connectorRead('sanctum', 'positions'),
+      ]);
+      if (m === null && j === null && s === null) throw new Error('signed-out');
+      rows = [...parseStakeRows('marinade', m), ...parseStakeRows('jito', j), ...parseStakeRows('sanctum', s)];
+    } else if (section === 'liquidity') {
+      const [me, o, ra] = await settleReads([
+        connectorRead('meteora', 'positions'),
+        connectorRead('orca', 'positions'),
+        connectorRead('raydium', 'positions'),
+      ]);
+      if (me === null && o === null && ra === null) throw new Error('signed-out');
+      rows = [...(await parseLpRows('meteora', me)), ...(await parseLpRows('orca', o)), ...(await parseLpRows('raydium', ra))];
+    }
+    // Discard if the cluster changed mid-flight (stale fetch).
+    if (state.cluster !== cluster) return;
+    state.positionsLive[section] = { rows, fetchedAt: Date.now(), loading: false, cluster };
+    expireStaleSeededForSection(section, cluster); // live is authoritative now — retire old bridge records
+  } catch (e) {
+    if (state.cluster !== cluster) return;
+    state.positionsLive[section] = {
+      rows: state.positionsLive[section]?.rows ?? [],
+      fetchedAt: Date.now(),
+      loading: false,
+      error: e instanceof Error && e.message === 'signed-out' ? 'signed-out' : 'fetch-failed',
+      cluster,
+    };
+  }
+  render();
+}
+
+// i18n: detail labels are runtime data (parsers store English keys); this switch makes the literals
+// statically extractable AND translated at render with the active language.
+function positionDetailLabel(key: string): string {
+  switch (key) {
+    case 'Trigger price': return t('Trigger price');
+    case 'Current price': return t('Current price');
+    case 'Size': return t('Size');
+    case 'Per cycle': return t('Per cycle');
+    case 'Spent': return t('Spent');
+    case 'Next fill': return t('Next fill');
+    case 'Supplied': return t('Supplied');
+    case 'Value': return t('Value');
+    case 'APY': return t('APY');
+    case 'Debt': return t('Debt');
+    case 'Collateral': return t('Collateral');
+    case 'Health': return t('Health');
+    case 'mSOL': return t('mSOL');
+    case 'Est. SOL': return t('Est. SOL');
+    case 'Balance': return t('Balance');
+    case 'Liquidity': return t('Liquidity');
+    case 'Range': return t('Range');
+    case 'In range': return t('In range');
+    case 'Out of range': return t('Out of range');
+    default: return t(key);
+  }
+}
+
+function formatPositionStatus(status: string | undefined): string {
+  if (!status) return '';
+  switch (status) {
+    case 'open': return t('Open');
+    case 'pending': return t('Pending');
+    case 'active': return t('Active');
+    case 'filled': return t('Filled');
+    case 'completed': return t('Completed');
+    case 'cancelled': return t('Cancelled');
+    case 'expired': return t('Expired');
+    case 'failed': return t('Failed');
+    case 'earning': return t('Earning');
+    case 'safe': return t('Safe');
+    case 'at_risk': return t('At risk');
+    case 'liquidatable': return t('Liquidatable');
+    case 'liquidated': return t('Liquidated');
+    default: return t(status);
+  }
+}
+
+// Branded protocol display name for the connector that owns a position.
+function positionConnectorName(connectorId: string): string {
+  return getAdapterMeta(connectorId as ConnectedDappId)?.name ?? connectorId.charAt(0).toUpperCase() + connectorId.slice(1);
+}
+
+function positionLiveCard(row: PositionLiveRow): string {
+  const chip =
+    connectorChip(row.connectorId, positionConnectorName(row.connectorId)) ||
+    `<span class="positions-connector">${escapeHtml(positionConnectorName(row.connectorId))}</span>`;
+  const detailRows = row.details
+    .map(
+      (d) =>
+        `<div class="positions-detail ${d.tone ? 'tone-' + d.tone : ''}"><dt>${escapeHtml(positionDetailLabel(d.label))}</dt><dd>${escapeHtml(d.value)}</dd></div>`,
+    )
+    .join('');
+  const distance =
+    typeof row.distancePct === 'number'
+      ? `<span class="positions-distance" title="${escapeHtml(t('Distance between the current price and the trigger price'))}">${Math.abs(row.distancePct).toFixed(1)}% ${escapeHtml(t('from trigger'))}</span>`
+      : '';
+  const progress = row.progress && row.progress.total > 0
+    ? `<div class="positions-progress"><span class="positions-progress-track"><span class="positions-progress-fill" style="width:${Math.min(100, Math.round((row.progress.current / row.progress.total) * 100))}%"></span></span><span class="positions-progress-label">${row.progress.current}/${row.progress.total}</span></div>`
+    : '';
+  const cancelLabel = row.kind === 'lend' ? t('Withdraw') : row.kind === 'borrow' ? t('Repay') : row.kind === 'stake' ? t('Unstake') : row.kind === 'lp' ? t('Remove') : t('Cancel');
+  const cancelBtn = row.cancel
+    ? `<button class="utility" data-position-cancel="${escapeHtml(row.id)}" data-position-cancel-kind="${escapeHtml(row.cancel.kind)}" data-position-cancel-order-id="${escapeHtml(row.cancel.orderId)}" data-position-capture="1">${escapeHtml(cancelLabel)}</button>`
+    : '';
+  const extrasBtns = (row.extras ?? [])
+    .map(
+      (e) =>
+        `<button class="utility positions-extra" data-position-cancel="${escapeHtml(row.id)}" data-position-cancel-kind="${escapeHtml(e.kind)}" data-position-cancel-order-id="${escapeHtml(e.orderId)}">${escapeHtml(e.label)}</button>`,
+    )
+    .join('');
+  const statusLabel = formatPositionStatus(row.status);
+  return `
+    <div class="positions-card" data-position-id="${escapeHtml(row.id)}">
+      <div class="positions-card-head">
+        <span class="positions-badge">${escapeHtml(positionCategoryLabel(row.kind))}</span>
+        ${chip}
+        ${statusLabel ? `<span class="positions-status" title="${escapeHtml(statusLabel)}">${escapeHtml(statusLabel)}</span>` : ''}
+      </div>
+      <div class="positions-card-summary">${escapeHtml(row.title)} ${distance}</div>
+      ${detailRows ? `<div class="positions-details">${detailRows}</div>` : ''}
+      ${progress}
+      <div class="positions-card-actions">${cancelBtn}${extrasBtns}</div>
+    </div>
+  `;
+}
+
+// The form field that identifies WHAT to manage, per manage-action kind (default 'orderId').
+const MANAGE_ID_FIELD_BY_KIND: Record<string, string> = {
+  jupiter_lend_earn_withdraw: 'assetMint',
+  jupiter_lend_earn_redeem: 'assetMint',
+  jupiter_lend_borrow_repay: 'positionId',
+  jupiter_lend_borrow_withdraw_collateral: 'positionId',
+  jupiter_lend_borrow_deposit_collateral: 'positionId',
+  jupiter_lend_borrow_borrow: 'positionId',
+  sanctum_unstake_lst_to_sol: 'lstMint',
+  meteora_remove_liquidity: 'positionAddress',
+  meteora_close_position: 'positionAddress',
+  meteora_claim_fees: 'positionAddress',
+  orca_decrease_liquidity: 'positionMint',
+  orca_collect_fees: 'positionMint',
+  orca_collect_rewards: 'positionMint',
+  meteora_claim_rewards: 'positionAddress',
+  raydium_remove_liquidity: 'positionMint',
+  raydium_collect_fees: 'positionMint',
+  raydium_harvest: 'positionMint',
+};
+
+// Precise manage (cancel/withdraw/repay/edit/collect): open the action's connector form with the right
+// sub-action + the live order/position id pre-filled, then land in New Request → Needs Approval → sign.
+// Safer than building a PreparedAction directly (keeps form validation + user review).
+function openManageForm(kind: string, orderId: string): void {
+  const category = ACTION_TYPE_CATEGORY[kind];
+  const form = connectorActionFormByActionType(kind);
+  if (form) {
+    applyConnectorActionForm(form);
+    const group = form.subActions;
+    if (group) {
+      const sub = group.options.find((o) => o.actionType === kind);
+      if (sub) state.templateFields[group.fieldId] = sub.id;
+    }
+    const idField = MANAGE_ID_FIELD_BY_KIND[kind] ?? 'orderId';
+    if (orderId) state.templateFields[idField] = orderId;
+  }
+  if (category) state.createActionCategory = category;
+  state.oneTimePlanView = 'create';
+  state.activeTab = 'agent';
+  render();
+}
+
 function showCompletedHistoryForAction(actionId?: string): void {
+  // Stateful actions take over the normal "→ Done" navigation: an OPEN routes to the Positions tab
+  // (seed + highlight the card); a manage/close action closes its position then continues to Done.
+  const action = actionId ? state.preparedActions.find((a) => a.id === actionId) : undefined;
+  if (action) {
+    const category = ACTION_TYPE_CATEGORY[action.kind];
+    if (actionOpensPosition(action.kind, category)) {
+      upsertPositionFromAction(action, category as ActionCategory);
+      state.positionsCategory = sectionForCategory(category as ActionCategory);
+      state.activeTab = 'positions';
+      state.lastPositionFocusId = action.id;
+      void fetchPositionCategory(state.positionsCategory, true); // pull the freshly-opened position
+      return;
+    }
+    if (isStatefulActionCategory(category)) {
+      closePositionsForManageAction(action, category as ActionCategory);
+      // Invalidate live cache so the just-cancelled/closed order doesn't linger within the 30s freshness
+      // window when the user returns to Positions (forces a fresh read on next view).
+      delete state.positionsLive[sectionForCategory(category as ActionCategory)];
+    }
+  }
   const records = completedPlanRecords();
   const focused = actionId
     ? records.find((record) => record.actionId === actionId || record.id.includes(actionId))
@@ -40523,6 +41398,18 @@ function pythQuestionDisplayLabel(value: string): string {
   }
 }
 
+// Looks up captured close-time metrics (positionsClosed) by any id field the close action carries,
+// so the Done card can render the real position numbers. Returns a spreadable {} when none.
+function positionMetricsSpread(action?: PreparedAction): { positionMetrics?: PositionClosedMetrics } {
+  if (!action) return {};
+  const params = action.params ?? {};
+  for (const key of ['orderId', 'assetMint', 'positionId', 'positionAddress', 'positionMint', 'lstMint']) {
+    const v = params[key];
+    if (typeof v === 'string' && state.positionsClosed[v]) return { positionMetrics: state.positionsClosed[v].metrics };
+  }
+  return {};
+}
+
 function completedPlanFromGeneratedPlan(
   record: GeneratedPlanRecord,
   receipt: ActionReceipt | undefined,
@@ -40576,6 +41463,7 @@ function completedPlanFromGeneratedPlan(
     ...(actionId ? { actionId } : {}),
     ...(workflowSource ? { workflowSource } : {}),
     ...(record.metadata ? { metadata: record.metadata } : {}),
+    ...positionMetricsSpread(action),
     copyPayload: stableJson(payload),
     detailRows: completedRows([
       ['Type', t('One-time plan')],
@@ -40644,6 +41532,7 @@ function completedPlanFromReceipt(receipt: ActionReceipt, action: PreparedAction
     ...(recurringId ? { recurringId } : {}),
     ...(occurrenceKey ? { occurrenceKey } : {}),
     ...(workflowSource ? { workflowSource } : {}),
+    ...positionMetricsSpread(action),
     copyPayload: stableJson(payload),
     detailRows: completedRows([
       ['Type', kind === 'recurring' ? t('Repeat payment') : t('One-time approval')],
@@ -40730,6 +41619,7 @@ function completedPlanFromAction(action: PreparedAction): CompletedPlanRecord {
     ...(action.recurringId && { recurringId: action.recurringId }),
     ...(action.occurrenceKey && { occurrenceKey: action.occurrenceKey }),
     ...(action.workflowSource ? { workflowSource: action.workflowSource } : {}),
+    ...positionMetricsSpread(action),
     copyPayload: stableJson({ type: kind === 'recurring' ? 'completed_recurring_occurrence' : 'completed_one_time_approval', action }),
     detailRows: completedRows([
       ['Type', kind === 'recurring' ? t('Repeat payment') : t('One-time approval')],
@@ -45861,16 +46751,29 @@ async function finishCloudSignIn(session: CloudSessionResponse): Promise<void> {
   cloudSignInDiag('session-set', { status: state.cloudSession.status, walletStillConnected: Boolean(state.address) });
   await refreshCloudWorkspaceData();
   dismissToastByKey(LOCAL_WORKSPACE_BOUNDARY_TOAST_KEY);
+  // Hydrate the cloud Bearer token ONCE up front (native shells hydrate it async
+  // after sign-in). Doing this before the chat push AND the workspace transfer
+  // prevents a token-hydration race that would 401 the first /api/plans POST and
+  // strand records as "stayed on this device".
+  await ensureChatCloudTokenReady();
   // Migrate locally-saved chat threads up to the cloud (idempotent per-session
   // upsert). refreshCloudWorkspaceData already hydrated the cloud list, so only
   // local-only / local-newer sessions actually upload.
-  pushLocalChatSessionsToCloud();
+  const chatsQueued = pushLocalChatSessionsToCloud();
   const transfer = await transferLocalWorkspaceToCloud({ confirm: false, showEmptyToast: false });
   cloudSignInDiag('done', { transferred: transfer.total, walletStillConnected: Boolean(state.address), cloudStatus: state.cloudSession?.status });
   if (transfer.total > 0) {
     toastLocalWorkspaceStorageTransfer(transfer);
   } else {
-    pushToast('success', t('Cloud workspace signed in'), short(state.address));
+    pushToast(
+      'success',
+      t('Cloud workspace signed in'),
+      chatsQueued > 0
+        ? (chatsQueued === 1
+          ? tf('{address} · 1 chat syncing to storage.', { address: short(state.address) })
+          : tf('{address} · {count} chats syncing to storage.', { address: short(state.address), count: chatsQueued }))
+        : short(state.address),
+    );
   }
 }
 
@@ -45894,6 +46797,19 @@ interface LocalWorkspaceStorageTransferResult {
   failed: number;
   total: number;
   canceled: boolean;
+  // Friendly reason for the first failed item (for the toast), if any failed.
+  reason?: string;
+}
+
+// Map a cloud-transfer error into short, non-scary copy for the toast. The raw
+// message is logged separately for debugging; the user sees a calm hint.
+function friendlyCloudTransferReason(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/\b401\b|unauthorized|sign in/i.test(msg)) return t('cloud sign-in was still settling');
+  if (/\b409\b|conflict/i.test(msg)) return t('a newer copy already exists in storage');
+  if (/network|failed to fetch|load failed|networkerror|timeout|timed out|ECONN|ENOTFOUND|offline/i.test(msg)) return t('a network hiccup');
+  if (/\b4\d\d\b/.test(msg)) return t('storage rejected the record');
+  return t('a temporary storage error');
 }
 
 async function transferLocalWorkspaceToCloud(options: { confirm: boolean; showEmptyToast: boolean }): Promise<LocalWorkspaceStorageTransferResult> {
@@ -45924,6 +46840,17 @@ async function transferLocalWorkspaceToCloud(options: { confirm: boolean; showEm
   let copied = 0;
   let failed = 0;
 
+  // Capture real failure reasons instead of swallowing them in bare catches — that
+  // silence is exactly why "2 items stayed" was undiagnosable. Un-imported records
+  // stay flagged !importedToCloudAt, so they remain candidates and retry next sign-in.
+  const failureLog: string[] = [];
+  let firstFailure: unknown;
+  const noteFailure = (category: string, err: unknown): void => {
+    failed += 1;
+    if (firstFailure === undefined) firstFailure = err;
+    failureLog.push(`${category}: ${redactSecrets(err instanceof Error ? err.message : String(err))}`);
+  };
+
   for (const record of candidates.plans) {
     try {
       const cloudPlan = parseCloudPlanResponse(await cloudRequest('/api/plans', {
@@ -45938,8 +46865,8 @@ async function transferLocalWorkspaceToCloud(options: { confirm: boolean; showEm
         ));
         copied += 1;
       }
-    } catch {
-      failed += 1;
+    } catch (err) {
+      noteFailure('plans', err);
     }
   }
 
@@ -45957,8 +46884,8 @@ async function transferLocalWorkspaceToCloud(options: { confirm: boolean; showEm
         state.materializedActions = state.preparedActions;
         copied += 1;
       }
-    } catch {
-      failed += 1;
+    } catch (err) {
+      noteFailure('approvals', err);
     }
   }
 
@@ -45975,8 +46902,8 @@ async function transferLocalWorkspaceToCloud(options: { confirm: boolean; showEm
         ));
         copied += 1;
       }
-    } catch {
-      failed += 1;
+    } catch (err) {
+      noteFailure('repeat payments', err);
     }
   }
 
@@ -45987,11 +46914,19 @@ async function transferLocalWorkspaceToCloud(options: { confirm: boolean; showEm
       if (uploaded.cloudSyncStatus === 'synced') {
         copied += 1;
       } else {
-        failed += 1;
+        noteFailure('proofs', new Error('upload was not confirmed'));
       }
-    } catch {
-      failed += 1;
+    } catch (err) {
+      noteFailure('proofs', err);
     }
+  }
+
+  if (failureLog.length) {
+    logDebug({
+      level: 'error',
+      source: 'ui',
+      message: `Local→cloud transfer: ${failureLog.length} item(s) failed: ${failureLog.join(' | ')}`,
+    });
   }
 
   saveGeneratedPlans();
@@ -45999,18 +46934,31 @@ async function transferLocalWorkspaceToCloud(options: { confirm: boolean; showEm
   await saveLabArtifacts();
   await refreshCloudWorkspaceData().catch(() => undefined);
 
-  return { copied, failed, total, canceled: false };
+  return {
+    copied,
+    failed,
+    total,
+    canceled: false,
+    ...(firstFailure !== undefined ? { reason: friendlyCloudTransferReason(firstFailure) } : {}),
+  };
 }
 
 function toastLocalWorkspaceStorageTransfer(result: LocalWorkspaceStorageTransferResult): void {
   if (result.canceled || result.total === 0) return;
+  // Nothing copied but some failed: this is NOT a scary failure — the records are
+  // still safe in local storage and remain transfer candidates next sign-in. Use a
+  // calm 'info' toast that names the reason instead of "Storage transfer failed".
   if (result.copied === 0 && result.failed > 0) {
+    const countPhrase = result.failed === 1
+      ? tf('{count} item is still saved on this device', { count: result.failed })
+      : tf('{count} items are still saved on this device', { count: result.failed });
     pushToast(
-      'error',
-      t('Storage transfer failed'),
-      result.failed === 1
-        ? tf('{count} item stayed on this device.', { count: result.failed })
-        : tf('{count} items stayed on this device.', { count: result.failed }),
+      'info',
+      t('Kept on this device'),
+      result.reason
+        ? tf('{phrase} ({reason}). They stay safe here and will retry next sign-in.', { phrase: countPhrase, reason: result.reason })
+        : tf('{phrase}. They stay safe here and will retry next sign-in.', { phrase: countPhrase }),
+      { dismissAfterMs: LOCAL_WORKSPACE_REMINDER_DISMISS_MS },
     );
     return;
   }
@@ -46018,7 +46966,9 @@ function toastLocalWorkspaceStorageTransfer(result: LocalWorkspaceStorageTransfe
     result.failed > 0 ? 'info' : 'success',
     result.failed > 0 ? t('Storage transfer partially completed') : t('Local workspace transferred'),
     result.failed > 0
-      ? tf('{copied} transferred, {failed} need review.', { copied: result.copied, failed: result.failed })
+      ? (result.reason
+        ? tf('{copied} transferred, {failed} kept locally ({reason}).', { copied: result.copied, failed: result.failed, reason: result.reason })
+        : tf('{copied} transferred, {failed} kept locally.', { copied: result.copied, failed: result.failed }))
       : result.copied === 1
         ? tf('{count} item transferred to storage.', { count: result.copied })
         : tf('{count} items transferred to storage.', { count: result.copied }),
@@ -56423,23 +57373,36 @@ function isBridgeOfflineMessage(message: string): boolean {
 }
 
 async function showBridgeOfflineToast(title: string): Promise<void> {
-  const detail = await bridgeOfflineDiagnosticMessage();
-  state.bridgeStatus = detail;
-  pushToast('error', title, detail);
+  const { message, command } = await bridgeOfflineDiagnosticMessage();
+  state.bridgeStatus = command ? `${message} ${command}` : message;
+  // Keep the command OUT of the prose (it was being visually truncated) — show it in
+  // a dedicated copyable row, and let the toast linger long enough to read + copy it.
+  pushToast('error', title, message, command
+    ? { copyValue: command, copyLabel: t('CLI command'), dismissAfterMs: 9000 }
+    : { dismissAfterMs: 9000 });
 }
 
-async function bridgeOfflineDiagnosticMessage(): Promise<string> {
+async function bridgeOfflineDiagnosticMessage(): Promise<{ message: string; command: string }> {
   const bridgeEndpoint = compactEndpoint(state.bridgeUrl);
   if (state.tauriNativeEnvironment.isTauriNative) {
     // Desktop owns its bridge; the wallet-host probe + "run the CLI" guidance below is for web/CLI.
-    return `Local approval bridge is not running at ${bridgeEndpoint}. The desktop app manages this bridge — click Start bridge (or Retry bridge check), then Check local bridge. You do not need to run the CLI.`;
+    return {
+      message: `Local approval bridge is not running at ${bridgeEndpoint}. The desktop app manages this bridge — click Start bridge (or Retry bridge check), then Check local bridge. You do not need to run the CLI.`,
+      command: '',
+    };
   }
   const walletHostUrl = inferredWalletHostUrl();
   const walletHostReachable = walletHostUrl ? await canReachLocalEndpoint(walletHostUrl) : false;
   if (walletHostReachable) {
-    return `Wallet host is running at ${compactEndpoint(walletHostUrl)}, but the approval bridge is stopped at ${bridgeEndpoint}. Run ${NPM_EXEC_COMMAND}, keep that terminal open, then click Check local bridge.`;
+    return {
+      message: `Wallet host is running at ${compactEndpoint(walletHostUrl)}, but the approval bridge is stopped at ${bridgeEndpoint}. Run the command below, keep that terminal open, then click Check local bridge.`,
+      command: NPM_EXEC_COMMAND,
+    };
   }
-  return `Local approval bridge is not running at ${bridgeEndpoint}. Run ${NPM_EXEC_COMMAND}, keep that terminal open, then click Check local bridge.`;
+  return {
+    message: `Local approval bridge is not running at ${bridgeEndpoint}. Run the command below, keep that terminal open, then click Check local bridge.`,
+    command: NPM_EXEC_COMMAND,
+  };
 }
 
 function inferredWalletHostUrl(options?: { wallet?: string; route?: '/app' | '/connect' | '/approve' | '/sign' }): string {
@@ -56940,6 +57903,10 @@ function resetWalletConnection(): void {
   state.recurringPayments = [];
   state.receipts = [];
   state.localCompletedPlans = [];
+  state.positions = [];
+  state.positionsLive = {};
+  state.positionsClosed = {};
+  state.positionsCategory = 'orders';
   // Clear chat from memory on disconnect (on-disk per-wallet history is kept,
   // and reloads when the wallet reconnects). Cancel any in-flight stream first.
   cancelChatStream();
@@ -57325,10 +58292,161 @@ function mobileDockTabButton(tab: ActiveTab, label: string): string {
   `;
 }
 
+// Positions surface — the "manage what you've opened" stage of the lifecycle. Stateful actions
+// (Limit, DCA, Lend, Borrow, Stake, LP, Perps) land here after signing so the user can monitor +
+// manage them; terminal close/finish flows to Done. Sections are scaffolded here; live data +
+// manage actions are wired per-category in later phases.
+const POSITIONS_SECTIONS: ReadonlyArray<{ id: PositionSectionId; title: string; blurb: string; categories: ActionCategory[] }> = [
+  { id: 'orders', title: 'Orders', blurb: 'Open limit orders and active DCA plans.', categories: ['limit', 'dca'] },
+  { id: 'lending', title: 'Lending', blurb: 'Supplied assets earning yield.', categories: ['lend'] },
+  { id: 'borrowing', title: 'Borrowing', blurb: 'Outstanding debt and collateral.', categories: ['borrow'] },
+  { id: 'staking', title: 'Staking', blurb: 'Staked SOL and liquid-staking tokens.', categories: ['stake'] },
+  { id: 'liquidity', title: 'Liquidity', blurb: 'Provided liquidity positions and fees.', categories: ['lp'] },
+  { id: 'perps', title: 'Perps', blurb: 'Open perpetual positions.', categories: ['perps'] },
+];
+
+function positionCategoryLabel(category: ActionCategory): string {
+  const found = ACTION_CATEGORIES.find((c) => c.id === category);
+  return found ? t(found.label) : t(String(category));
+}
+
+function positionCard(p: PositionRecord): string {
+  const focused = state.lastPositionFocusId === p.id;
+  const explorer = p.txid
+    ? `<a class="positions-tx" href="${escapeHtml(explorerUrl(p.txid, p.cluster))}" target="_blank" rel="noreferrer">${escapeHtml(t('View transaction'))}</a>`
+    : '';
+  return `
+    <div class="positions-card ${focused ? 'positions-card-focused' : ''}" data-position-id="${escapeHtml(p.id)}">
+      <div class="positions-card-head">
+        <span class="positions-badge">${escapeHtml(positionCategoryLabel(p.category))}</span>
+        <span class="positions-opened">${escapeHtml(tf('Opened {when}', { when: formatDateTime(p.openedAt) }))}</span>
+      </div>
+      <div class="positions-card-summary">${escapeHtml(p.summary || positionCategoryLabel(p.category))}</div>
+      <div class="positions-card-actions">
+        ${explorer}
+        <button class="utility" data-position-manage="${escapeHtml(p.id)}">${escapeHtml(t('Manage'))}</button>
+        <button class="utility" data-position-close="${escapeHtml(p.id)}">${escapeHtml(t('Move to Done'))}</button>
+      </div>
+    </div>
+  `;
+}
+
+function positionsSectionTitle(id: PositionSectionId): string {
+  switch (id) {
+    case 'orders': return t('Orders');
+    case 'lending': return t('Lending');
+    case 'borrowing': return t('Borrowing');
+    case 'staking': return t('Staking');
+    case 'liquidity': return t('Liquidity');
+    case 'perps': return t('Perps');
+  }
+}
+function positionsSectionBlurb(id: PositionSectionId): string {
+  switch (id) {
+    case 'orders': return t('Open limit orders and active DCA plans.');
+    case 'lending': return t('Supplied assets earning yield.');
+    case 'borrowing': return t('Outstanding debt and collateral.');
+    case 'staking': return t('Staked SOL and liquid-staking tokens.');
+    case 'liquidity': return t('Provided liquidity positions and fees.');
+    case 'perps': return t('Open perpetual positions.');
+  }
+}
+
+function positionsSectionCount(section: (typeof POSITIONS_SECTIONS)[number], open: PositionRecord[]): number {
+  const live = state.positionsLive[section.id];
+  if (live && live.cluster === state.cluster && !live.error) return live.rows.length;
+  return open.filter((p) => section.categories.includes(p.category)).length;
+}
+
+function positionsSelector(open: PositionRecord[]): string {
+  const tabs = POSITIONS_SECTIONS.map((section) => {
+    const count = positionsSectionCount(section, open);
+    const active = state.positionsCategory === section.id;
+    const countPill = count ? ` <span class="positions-tab-count">${count}</span>` : '';
+    return `<button class="positions-tab ${active ? 'active' : ''}" role="tab" aria-selected="${active ? 'true' : 'false'}" data-positions-tab="${escapeHtml(section.id)}">${escapeHtml(positionsSectionTitle(section.id))}${countPill}</button>`;
+  }).join('');
+  return `<div class="positions-selector" role="tablist">${tabs}</div>`;
+}
+
+function positionsEmpty(): string {
+  return `<p class="positions-empty">${escapeHtml(t('Nothing open here yet. Open one from New Request, sign it, and it lands here to monitor and manage.'))}</p>`;
+}
+
+function positionsRefreshButton(section: PositionSectionId, entry?: PositionsLiveEntry): string {
+  const when = entry && entry.fetchedAt ? formatRelativeTime(new Date(entry.fetchedAt).toISOString()) : '';
+  return `<div class="positions-refresh-row"><button class="utility" data-positions-refresh="${escapeHtml(section)}" ${entry?.loading ? 'disabled' : ''}>${escapeHtml(entry?.loading ? t('Refreshing…') : t('Refresh'))}</button>${when ? `<span class="positions-updated">${escapeHtml(tf('Updated {when}', { when }))}</span>` : ''}</div>`;
+}
+
+function positionsPanel(): string {
+  const mobile = isMobileAppViewport();
+  const open = openPositions();
+  const section = POSITIONS_SECTIONS.find((s) => s.id === state.positionsCategory) ?? POSITIONS_SECTIONS[0]!;
+  const live = section.id !== 'perps';
+  if (live && state.address) {
+    const cur = state.positionsLive[section.id];
+    if (!cur || cur.cluster !== state.cluster) void fetchPositionCategory(section.id); // lazy: sets loading+cluster synchronously
+  }
+  const rawEntry = state.positionsLive[section.id];
+  const entry = rawEntry && rawEntry.cluster === state.cluster ? rawEntry : undefined;
+  const seededCards = open.filter((p) => section.categories.includes(p.category));
+
+  let toolbar = '';
+  let body: string;
+  if (section.id === 'perps') {
+    body = `<p class="positions-empty">${escapeHtml(t('Perps positions are not available yet — Jupiter\'s perps API is still in progress.'))}</p>`;
+  } else if (!live) {
+    body = seededCards.length ? seededCards.map(positionCard).join('') : positionsEmpty();
+  } else if (entry?.loading && !entry.rows.length) {
+    body = `<p class="positions-empty">${escapeHtml(t('Loading your positions…'))}</p>`;
+  } else if (entry && !entry.error) {
+    toolbar = positionsRefreshButton(section.id, entry);
+    if (entry.rows.length) {
+      body = entry.rows.map(positionLiveCard).join('');
+    } else {
+      // Live read succeeded but is empty — a just-signed position may not be on-chain yet. Show recent
+      // seeded bridge-records as "Pending confirmation" instead of a misleading "nothing open".
+      const pending = seededCards.filter(positionIsRecentlyOpened);
+      body = pending.length
+        ? `<p class="positions-note">${escapeHtml(t('Pending confirmation — your new position is being confirmed on-chain and will appear here shortly.'))}</p>` +
+          pending.map(positionCard).join('')
+        : positionsEmpty();
+    }
+  } else {
+    const hint = entry?.error === 'signed-out'
+      ? t('Sign in to Agentic Cloud or connect a local bridge to see live position details.')
+      : t('Could not refresh live data — showing what you opened. Tap refresh to retry.');
+    toolbar = positionsRefreshButton(section.id, entry);
+    // Only claim "showing what you opened" when a seeded fallback exists; else the empty copy is right.
+    const showHint = entry?.error === 'signed-out' || seededCards.length > 0;
+    body = (showHint ? `<p class="positions-note">${escapeHtml(hint)}</p>` : '') + (seededCards.length ? seededCards.map(positionCard).join('') : positionsEmpty());
+  }
+
+  return `
+    <section class="approval-object signature-stage stage-anchor positions-stage ${mobile ? 'mobile-positions-stage' : ''} ${open.length ? 'stage-active' : 'stage-draft'}">
+      <div class="signature-object-head">
+        ${sectionTitleLine(t('Positions'), t('Monitor and manage everything you have open — orders, lending, borrowing, staking, liquidity, and perps. A manage action returns to Needs Approval to sign.'))}
+        <div class="generated-plans-toolbar signature-toolbar">
+          <span class="signature-state">${escapeHtml(tf('{n} open in {section}', { n: positionsSectionCount(section, open), section: positionsSectionTitle(section.id) }))}</span>
+        </div>
+      </div>
+      ${positionsSelector(open)}
+      <div class="positions-section" data-positions-section="${escapeHtml(section.id)}" role="tabpanel" aria-label="${escapeHtml(positionsSectionTitle(section.id))}">
+        <div class="positions-section-head">
+          <strong>${escapeHtml(positionsSectionTitle(section.id))}</strong>
+          <span>${escapeHtml(positionsSectionBlurb(section.id))}</span>
+        </div>
+        ${toolbar}
+        <div class="positions-section-body">${body}</div>
+      </div>
+    </section>
+  `;
+}
+
 const REQUIRED_MORE_SURFACES: Record<string, { label: string; render: () => string }> = {
   'agent-protocols': { label: 'Agent Payments', render: renderAgentProtocolsPanel },
   skills: { label: 'Skills', render: renderSkillsPanel },
   sessions: { label: 'Spending Sessions', render: renderSessionsPanel },
+  positions: { label: 'Positions', render: positionsPanel },
 };
 
 function moreMenuItems(): WorkspaceMoreMenuItem[] {
@@ -64623,6 +65741,7 @@ function toastStack(): string {
               <div>
                 <strong>${escapeHtml(toast.title)}</strong>
                 ${toast.message ? `<p>${escapeHtml(toast.message)}</p>` : ''}
+                ${toast.copyValue ? `<div class="toast-command"><code>${escapeHtml(toast.copyValue)}</code><button class="toast-copy-button" type="button" data-copy="${escapeHtml(toast.copyValue)}" data-copy-name="${escapeHtml(toast.copyLabel ?? t('command'))}">${escapeHtml(t('Copy'))}</button></div>` : ''}
                 ${toast.linkHref ? `<a href="${escapeHtml(toast.linkHref)}" target="_blank" rel="noreferrer">${escapeHtml(toast.linkLabel ?? t('Open link'))}</a>` : ''}
                 ${toast.actionUrl ? `<button class="toast-action-button" type="button" data-toast-action-url="${escapeHtml(toast.actionUrl)}"${toast.actionReForeground ? ' data-toast-action-reforeground="1"' : ''}>${escapeHtml(toast.actionLabel ?? t('Open'))}</button>` : ''}
               </div>
@@ -66836,14 +67955,19 @@ async function ensureChatSessionMessagesLoaded(sessionId: string): Promise<void>
 }
 
 // On sign-in, push local-only / local-newer sessions up to the cloud (idempotent
-// per-session PUT). Stubs are skipped (cloud copy is authoritative).
-function pushLocalChatSessionsToCloud(): void {
-  if (!chatCloudSyncEnabled()) return;
+// per-session PUT). Stubs are skipped (cloud copy is authoritative). Returns the
+// number of local sessions queued for upload so the sign-in summary can reassure
+// the user their chat history is moving to storage.
+function pushLocalChatSessionsToCloud(): number {
+  if (!chatCloudSyncEnabled()) return 0;
+  let queued = 0;
   for (const session of state.chat.sessions) {
     if (chatSessionIsCloudStub(session)) continue;
     if (session.messages.length === 0) continue;
     void syncChatSessionToCloud(session.id);
+    queued += 1;
   }
+  return queued;
 }
 
 function loadLocalCompletedPlans(walletAddress = ''): CompletedPlanRecord[] {
@@ -66875,6 +67999,84 @@ function saveLocalCompletedPlans(): void {
     }
   } catch {
     // Best-effort completed history persistence.
+  }
+}
+
+function isPositionRecord(value: unknown): value is PositionRecord {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.id === 'string' &&
+    typeof v.category === 'string' &&
+    typeof v.kind === 'string' &&
+    (v.status === 'open' || v.status === 'closed')
+  );
+}
+
+function loadPositions(walletAddress = ''): PositionRecord[] {
+  try {
+    const legacy = localStorageJsonArray(POSITIONS_STORAGE_KEY);
+    const scoped = walletAddress
+      ? localStorageJsonArray(walletScopedStorageKey(POSITIONS_STORAGE_KEY, walletAddress))
+      : [];
+    const byId = new Map<string, PositionRecord>();
+    for (const value of [...legacy, ...scoped]) {
+      if (!isPositionRecord(value)) continue;
+      if (walletAddress && value.walletAddress && value.walletAddress !== walletAddress) continue;
+      byId.set(value.id, value);
+    }
+    return [...byId.values()];
+  } catch {
+    return [];
+  }
+}
+
+function savePositions(): void {
+  try {
+    window.localStorage.setItem(POSITIONS_STORAGE_KEY, JSON.stringify(state.positions));
+    if (state.address) {
+      window.localStorage.setItem(
+        walletScopedStorageKey(POSITIONS_STORAGE_KEY, state.address),
+        JSON.stringify(state.positions),
+      );
+    }
+  } catch {
+    // Best-effort positions persistence.
+  }
+}
+
+function loadPositionsClosed(walletAddress = ''): Record<string, { kind: string; metrics: PositionClosedMetrics }> {
+  try {
+    const scoped = walletAddress ? window.localStorage.getItem(walletScopedStorageKey(POSITIONS_CLOSED_STORAGE_KEY, walletAddress)) : null;
+    const raw = scoped ?? window.localStorage.getItem(POSITIONS_CLOSED_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function savePositionsClosed(): void {
+  try {
+    // Cap growth: keep the ~300 most recently captured (insertion order), prune the rest.
+    const keys = Object.keys(state.positionsClosed);
+    if (keys.length > 300) {
+      const trimmed: typeof state.positionsClosed = {};
+      for (const k of keys.slice(keys.length - 300)) {
+        const v = state.positionsClosed[k];
+        if (v) trimmed[k] = v;
+      }
+      state.positionsClosed = trimmed;
+    }
+    window.localStorage.setItem(POSITIONS_CLOSED_STORAGE_KEY, JSON.stringify(state.positionsClosed));
+    if (state.address) {
+      window.localStorage.setItem(
+        walletScopedStorageKey(POSITIONS_CLOSED_STORAGE_KEY, state.address),
+        JSON.stringify(state.positionsClosed),
+      );
+    }
+  } catch {
+    // Best-effort closed-metrics persistence.
   }
 }
 

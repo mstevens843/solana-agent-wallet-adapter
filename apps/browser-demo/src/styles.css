@@ -14335,6 +14335,55 @@ button.danger:hover:not(:disabled) {
   background: rgba(83, 207, 145, 0.2);
 }
 
+/* A toast carrying a CLI command must show the WHOLE command (it was being clipped
+   by the 160px max-height + the 3-line clamp on .toast p). Let those toasts grow and
+   render the command in a wrapping, scrollable, copyable code row. */
+.toast:has(.toast-command) {
+  max-height: none;
+}
+
+.toast-command {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  min-width: 0;
+}
+
+.toast-command code {
+  background: rgba(0, 0, 0, 0.32);
+  border: 1px solid rgba(139, 205, 170, 0.2);
+  border-radius: calc(var(--radius) - 4px);
+  color: var(--text);
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  max-height: 96px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.toast .toast-copy-button {
+  align-self: flex-start;
+  background: rgba(83, 207, 145, 0.14);
+  border: 1px solid rgba(83, 207, 145, 0.34);
+  border-radius: calc(var(--radius) - 2px);
+  color: var(--accent-2);
+  font-size: 0.8rem;
+  font-weight: 800;
+  min-height: 32px;
+  min-width: 0;
+  padding: 0 12px;
+}
+
+.toast .toast-copy-button:hover {
+  background: rgba(83, 207, 145, 0.2);
+}
+
 .trust-chain,
 .timeline,
 .actions,
@@ -36620,3 +36669,101 @@ button.danger:hover:not(:disabled) {
 }
 .android-shell .chat-disclaimer,
 .ios-native-shell .chat-disclaimer { padding: 0 0 2px; }
+
+/* Positions tab — monitor + manage live stateful positions (orders/lending/borrowing/staking/liquidity/perps). */
+.positions-selector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+.positions-tab {
+  background: var(--card, rgba(255, 255, 255, 0.03));
+  border: 1px solid rgba(224, 230, 226, 0.1);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 6px 14px;
+}
+.positions-tab.active {
+  background: rgba(61, 220, 151, 0.12);
+  border-color: var(--accent, #3ddc97);
+  color: var(--text);
+}
+.positions-tab-count {
+  background: var(--accent, #3ddc97);
+  border-radius: 999px;
+  color: #04130d;
+  font-size: 0.68rem;
+  font-weight: 700;
+  margin-left: 4px;
+  padding: 1px 7px;
+}
+.positions-sections { display: flex; flex-direction: column; gap: 18px; }
+.positions-section-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
+.positions-section-head strong { color: var(--text); font-size: 0.95rem; }
+.positions-section-head span { color: var(--muted); font-size: 0.8rem; }
+.positions-section-body {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 282px), 1fr));
+}
+.positions-empty { color: var(--muted); font-size: 0.82rem; margin: 0; padding: 10px 0; }
+.positions-card {
+  background: var(--card, rgba(255, 255, 255, 0.03));
+  border: 1px solid rgba(224, 230, 226, 0.1);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+}
+.positions-card-focused { border-color: var(--accent, #3ddc97); box-shadow: 0 0 0 1px var(--accent, #3ddc97); }
+.positions-card-head { align-items: center; display: flex; gap: 10px; justify-content: space-between; }
+.positions-badge {
+  background: rgba(61, 220, 151, 0.12);
+  border-radius: 999px;
+  color: var(--accent, #3ddc97);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 3px 10px;
+  text-transform: uppercase;
+}
+.positions-opened { color: var(--muted); font-size: 0.74rem; }
+.positions-card-summary { color: var(--text); font-size: 0.88rem; line-height: 1.4; }
+.positions-card-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
+.positions-tx { color: var(--muted); font-size: 0.78rem; margin-right: auto; text-decoration: underline; }
+.positions-connector { color: var(--muted); font-size: 0.72rem; font-weight: 600; }
+.positions-status { color: var(--muted); font-size: 0.72rem; margin-left: auto; text-transform: capitalize; }
+.positions-distance { color: var(--accent, #3ddc97); font-size: 0.78rem; font-weight: 600; margin-left: 6px; }
+.positions-details {
+  display: grid;
+  gap: 6px 14px;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  margin: 2px 0;
+}
+.positions-detail dt { color: var(--muted); font-size: 0.68rem; letter-spacing: 0.02em; text-transform: uppercase; }
+.positions-detail dd { color: var(--text); font-size: 0.85rem; margin: 0; }
+.positions-detail.tone-good dd { color: var(--accent, #3ddc97); }
+.positions-detail.tone-warn dd { color: #f5c451; }
+.positions-detail.tone-bad dd { color: #f0726b; }
+.positions-progress { align-items: center; display: flex; gap: 8px; }
+.positions-progress-track { background: rgba(224, 230, 226, 0.12); border-radius: 999px; flex: 1; height: 6px; overflow: hidden; }
+.positions-progress-fill { background: var(--accent, #3ddc97); border-radius: 999px; display: block; height: 100%; }
+.positions-progress-label { color: var(--muted); font-size: 0.72rem; font-weight: 600; }
+.positions-refresh-row { align-items: center; display: flex; gap: 10px; margin-bottom: 10px; }
+.positions-updated { color: var(--muted); font-size: 0.72rem; }
+.positions-note { color: var(--muted); font-size: 0.8rem; margin: 0 0 10px; }
+.positions-status { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.positions-extra { opacity: 0.82; }
+/* Mobile (Capacitor dock): single-column cards, horizontally-scrollable selector, stacked actions. */
+.mobile-positions-stage .positions-selector { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 4px; }
+.mobile-positions-stage .positions-tab { flex: 0 0 auto; white-space: nowrap; }
+.mobile-positions-stage .positions-section-body { grid-template-columns: 1fr; }
+.mobile-positions-stage .positions-card { padding: 12px; }
+.mobile-positions-stage .positions-card-head { flex-wrap: wrap; row-gap: 4px; }
+.mobile-positions-stage .positions-card-actions { flex-direction: column; align-items: stretch; }
+.mobile-positions-stage .positions-card-actions button { width: 100%; }

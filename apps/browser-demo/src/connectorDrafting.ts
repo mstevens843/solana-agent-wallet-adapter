@@ -174,6 +174,17 @@ export const ACTION_CATEGORIES: ReadonlyArray<{ id: ActionCategory; label: strin
   { id: 'read', label: 'Evidence', group: 'more' },
 ];
 
+// Stateful actions open a position that lives on after the single signature (Jupiter/keeper-side or
+// on-chain) and must be monitored + managed afterward — they route to the Positions tab post-sign
+// instead of straight to Done. Terminal actions (swap/send/proof/etc.) execute and go straight to Done.
+export const STATEFUL_ACTION_CATEGORIES: ReadonlySet<ActionCategory> = new Set<ActionCategory>([
+  'limit', 'dca', 'lend', 'borrow', 'stake', 'lp', 'perps',
+]);
+
+export function isStatefulActionCategory(category: ActionCategory | '' | null | undefined): boolean {
+  return Boolean(category) && STATEFUL_ACTION_CATEGORIES.has(category as ActionCategory);
+}
+
 export function subActionCategory(option: ConnectorSubAction): ActionCategory | undefined {
   return option.actionType ? ACTION_TYPE_CATEGORY[option.actionType] : undefined;
 }

@@ -10,6 +10,7 @@ export interface WorkspaceMoreMenuItem {
 }
 
 export const REQUIRED_WORKSPACE_MORE_MENU_ITEMS: readonly WorkspaceMoreMenuItem[] = [
+  { id: 'positions', label: 'Positions' },
   { id: 'schedule', label: 'Repeat Payments' },
   { id: 'labs', label: 'Save Proof' },
   { id: 'agent-protocols', label: 'Agent Payments' },
@@ -20,6 +21,7 @@ export const REQUIRED_WORKSPACE_MORE_MENU_ITEMS: readonly WorkspaceMoreMenuItem[
 export const MOBILE_WORKSPACE_MORE_MENU_ITEMS: readonly WorkspaceMoreMenuItem[] = [
   { id: 'preferences', label: 'Preferences' },
   { id: 'completed', label: 'Done' },
+  { id: 'positions', label: 'Positions' },
   { id: 'schedule', label: 'Repeat Payments' },
   { id: 'labs', label: 'Save Proof' },
   { id: 'agent-protocols', label: 'Agent Payments' },

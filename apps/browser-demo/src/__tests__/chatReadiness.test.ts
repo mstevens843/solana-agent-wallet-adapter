@@ -55,4 +55,16 @@ describe('chat readiness copy', () => {
       hostedRelayAvailable: false,
     })).toBeNull();
   });
+
+  it('does not gate a configured STANDALONE Device Agent on cloud relay sign-in', () => {
+    // The on-device API-key Device Agent (not paired) runs the planner locally — it
+    // must never demand a Hosted BYOK / Agentic Cloud sign-in.
+    expect(chatHostedRelayReadinessError({
+      mode: 'device-agent',
+      apiKeyConfigured: false,
+      deviceAgentConfigured: true,
+      pairedPlanConnector: false,
+      hostedRelayAvailable: false,
+    })).toBeNull();
+  });
 });
