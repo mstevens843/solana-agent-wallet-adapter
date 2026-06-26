@@ -104,6 +104,32 @@ describe('evaluateAtom — token_metric', () => {
   });
 });
 
+describe('evaluateAtom — coin_metric', () => {
+  it('passes a market-cap-rank gate and formats the rank with #', () => {
+    const atom: AgentAtom = { id: 'atom.coin_metric.market_cap_rank.lt.100', type: 'coin_metric', rawText: 'rank < 100', field: 'market_cap_rank', op: 'lt', value: 100, subject: 'sol' };
+    const out = evaluateAtom(atom, { numeric: 6, source: 'coingecko' });
+    expect(out.pass).toBe(true);
+    expect(out.finding.label).toBe('SOL market-cap rank');
+    expect(out.finding.value).toContain('#6');
+    expect(out.finding.value).toContain('coingecko');
+  });
+
+  it('fails an ATH-distance gate and formats a percentage', () => {
+    const atom: AgentAtom = { id: 'atom.coin_metric.ath_change_pct.lte.-50', type: 'coin_metric', rawText: 'down 50% from ATH', field: 'ath_change_pct', op: 'lte', value: -50 };
+    const out = evaluateAtom(atom, { numeric: -12.5, source: 'coingecko' });
+    expect(out.pass).toBe(false);
+    expect(out.finding.tone).toBe('fail');
+    expect(out.finding.value).toContain('-12.50%');
+  });
+
+  it('reports unresolved (warn) when CoinGecko has no data for the token', () => {
+    const atom: AgentAtom = { id: 'atom.coin_metric.max_supply.lt.1000000000', type: 'coin_metric', rawText: 'max supply < 1B', field: 'max_supply', op: 'lt', value: 1_000_000_000 };
+    const out = evaluateAtom(atom, undefined);
+    expect(out.unresolved).toBe(true);
+    expect(out.finding.tone).toBe('warn');
+  });
+});
+
 describe('evaluateAtom — market_regime', () => {
   it('passes Fear & Greed above threshold with classification surfaced', () => {
     const atom: AgentAtom = { id: 'atom.market_regime.fear_and_greed.gt.20', type: 'market_regime', rawText: 'F&G > 20', subject: 'fear_and_greed', op: 'gt', value: 20 };

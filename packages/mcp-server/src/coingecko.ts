@@ -343,6 +343,86 @@ export async function requestCoinGeckoGlobal(
   return snapshot;
 }
 
+const numField = (record: Record<string, unknown> | undefined, key: string): number | undefined =>
+  record && typeof record[key] === 'number' && Number.isFinite(record[key] as number) ? (record[key] as number) : undefined;
+
+export interface CoinGeckoCoinMarket {
+  found: boolean;
+  id?: string;
+  symbol?: string;
+  name?: string;
+  marketCapRank?: number;
+  usdPrice?: number;
+  ath?: number;
+  athChangePct?: number;
+  atl?: number;
+  atlChangePct?: number;
+  maxSupply?: number;
+  totalSupply?: number;
+  circulatingSupply?: number;
+  priceChange24h?: number;
+  priceChange7d?: number;
+  priceChange30d?: number;
+}
+
+// Cross-chain coin market metrics from /coins/{id} or /coins/{network}/contract/{mint}.
+// Carries market_cap_rank + ATH distance + supply that the Jupiter/BirdEye DEX data lacks.
+export async function requestCoinGeckoCoinMarket(
+  ref: { id?: string; mint?: string; network?: string },
+  options: { env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch } = {},
+): Promise<CoinGeckoCoinMarket | undefined> {
+  const network = ref.network?.trim() || 'solana';
+  const path = ref.id?.trim()
+    ? `/coins/${encodeURIComponent(ref.id.trim())}`
+    : ref.mint?.trim()
+      ? `/coins/${encodeURIComponent(network)}/contract/${encodeURIComponent(ref.mint.trim())}`
+      : undefined;
+  if (!path) return undefined;
+  const payload = await requestCoinGecko(path, {
+    env: options.env,
+    fetchImpl: options.fetchImpl,
+    query: { localization: false, tickers: false, community_data: false, developer_data: false, sparkline: false },
+  });
+  const md = asJsonRecord(payload.market_data);
+  return {
+    found: true,
+    ...(stringField(payload, 'id') ? { id: stringField(payload, 'id') } : {}),
+    ...(stringField(payload, 'symbol') ? { symbol: stringField(payload, 'symbol')!.toUpperCase() } : {}),
+    ...(stringField(payload, 'name') ? { name: stringField(payload, 'name') } : {}),
+    marketCapRank: numField(payload, 'market_cap_rank') ?? numField(md, 'market_cap_rank'),
+    usdPrice: numField(asJsonRecord(md?.current_price), 'usd'),
+    ath: numField(asJsonRecord(md?.ath), 'usd'),
+    athChangePct: numField(asJsonRecord(md?.ath_change_percentage), 'usd'),
+    atl: numField(asJsonRecord(md?.atl), 'usd'),
+    atlChangePct: numField(asJsonRecord(md?.atl_change_percentage), 'usd'),
+    maxSupply: numField(md, 'max_supply'),
+    totalSupply: numField(md, 'total_supply'),
+    circulatingSupply: numField(md, 'circulating_supply'),
+    priceChange24h: numField(md, 'price_change_percentage_24h'),
+    priceChange7d: numField(md, 'price_change_percentage_7d'),
+    priceChange30d: numField(md, 'price_change_percentage_30d'),
+  };
+}
+
+// Cross-chain trending coins (by search volume) from /search/trending.
+export async function requestCoinGeckoTrending(
+  options: { env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch } = {},
+): Promise<Array<{ symbol?: string; name?: string; id?: string; marketCapRank?: number; priceBtc?: number }>> {
+  const payload = await requestCoinGecko('/search/trending', { env: options.env, fetchImpl: options.fetchImpl });
+  const coins = Array.isArray(payload.coins) ? payload.coins : [];
+  return coins.slice(0, 12).map((entry) => {
+    const item = asJsonRecord(asJsonRecord(entry)?.item) ?? asJsonRecord(entry) ?? {};
+    const data = asJsonRecord(item.data);
+    return {
+      ...(stringField(item, 'symbol') ? { symbol: stringField(item, 'symbol')!.toUpperCase() } : {}),
+      ...(stringField(item, 'name') ? { name: stringField(item, 'name') } : {}),
+      ...(stringField(item, 'id') ? { id: stringField(item, 'id') } : {}),
+      ...(numField(item, 'market_cap_rank') !== undefined ? { marketCapRank: numField(item, 'market_cap_rank') } : {}),
+      ...(numField(data, 'price_btc') !== undefined ? { priceBtc: numField(data, 'price_btc') } : {}),
+    };
+  });
+}
+
 async function readCoinGeckoGlobalCache(env: NodeJS.ProcessEnv = process.env): Promise<CoinGeckoGlobalSnapshot | undefined> {
   const now = Date.now();
   if (coinGeckoGlobalCache && now - coinGeckoGlobalCache.fetchedAtMs < COINGECKO_GLOBAL_TTL_MS) {

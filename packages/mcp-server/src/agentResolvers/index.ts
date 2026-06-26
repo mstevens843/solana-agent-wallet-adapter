@@ -45,6 +45,8 @@ import type {
   TokenHeldDurationAtom,
   TokenMetricAtom,
   TokenMetricField,
+  CoinMetricAtom,
+  CoinMetricField,
   TokenSupplyAtom,
   TxFeeAtom,
   WalletAgeOnchainAtom,
@@ -62,6 +64,7 @@ import { requestBirdeyeTokenSecurity } from '../birdeye.js';
 import {
   requestCoinGecko,
   requestCoinGeckoGlobal,
+  requestCoinGeckoCoinMarket,
   type CoinGeckoGlobalSnapshot,
 } from '../coingecko.js';
 import { getMintCreationTxForMint } from '../helius.js';
@@ -262,6 +265,11 @@ export function createMcpCapabilityResolver(deps: McpResolverDeps) {
       if (provider === 'jupiter') return jupiterTokenMetric(atom, config, requestContext);
       // BirdEye token_overview fallback is not wired in the default resolver; fall through.
       if (provider === 'birdeye') return missing('birdeye', 'BirdEye token_overview resolver not enabled in the default resolver; falling through.', 'token_overview');
+      if (provider === 'web') return missing('web', 'deferred_to_research_pass');
+    }
+    // -------- coin_metric atoms (CoinGecko rank / ATH distance / supply) ------
+    if (atom.type === 'coin_metric') {
+      if (provider === 'coingecko') return coingeckoCoinMetric(atom, requestContext);
       if (provider === 'web') return missing('web', 'deferred_to_research_pass');
     }
     // -------- external_price atoms (web-only) --------------------------------
@@ -543,6 +551,45 @@ async function jupiterTokenMetric(
     return ok('jupiter', { numeric: value, ...(text ? { text } : {}) }, 'token_evidence');
   } catch (err) {
     return error('jupiter', err, 'token_evidence');
+  }
+}
+
+function coinMetricValue(field: CoinMetricField, m: Awaited<ReturnType<typeof requestCoinGeckoCoinMarket>>): number | undefined {
+  if (!m) return undefined;
+  switch (field) {
+    case 'market_cap_rank': return m.marketCapRank;
+    case 'ath_change_pct': return m.athChangePct;
+    case 'atl_change_pct': return m.atlChangePct;
+    case 'max_supply': return m.maxSupply;
+    case 'circulating_supply': return m.circulatingSupply;
+    case 'price_change_7d': return m.priceChange7d;
+    case 'price_change_30d': return m.priceChange30d;
+  }
+}
+
+// Resolve a coin_metric gate via CoinGecko. Subject can be a symbol (mapped to a coin id),
+// a base58 mint (resolved by contract), or — when unnamed — the swap output token from the
+// draft. Untracked tokens return missing (graceful unresolved), never a false deny.
+async function coingeckoCoinMetric(
+  atom: CoinMetricAtom,
+  requestContext: { draftParameters?: Record<string, string> } | undefined,
+): Promise<CapabilityResolutionAttempt<{ numeric: number; text?: string }>> {
+  const params = requestContext?.draftParameters ?? {};
+  const subject = (atom.subject ?? params['outputToken'] ?? params['outputMint'] ?? params['token'] ?? params['mint'] ?? '').trim();
+  if (!subject) return missing('coingecko', 'coin_metric has no token (no named subject and no swap output token in context).', 'coins');
+  const upper = subject.toUpperCase();
+  const id = KNOWN_SYMBOL_COINGECKO_IDS[upper];
+  const ref = id ? { id } : subject.length >= 32 ? { mint: subject, network: 'solana' } : undefined;
+  if (!ref) return missing('coingecko', `No CoinGecko coin id for "${subject}" (not a known symbol or a mint).`, 'coins');
+  try {
+    const market = await requestCoinGeckoCoinMarket(ref);
+    const value = coinMetricValue(atom.field, market);
+    if (value === undefined || !Number.isFinite(value)) {
+      return missing('coingecko', `CoinGecko has no ${atom.field} for ${subject}.`, 'coins');
+    }
+    return ok('coingecko', { numeric: value }, 'coins');
+  } catch (err) {
+    return error('coingecko', err, 'coins');
   }
 }
 

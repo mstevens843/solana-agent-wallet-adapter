@@ -296,6 +296,8 @@ export {
   estimateHeliusPriorityFee,
   getAuthorityTimeline,
   getHeliusTransactionHistory,
+  getHeliusAsset,
+  getHeliusAssetsByOwner,
   getMintCreationTxForMint,
   getRecentEnrichedTxsForMint,
   getTransfersByAddress,

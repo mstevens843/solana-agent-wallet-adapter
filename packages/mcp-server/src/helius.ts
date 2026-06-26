@@ -159,6 +159,106 @@ export async function estimateHeliusPriorityFee(
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/* DAS API (assets / NFTs) — getAsset + getAssetsByOwner                       */
+/* -------------------------------------------------------------------------- */
+
+export interface HeliusCompactAsset {
+  mint: string;
+  name?: string;
+  symbol?: string;
+  collection?: string;
+  image?: string;
+  compressed?: boolean;
+  interface?: string;
+  royaltyPct?: number;
+  frozen?: boolean;
+  attributes?: Array<Record<string, unknown>>;
+  creators?: Array<Record<string, unknown>>;
+}
+
+// Project a raw DAS asset into a compact, token-efficient shape. Shared by the server
+// wrappers and the DAS proxy so every path returns identical data.
+export function compactHeliusAsset(asset: Record<string, unknown>): HeliusCompactAsset {
+  const content = asRecord(asset.content);
+  const metadata = asRecord(content?.metadata);
+  const links = asRecord(content?.links);
+  const grouping = Array.isArray(asset.grouping) ? (asset.grouping as unknown[]).map(asRecord) : [];
+  const collection = grouping.find((g) => g?.group_key === 'collection');
+  const royalty = asRecord(asset.royalty);
+  const compression = asRecord(asset.compression);
+  const ownership = asRecord(asset.ownership);
+  const bps = numberField(royalty?.basis_points);
+  const pct = numberField(royalty?.percent);
+  const royaltyPct = bps !== undefined ? bps / 100 : pct !== undefined ? Math.round(pct * 100 * 100) / 100 : undefined;
+  const attributes = Array.isArray(metadata?.attributes)
+    ? (metadata!.attributes as unknown[]).map(asRecord).filter((a): a is Record<string, unknown> => Boolean(a)).slice(0, 12)
+    : undefined;
+  const creators = Array.isArray(asset.creators)
+    ? (asset.creators as unknown[]).map(asRecord).filter((c): c is Record<string, unknown> => Boolean(c)).slice(0, 5).map((c) => ({
+      ...(typeof c.address === 'string' ? { address: c.address } : {}),
+      ...(numberField(c.share) !== undefined ? { share: numberField(c.share) } : {}),
+      ...(typeof c.verified === 'boolean' ? { verified: c.verified } : {}),
+    }))
+    : undefined;
+  return {
+    mint: typeof asset.id === 'string' ? asset.id : '',
+    ...(typeof metadata?.name === 'string' ? { name: metadata.name } : {}),
+    ...(typeof metadata?.symbol === 'string' ? { symbol: metadata.symbol } : {}),
+    ...(typeof collection?.group_value === 'string' ? { collection: collection.group_value } : {}),
+    ...(typeof links?.image === 'string' ? { image: links.image } : {}),
+    ...(typeof compression?.compressed === 'boolean' ? { compressed: compression.compressed } : {}),
+    ...(typeof asset.interface === 'string' ? { interface: asset.interface } : {}),
+    ...(royaltyPct !== undefined ? { royaltyPct } : {}),
+    ...(typeof ownership?.frozen === 'boolean' ? { frozen: ownership.frozen } : {}),
+    ...(attributes && attributes.length ? { attributes } : {}),
+    ...(creators && creators.length ? { creators } : {}),
+  };
+}
+
+export async function getHeliusAsset(mint: string, options: HeliusRequestOptions = {}): Promise<HeliusCompactAsset | undefined> {
+  if (!mint.trim()) return undefined;
+  const config = heliusConfigFromEnv(options.env);
+  const body = {
+    jsonrpc: '2.0',
+    id: 'getAsset',
+    method: 'getAsset',
+    params: { id: mint, options: { showFungible: true, showCollectionMetadata: true } },
+  };
+  const data = await requestHeliusRpc(config.rpcUrl, body, options);
+  const result = asRecord(data.result);
+  return result ? compactHeliusAsset(result) : undefined;
+}
+
+export async function getHeliusAssetsByOwner(
+  owner: string,
+  input: { tokenType?: 'fungible' | 'nonFungible' | 'regularNft' | 'compressedNft' | 'all'; limit?: number; page?: number } = {},
+  options: HeliusRequestOptions = {},
+): Promise<{ total?: number; count: number; items: HeliusCompactAsset[] }> {
+  if (!owner.trim()) return { count: 0, items: [] };
+  const config = heliusConfigFromEnv(options.env);
+  const body = {
+    jsonrpc: '2.0',
+    id: 'getAssetsByOwner',
+    method: 'getAssetsByOwner',
+    params: {
+      ownerAddress: owner,
+      tokenType: input.tokenType ?? 'nonFungible',
+      page: input.page ?? 1,
+      limit: Math.min(Math.max(input.limit ?? 50, 1), 1000),
+      options: { showCollectionMetadata: true },
+    },
+  };
+  const data = await requestHeliusRpc(config.rpcUrl, body, options);
+  const result = asRecord(data.result);
+  const items = Array.isArray(result?.items) ? (result!.items as unknown[]).map(asRecord).filter((a): a is Record<string, unknown> => Boolean(a)) : [];
+  return {
+    ...(numberField(result?.total) !== undefined ? { total: numberField(result?.total) } : {}),
+    count: items.length,
+    items: items.map(compactHeliusAsset),
+  };
+}
+
 export async function sendViaHeliusSender(
   serializedTransaction: string | Buffer,
   options: HeliusRequestOptions = {},

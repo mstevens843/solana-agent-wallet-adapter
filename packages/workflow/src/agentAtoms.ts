@@ -19,6 +19,7 @@ export type AgentAtomType =
   | 'token_audit'
   | 'token_age'
   | 'token_metric'
+  | 'coin_metric'
   | 'tx_gate'
   | 'external_price'
   | 'protocol_health'
@@ -77,6 +78,19 @@ export type TokenMetricField =
   | 'top_holder_pct'
   | 'price_change_24h'
   | 'organic_score';
+
+// CoinGecko cross-chain coin metrics (resolved from /coins/{id}). market_cap_rank is an
+// integer (lower=better); ath_change_pct/atl_change_pct/price_change_7d/30d are %;
+// max_supply/circulating_supply are token counts. Complements token_metric (which is
+// Jupiter Solana-DEX data) for established/listed coins.
+export type CoinMetricField =
+  | 'market_cap_rank'
+  | 'ath_change_pct'
+  | 'atl_change_pct'
+  | 'max_supply'
+  | 'circulating_supply'
+  | 'price_change_7d'
+  | 'price_change_30d';
 
 export type TxGateRule =
   | 'only_requested_swap'
@@ -144,6 +158,15 @@ export interface TokenMetricAtom extends AgentAtomBase {
   type: 'token_metric';
   field: TokenMetricField;
   /** Mint or symbol when explicitly named; undefined means "the swap's output token". */
+  subject?: string;
+  op: AgentAtomOperator;
+  value: number;
+}
+
+export interface CoinMetricAtom extends AgentAtomBase {
+  type: 'coin_metric';
+  field: CoinMetricField;
+  /** Symbol or mint when named; undefined means "the swap's output token". */
   subject?: string;
   op: AgentAtomOperator;
   value: number;
@@ -491,6 +514,7 @@ export type AgentAtom =
   | TokenAuditAtom
   | TokenAgeAtom
   | TokenMetricAtom
+  | CoinMetricAtom
   | TxGateAtom
   | ExternalPriceAtom
   | ProtocolHealthAtom
@@ -742,8 +766,9 @@ function extractTokenMetricAtoms(text: string): ExtractorResult {
     while ((m = re.exec(text)) !== null) push(field, operatorFromText(m[1] ?? ''), usd(m[2] ?? '', m[3]), m);
   }
 
-  // market cap (USD) — but NOT "total (crypto) market cap" (that's a market_regime atom).
-  const mcapRe = new RegExp(`\\b(?:market\\s*cap|mcap|market\\s*capitali[sz]ation)\\b[^.\\n]{0,40}?${OP}\\s*\\$?\\s*([\\d,]+(?:\\.\\d+)?)\\s*([kmbt])?`, 'gi');
+  // market cap (USD) — but NOT "total (crypto) market cap" (that's a market_regime atom)
+  // and NOT "market cap rank ..." (that's a coin_metric atom).
+  const mcapRe = new RegExp(`\\b(?:market\\s*cap|mcap|market\\s*capitali[sz]ation)\\b(?!\\s*rank)[^.\\n]{0,40}?${OP}\\s*\\$?\\s*([\\d,]+(?:\\.\\d+)?)\\s*([kmbt])?`, 'gi');
   while ((m = mcapRe.exec(text)) !== null) {
     if (/\btotal\s+(?:crypto\s+)?$/i.test(text.slice(Math.max(0, m.index - 16), m.index))) continue;
     push('market_cap', operatorFromText(m[1] ?? ''), usd(m[2] ?? '', m[3]), m);
@@ -780,6 +805,49 @@ function extractTokenMetricAtoms(text: string): ExtractorResult {
   }
   const osNumRe = new RegExp(`\\borganic\\s*score\\b[^.\\n]{0,30}?${OP}\\s*(\\d+(?:\\.\\d+)?)\\b(?!\\s*%)`, 'gi');
   while ((m = osNumRe.exec(text)) !== null) push('organic_score', operatorFromText(m[1] ?? ''), Number(m[2]), m);
+
+  return { atoms, spans };
+}
+
+/** CoinGecko cross-chain coin gates — "market cap rank < 100" / "top 100 by market cap",
+ *  "down at least 50% from ATH" / "within 10% of ATH", "max supply under 1B". The 7d/30d
+ *  price-change fields are resolver/LLM-only (no regex) to avoid colliding with the
+ *  token_metric 24h price-change extractor. subject stays undefined → swap output token. */
+function extractCoinMetricAtoms(text: string): ExtractorResult {
+  const atoms: CoinMetricAtom[] = [];
+  const spans: Array<{ start: number; end: number }> = [];
+  const OP = '(above|over|greater than|more than|>=?|below|under|less than|fewer than|<=?|at least|at most|equal to|equals|=|is)';
+  const withSuffix = (base: string, suffix: string | undefined): number => {
+    const n = Number((base ?? '').replace(/,/g, ''));
+    const s = (suffix ?? '').toLowerCase();
+    const mult = s === 't' ? 1e12 : s === 'b' ? 1e9 : s === 'm' ? 1e6 : s === 'k' ? 1e3 : 1;
+    return n * mult;
+  };
+  const push = (field: CoinMetricField, op: AgentAtomOperator | undefined, value: number, m: RegExpExecArray): void => {
+    if (!op || !Number.isFinite(value)) return;
+    atoms.push({ id: atomId(['coin_metric', field, op, value]), type: 'coin_metric', rawText: m[0], field, op, value });
+    spans.push({ start: m.index, end: m.index + m[0].length });
+  };
+  let m: RegExpExecArray | null;
+
+  // market cap rank — "rank < 100", "ranked below 50"
+  const rankRe = new RegExp(`\\b(?:market\\s*cap\\s*)?rank(?:ed|ing)?\\b[^.\\n]{0,25}?${OP}\\s*(\\d+)`, 'gi');
+  while ((m = rankRe.exec(text)) !== null) push('market_cap_rank', operatorFromText(m[1] ?? ''), Number(m[2]), m);
+  // "(in the) top 100 (by market cap / coins)" → rank lte N
+  const topRankRe = /\b(?:in\s*the\s*)?top\s*(\d{1,4})\b[^.\n]{0,18}?(?:by\s*)?(?:market\s*cap|mcap|coins?|ranked|tokens?)\b/gi;
+  while ((m = topRankRe.exec(text)) !== null) push('market_cap_rank', 'lte', Number(m[1]), m);
+
+  // ATH distance — "down ≥50% from ATH" (lte -50) / "within 10% of ATH" (gte -10)
+  const downAthRe = /\b(?:down|dropped?|fallen|off)\s*(?:at least|more than|over|by)?\s*(\d+(?:\.\d+)?)\s*%\s*(?:from|below|under|off|since)\s*(?:its?\s*)?(?:ath|all[-\s]*time\s*high|peak)/gi;
+  while ((m = downAthRe.exec(text)) !== null) push('ath_change_pct', 'lte', -Number(m[1]), m);
+  const withinAthRe = /\bwithin\s*(\d+(?:\.\d+)?)\s*%\s*of\s*(?:its?\s*)?(?:ath|all[-\s]*time\s*high|peak)/gi;
+  while ((m = withinAthRe.exec(text)) !== null) push('ath_change_pct', 'gte', -Number(m[1]), m);
+
+  // max / circulating supply (counts, with k/m/b/t suffix)
+  const maxSupRe = new RegExp(`\\bmax(?:imum)?\\s*supply\\b[^.\\n]{0,30}?${OP}\\s*([\\d,]+(?:\\.\\d+)?)\\s*([kmbt])?`, 'gi');
+  while ((m = maxSupRe.exec(text)) !== null) push('max_supply', operatorFromText(m[1] ?? ''), withSuffix(m[2] ?? '', m[3]), m);
+  const circSupRe = new RegExp(`\\bcirculating\\s*supply\\b[^.\\n]{0,30}?${OP}\\s*([\\d,]+(?:\\.\\d+)?)\\s*([kmbt])?`, 'gi');
+  while ((m = circSupRe.exec(text)) !== null) push('circulating_supply', operatorFromText(m[1] ?? ''), withSuffix(m[2] ?? '', m[3]), m);
 
   return { atoms, spans };
 }
@@ -2276,6 +2344,8 @@ export function extractAtoms(input: ExtractAtomsInput): ExtractAtomsResult {
     // Token market-quality gates run BEFORE crypto-price + external-price so "liquidity
     // > $100k" / "mcap above $1M" don't fall through to a $-threshold price atom.
     () => extractTokenMetricAtoms(text),
+    // CoinGecko cross-chain coin gates (market cap rank / ATH distance / supply).
+    () => extractCoinMetricAtoms(text),
     // Tradfi-price runs BEFORE crypto-price so SPY/GLD/EUR-USD don't fall through to the
     // crypto symbol pattern. Each extractor records its consumed span so the next pass skips.
     () => extractTradfiPriceAtoms(text),

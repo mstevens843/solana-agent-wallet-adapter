@@ -13,6 +13,8 @@ import {
   getConnector,
   makeTransactionSimulator,
   getTransfersByAddress,
+  getHeliusAssetsByOwner,
+  getHeliusAsset,
   listCoinGeckoEndpointCatalog,
   listConnectorCapabilities,
   normalizeConnectorSecretBaseUrl,
@@ -311,6 +313,7 @@ const REGISTERED_API_ROUTES = [
   'POST /api/birdeye/token-list-v3',
   'POST /api/birdeye/wallet-token-list',
   'POST /api/helius/transfers-by-address',
+  'POST /api/helius/das',
   'GET /api/coingecko/endpoints',
   'GET /api/coingecko/global',
   'POST /api/coingecko/read',
@@ -1529,6 +1532,12 @@ async function routeApiRequest(
   if (url.pathname === '/api/helius/transfers-by-address') {
     requireMethod(req, 'POST');
     await handleHeliusTransfersByAddress(req, res, store, clock);
+    return;
+  }
+
+  if (url.pathname === '/api/helius/das') {
+    requireMethod(req, 'POST');
+    await handleHeliusDas(req, res, store, clock);
     return;
   }
 
@@ -2782,6 +2791,31 @@ async function handleHeliusTransfersByAddress(
     paginationToken: optionalBodyString(body, 'paginationToken'),
     commitment: body.commitment === 'confirmed' || body.commitment === 'finalized' ? body.commitment : undefined,
     sortOrder: body.sortOrder === 'asc' ? 'asc' : body.sortOrder === 'desc' ? 'desc' : undefined,
+  })));
+}
+
+async function handleHeliusDas(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required for Helius asset reads.');
+  }
+  const body = asJsonRecord(await readJsonBody(req), 'Helius DAS body');
+  if (body.op === 'asset') {
+    const mint = optionalBodyString(body, 'mint');
+    if (!mint) throw new ApiError(400, 'mint is required.');
+    writeJson(res, 200, await requestHeliusForRender(() => getHeliusAsset(mint).then((a) => a ?? { found: false })));
+    return;
+  }
+  // assets_by_owner — scoped to the signed-in session wallet (body address is ignored).
+  const tokenType = body.tokenType === 'fungible' || body.tokenType === 'all' ? body.tokenType : 'nonFungible';
+  writeJson(res, 200, await requestHeliusForRender(() => getHeliusAssetsByOwner(session.walletAddress, {
+    tokenType,
+    limit: optionalIntegerBodyField(body, 'limit'),
   })));
 }
 

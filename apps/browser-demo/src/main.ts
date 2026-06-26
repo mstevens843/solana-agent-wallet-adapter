@@ -23053,6 +23053,62 @@ function buildClientChatToolDeps(): ClientChatToolDeps {
         return { unavailable: true, error: err instanceof Error ? err.message : String(err) };
       }
     },
+    // Wallet NFTs + single-asset metadata via the Helius DAS proxy (bridge → cloud). The
+    // proxy returns the compact shape from getHeliusAssetsByOwner/getHeliusAsset, so this
+    // matches the server get_wallet_nfts / get_asset output.
+    walletNfts: async (wallet) => {
+      try {
+        const raw = await heliusDasRequest({ op: 'assets_by_owner', address: wallet, tokenType: 'nonFungible', limit: 50 });
+        const items = Array.isArray(raw.items) ? raw.items : [];
+        const nfts = items.slice(0, 20).map((entry) => {
+          const a = asRecord(entry) ?? {};
+          return {
+            name: typeof a.name === 'string' ? a.name : null,
+            collection: typeof a.collection === 'string' ? a.collection : null,
+            mint: typeof a.mint === 'string' ? a.mint : null,
+            ...(a.compressed ? { compressed: true } : {}),
+          };
+        });
+        const total = numberField(raw.total) ?? numberField(raw.count) ?? nfts.length;
+        return { wallet, count: total, showing: nfts.length, nfts, source: 'helius' };
+      } catch (err) {
+        return { wallet, unavailable: true, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    asset: async (mint) => {
+      try {
+        const raw = await heliusDasRequest({ op: 'asset', mint });
+        if (!raw || raw.unavailable || raw.found === false) return { mint, unavailable: true, reason: 'not_found' };
+        return { ...raw, source: 'helius' };
+      } catch (err) {
+        return { mint, unavailable: true, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    // Newly-listed Solana tokens via the existing BirdEye proxy (bridge → cloud).
+    newListings: async () => {
+      try {
+        const raw = await tokenMarketRequest('/new-listings', { limit: 15 });
+        const data = asRecord(raw.data) ?? raw;
+        const items = Array.isArray(data.items) ? data.items : [];
+        const tokens = items.slice(0, 15).map((entry) => {
+          const it = asRecord(entry) ?? {};
+          const ts = numberField(it.liquidityAddedAt);
+          return {
+            symbol: typeof it.symbol === 'string' ? it.symbol : null,
+            mint: typeof it.address === 'string' ? it.address : null,
+            name: typeof it.name === 'string' ? it.name : null,
+            liquidity: numberField(it.liquidity) ?? null,
+            listedAt: typeof it.liquidityAddedAt === 'string' ? it.liquidityAddedAt : ts !== undefined ? new Date(ts * 1000).toISOString() : null,
+          };
+        });
+        return { count: tokens.length, tokens, note: 'newly listed — unvetted, high-risk; verify safety before acting', source: 'birdeye' };
+      } catch (err) {
+        return { unavailable: true, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    // coinMarket / trendingCoins (CoinGecko cross-chain) are intentionally left unwired on
+    // the direct-browser device path — they work on the BYOK-hosted / bridge / single-shot
+    // server paths; on-device they degrade to graceful "unavailable".
   };
 }
 
@@ -60683,6 +60739,36 @@ async function tokenMarketRequest(path: string, body: Record<string, unknown>): 
       recordEvidenceProviderUnavailable('birdeye', cloudPath, response.status, contentType, payload);
       throw new Error(cloudErrorMessage(payload, response.status));
     }
+    return asRecord(payload) ?? {};
+  } catch (err) {
+    if (bridgeError) throw bridgeError;
+    throw err;
+  }
+}
+
+// Helius DAS proxy (bridge → cloud) for wallet NFTs + single-asset metadata. The cloud
+// route scopes assets_by_owner to the signed-in session wallet; asset reads are public.
+async function heliusDasRequest(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  let bridgeError: unknown;
+  if (state.bridgeActive && state.bridgeToken && isTrustedBridgeUrl(state.bridgeUrl)) {
+    try {
+      return await bridgeRequest<Record<string, unknown>>('/bridge/action/helius-das', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      bridgeError = err;
+    }
+  }
+  try {
+    const response = await fetch('/api/helius/das', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json().catch(() => null) as unknown;
+    if (!response.ok) throw new Error(cloudErrorMessage(payload, response.status));
     return asRecord(payload) ?? {};
   } catch (err) {
     if (bridgeError) throw bridgeError;

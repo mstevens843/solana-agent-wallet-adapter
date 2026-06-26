@@ -57,7 +57,7 @@ import {
   requestCoinGeckoGlobal,
   requestCoinGeckoSolanaTokenEvidence,
 } from './coingecko.js';
-import { heliusConfigFromEnv, sendRawTransactionWithRebate } from './helius.js';
+import { heliusConfigFromEnv, sendRawTransactionWithRebate, getHeliusAssetsByOwner, getHeliusAsset } from './helius.js';
 import { defaultRpcUrl, getPhoenixVulcanPolicy, type AgentWalletConfig } from './config.js';
 import { normalizeConnectorSecretBaseUrl } from './connectorSecretUrl.js';
 import { parseDecimalAmount } from './amounts.js';
@@ -762,6 +762,20 @@ async function handleRequest(
     if (req.method === 'POST' && url.pathname === '/bridge/birdeye/exit-liquidity-multi') {
       const body = (await readJson(req)) as { addresses?: unknown };
       writeJson(res, 200, await requestBirdeyeExitLiquidityMulti(requireStringArray(body.addresses, 'addresses')));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/action/helius-das') {
+      const body = (await readJson(req)) as { op?: string; address?: string; mint?: string; tokenType?: string; limit?: number };
+      if (body.op === 'asset') {
+        const mint = typeof body.mint === 'string' ? body.mint.trim() : '';
+        if (!mint) { writeJson(res, 400, { error: 'mint is required' }); return; }
+        writeJson(res, 200, (await getHeliusAsset(mint)) ?? { found: false });
+      } else {
+        const address = typeof body.address === 'string' ? body.address.trim() : '';
+        if (!address) { writeJson(res, 400, { error: 'address is required' }); return; }
+        const tokenType = body.tokenType === 'fungible' || body.tokenType === 'all' ? body.tokenType : 'nonFungible';
+        writeJson(res, 200, await getHeliusAssetsByOwner(address, { tokenType, limit: body.limit }));
+      }
       return;
     }
     if (req.method === 'POST' && url.pathname === '/bridge/birdeye/price-volume') {

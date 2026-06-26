@@ -43,6 +43,8 @@ import type {
   TokenHeldDurationAtom,
   TokenMetricAtom,
   TokenMetricField,
+  CoinMetricAtom,
+  CoinMetricField,
   TokenSupplyAtom,
   TradfiPriceAtom,
   TxFeeAtom,
@@ -212,6 +214,34 @@ function evaluateTokenMetric(atom: TokenMetricAtom, fact: ResolvedFactValue | un
         : atom.field === 'organic_score'
           ? `${Math.round(fact.numeric)}/100${fact.text ? ` (${fact.text})` : ''}`
           : fact.numeric.toLocaleString('en-US');
+  return {
+    atomId: atom.id,
+    pass,
+    finding: { label, value: `${display} — ${fact.source}`, tone: toneFromPass(pass) },
+  };
+}
+
+const COIN_METRIC_LABELS: Record<CoinMetricField, string> = {
+  market_cap_rank: 'market-cap rank',
+  ath_change_pct: 'vs ATH',
+  atl_change_pct: 'vs ATL',
+  max_supply: 'max supply',
+  circulating_supply: 'circulating supply',
+  price_change_7d: '7d change',
+  price_change_30d: '30d change',
+};
+
+function evaluateCoinMetric(atom: CoinMetricAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const token = atom.subject ? atom.subject.toUpperCase() : 'Coin';
+  const label = `${token} ${COIN_METRIC_LABELS[atom.field]}`;
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  const display =
+    atom.field === 'market_cap_rank'
+      ? `#${Math.round(fact.numeric)}`
+      : atom.field === 'ath_change_pct' || atom.field === 'atl_change_pct' || atom.field === 'price_change_7d' || atom.field === 'price_change_30d'
+        ? `${fact.numeric.toFixed(2)}%`
+        : fact.numeric.toLocaleString('en-US');
   return {
     atomId: atom.id,
     pass,
@@ -823,6 +853,7 @@ export function evaluateAtom(atom: AgentAtom, fact: ResolvedFactValue | undefine
     case 'token_audit':                return evaluateTokenAudit(atom, fact);
     case 'token_age':                  return evaluateTokenAge(atom, fact);
     case 'token_metric':               return evaluateTokenMetric(atom, fact);
+    case 'coin_metric':                return evaluateCoinMetric(atom, fact);
     case 'tx_gate':                    return evaluateTxGate(atom, fact);
     case 'external_price':             return evaluateExternalPrice(atom, fact);
     case 'external_state':             return evaluateExternalState(atom, fact);

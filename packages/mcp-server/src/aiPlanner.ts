@@ -78,8 +78,9 @@ import { createMcpCapabilityResolver } from './agentResolvers/index.js';
 import { getJupiterPriceBatch } from './adapters/jupiter/prices.js';
 import { getJupiterTokenCategory, getJupiterTokenSearch } from './adapters/jupiter/tokens.js';
 import { getJupiterTokenRiskEvidence } from './adapters/jupiter/tokenEvidence.js';
-import { requestCoinGeckoGlobal } from './coingecko.js';
-import { getMintCreationTxForMint, getHeliusTransactionHistory } from './helius.js';
+import { requestCoinGeckoGlobal, requestCoinGecko, requestCoinGeckoCoinMarket, requestCoinGeckoTrending } from './coingecko.js';
+import { requestBirdeyeNewListings } from './birdeye.js';
+import { getMintCreationTxForMint, getHeliusTransactionHistory, getHeliusAsset, getHeliusAssetsByOwner } from './helius.js';
 import { AlternativeMeClient } from './adapters/alternative_me/index.js';
 import { DEFAULT_CONFIG, type AgentWalletConfig } from './config.js';
 import type { TransactionSimulator } from './simulationDigest.js';
@@ -1209,6 +1210,32 @@ export class BridgeAiPlanner {
       const data = await resolveChatWalletHistory(wallet);
       return { summary: 'Recent wallet activity', data };
     }
+    if (name === 'get_wallet_nfts') {
+      const wallet = walletAddress.trim();
+      if (!wallet) return { summary: 'No wallet connected.', data: { error: 'wallet not connected' } };
+      const data = await resolveChatWalletNfts(wallet);
+      return { summary: 'Wallet NFTs', data };
+    }
+    if (name === 'get_asset') {
+      const mint = typeof input.mint === 'string' ? input.mint.trim() : '';
+      if (!mint) return { summary: 'No mint provided.', data: { error: 'a base58 mint is required' } };
+      const data = await resolveChatAsset(mint);
+      return { summary: `Asset ${mint.slice(0, 8)}…`, data };
+    }
+    if (name === 'get_coin_market') {
+      const ref = typeof input.query === 'string' && input.query.trim() ? input.query.trim() : query;
+      if (!ref) return { summary: 'No coin provided.', data: { error: 'a coin symbol or mint is required' } };
+      const data = await resolveChatCoinMarket(ref);
+      return { summary: `CoinGecko market for ${ref}`, data };
+    }
+    if (name === 'get_trending_coins') {
+      const data = await resolveChatTrendingCoins();
+      return { summary: 'Trending coins', data };
+    }
+    if (name === 'get_new_listings') {
+      const data = await resolveChatNewListings();
+      return { summary: 'New listings', data };
+    }
     if (name === 'search_tokens') {
       if (!query) return { summary: 'No query provided.', data: { error: 'query is required' } };
       try {
@@ -1304,12 +1331,16 @@ export class BridgeAiPlanner {
     const wantHistory = /\b(my (?:recent )?(?:transactions?|txns?|history|activity)|recent (?:transactions?|activity)|what did i (?:do|send|swap|buy)|last (?:few )?(?:transactions?|txns?))\b/.test(text);
     const wantMarket = /\b(liquidity|market cap|mcap|fdv|fully diluted|24h volume|trading volume|holder count|how many holders|top holders?|concentration|price change|24h change)\b/.test(text);
     const wantTrending = /\b(trending|what'?s hot|hot tokens?|popular tokens?|top (?:gainers|movers|tokens))\b/.test(text);
+    const wantNfts = /\b(my nfts?|nfts? (?:do i|i)\s*(?:own|have|hold)|my collectibles?|what nfts?)\b/.test(text);
+    const wantCoin = /\b(market cap rank|mcap rank|ranked\b|all[-\s]?time high|\bath\b|circulating supply|max supply|how far from)\b/.test(text);
+    const wantTrendingCoins = /\b(trending coins?|trending (?:in )?crypto|cross[-\s]?chain trending|trending overall)\b/.test(text);
+    const wantNewListings = /\b(new listings?|newly listed|just launched|new tokens?|recent listings?|what just launched)\b/.test(text);
     // Connector-action intent (Jupiter lend/borrow/limit/dca/perps/prediction). Requires
     // BOTH a connector token and an action alias (findConnectorAtomByIntent), so it never
     // hijacks generic questions. Only runs when a fact resolver is wired.
     const connectorAtom = this.connectorFactResolver ? findConnectorAtomByIntent(lastUser) : undefined;
     const wantConnector = Boolean(connectorAtom?.factSpec);
-    if (!wantSafety && !wantAge && !wantRegime && !wantHistory && !wantConnector && !wantMarket && !wantTrending) return;
+    if (!wantSafety && !wantAge && !wantRegime && !wantHistory && !wantConnector && !wantMarket && !wantTrending && !wantNfts && !wantCoin && !wantTrendingCoins && !wantNewListings) return;
     const config = this.toolConfig();
     let mint = '';
     if (wantSafety || wantAge || wantMarket) {
@@ -1320,6 +1351,16 @@ export class BridgeAiPlanner {
     if (wantAge && mint) specs.push({ key: 'tokenAge', run: () => resolveChatTokenAge(mint) });
     if (wantMarket && mint) specs.push({ key: 'tokenMarket', run: () => resolveChatTokenMarket(config, mint) });
     if (wantTrending) specs.push({ key: 'trendingTokens', run: () => resolveChatTrending(config, '24h') });
+    if (wantNfts) {
+      const w = effectiveChatWalletAddress(request);
+      if (w) specs.push({ key: 'walletNfts', run: () => resolveChatWalletNfts(w) });
+    }
+    if (wantCoin) {
+      const ref = extractChatTokenRef(lastUser);
+      if (ref) specs.push({ key: 'coinMarket', run: () => resolveChatCoinMarket(ref) });
+    }
+    if (wantTrendingCoins) specs.push({ key: 'trendingCoins', run: () => resolveChatTrendingCoins() });
+    if (wantNewListings) specs.push({ key: 'newListings', run: () => resolveChatNewListings() });
     if (wantRegime) specs.push({ key: 'marketRegime', run: () => resolveChatMarketRegime() });
     if (wantHistory) {
       const wallet = effectiveChatWalletAddress(request);
@@ -3014,6 +3055,96 @@ async function resolveChatWalletHistory(wallet: string): Promise<Record<string, 
   }
 }
 
+// The connected wallet's NFTs via Helius DAS getAssetsByOwner (nonFungible). Floor price
+// is NOT in DAS — that's the Magic Eden / Tensor connectors.
+async function resolveChatWalletNfts(wallet: string): Promise<Record<string, unknown>> {
+  try {
+    const result = await getHeliusAssetsByOwner(wallet, { tokenType: 'nonFungible', limit: 50 });
+    const nfts = result.items.slice(0, 20).map((a) => ({
+      name: a.name ?? null,
+      collection: a.collection ?? null,
+      mint: a.mint,
+      ...(a.compressed ? { compressed: true } : {}),
+    }));
+    return { wallet, count: result.total ?? result.count, showing: nfts.length, nfts, source: 'helius' };
+  } catch (err) {
+    return { wallet, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+// Single asset/NFT metadata by mint via Helius DAS getAsset.
+async function resolveChatAsset(mint: string): Promise<Record<string, unknown>> {
+  try {
+    const asset = await getHeliusAsset(mint);
+    if (!asset) return { mint, unavailable: true, reason: 'not_found' };
+    return { ...asset, source: 'helius' };
+  } catch (err) {
+    return { mint, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+// CoinGecko cross-chain coin metrics (rank / ATH distance / supply) for get_coin_market.
+// Resolves a base58 mint by contract; otherwise resolves the symbol/name via /search.
+async function resolveChatCoinMarket(query: string): Promise<Record<string, unknown>> {
+  const q = query.trim();
+  if (!q) return { query, unavailable: true, error: 'a coin symbol or mint is required' };
+  const cached = chatToolCacheGet(`coin:${q.toLowerCase()}`, CHAT_REGIME_TTL_MS);
+  if (cached) return cached;
+  try {
+    let ref: { id?: string; mint?: string; network?: string } | undefined;
+    if (BASE58_MINT_PATTERN.test(q)) {
+      ref = { mint: q, network: 'solana' };
+    } else {
+      const search = await requestCoinGecko('/search', { query: { query: q } });
+      const coins = Array.isArray(search.coins) ? search.coins : [];
+      const first = coins[0] && typeof coins[0] === 'object' ? (coins[0] as Record<string, unknown>) : undefined;
+      const id = first && typeof first.id === 'string' ? first.id : undefined;
+      if (id) ref = { id };
+    }
+    if (!ref) return { query: q, unavailable: true, reason: 'not_found' };
+    const m = await requestCoinGeckoCoinMarket(ref);
+    if (!m) return { query: q, unavailable: true, reason: 'not_found' };
+    return chatToolCachePut(`coin:${q.toLowerCase()}`, { query: q, ...m, source: 'coingecko' });
+  } catch (err) {
+    return { query: q, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+// CoinGecko cross-chain trending coins for get_trending_coins.
+async function resolveChatTrendingCoins(): Promise<Record<string, unknown>> {
+  const cached = chatToolCacheGet('trending-coins', CHAT_REGIME_TTL_MS);
+  if (cached) return cached;
+  try {
+    const coins = await requestCoinGeckoTrending();
+    return chatToolCachePut('trending-coins', { count: coins.length, coins, source: 'coingecko' });
+  } catch (err) {
+    return { unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+// Newly-listed Solana tokens via BirdEye new_listing. Skews to unvetted/high-risk tokens.
+async function resolveChatNewListings(): Promise<Record<string, unknown>> {
+  const cached = chatToolCacheGet('new-listings', CHAT_REGIME_TTL_MS);
+  if (cached) return cached;
+  try {
+    const raw = await requestBirdeyeNewListings({ limit: 15 });
+    const data = (raw && typeof raw.data === 'object' && raw.data !== null) ? raw.data as Record<string, unknown> : raw;
+    const items = Array.isArray(data?.items) ? data.items as Record<string, unknown>[] : [];
+    const tokens = items.slice(0, 15).map((t) => ({
+      symbol: typeof t.symbol === 'string' ? t.symbol : null,
+      mint: typeof t.address === 'string' ? t.address : null,
+      name: typeof t.name === 'string' ? t.name : null,
+      liquidity: typeof t.liquidity === 'number' ? t.liquidity : null,
+      listedAt: typeof t.liquidityAddedAt === 'string'
+        ? t.liquidityAddedAt
+        : typeof t.liquidityAddedAt === 'number' ? new Date(t.liquidityAddedAt * 1000).toISOString() : null,
+    }));
+    return chatToolCachePut('new-listings', { count: tokens.length, tokens, note: 'newly listed — unvetted, high-risk; verify safety before acting', source: 'birdeye' });
+  } catch (err) {
+    return { unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
 // Extract a token reference (base58 mint / $TICKER / ALLCAPS symbol) from free text.
 function extractChatTokenRef(text: string): string {
   const base58 = text.match(/\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/);
@@ -3237,6 +3368,7 @@ function atomExtractionMessages(text: string, knownTokenSymbols: ReadonlyArray<s
         '(token_audit) {"id":"atom.token_audit.<field>.<expected>","type":"token_audit","rawText":"<snippet>","field":"mint_authority_disabled|freeze_authority_disabled|is_verified","expected":true}; ' +
         '(token_age) {"id":"atom.token_age.<op>.<seconds>","type":"token_age","rawText":"<snippet>","op":"gt|gte|lt|lte","value":<seconds_int>}; ' +
         '(token_metric) {"id":"atom.token_metric.<field>.<op>.<value>","type":"token_metric","rawText":"<snippet>","field":"liquidity|market_cap|fdv|volume_24h|holder_count|top_holder_pct|price_change_24h|organic_score","subject":"<optional token symbol/mint; omit for the swap output token>","op":"gt|gte|lt|lte|eq","value":<number>}; use token_metric for token quality/market gates: liquidity/market_cap/fdv/volume_24h in raw USD; holder_count as a count; top_holder_pct/price_change_24h as percentages (down 25% → value -25); organic_score 0-100 (high=70, medium=40); encode the APPROVE-safe threshold so pass means OK (e.g. "not down more than 25%" → price_change_24h gte -25); ' +
+        '(coin_metric) {"id":"atom.coin_metric.<field>.<op>.<value>","type":"coin_metric","rawText":"<snippet>","field":"market_cap_rank|ath_change_pct|atl_change_pct|max_supply|circulating_supply|price_change_7d|price_change_30d","subject":"<optional coin symbol/mint; omit for the swap output token>","op":"gt|gte|lt|lte|eq","value":<number>}; use coin_metric for CROSS-CHAIN CoinGecko gates on established/listed coins (BTC/ETH/SOL/JUP): market_cap_rank as an integer (lower=better, "top 100" → lte 100); ath_change_pct is % vs all-time high (always ≤0; "down 50% from ATH" → lte -50, "within 10% of ATH" → gte -10); max_supply/circulating_supply as token counts; price_change_7d/30d as percentages; ' +
         '(tx_gate) {"id":"atom.tx_gate.<rule>","type":"tx_gate","rawText":"<snippet>","rule":"only_requested_swap|no_extra_transfers|no_unknown_recipients|no_unrelated_instructions"}; ' +
         '(external_price) {"id":"atom.external_price.<subject_slug>.<op>.<value>","type":"external_price","rawText":"<snippet>","subject":"<short noun phrase>","op":"gt|gte|lt|lte","value":<number>,"unit":"USD"}. ' +
         'Use external_price for off-chain items (phone plans, subscriptions). Use price for crypto symbols (SOL, BTC, ETH, USDC, …). If the NOTE has no policy gates, return {"atoms":[]}. Ids must be stable, lowercase, snake/dot-cased. Never invent thresholds the user did not state.',

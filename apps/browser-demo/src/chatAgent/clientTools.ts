@@ -42,6 +42,16 @@ export interface ClientChatToolDeps {
   tokenMarket?: (mint: string) => Promise<Record<string, unknown>>;
   // Trending Solana tokens — optional; mirrors the server get_trending_tokens shape.
   trendingTokens?: () => Promise<Record<string, unknown>>;
+  // The connected wallet's NFTs (Helius DAS) — optional. Undefined → unavailable.
+  walletNfts?: (wallet: string) => Promise<Record<string, unknown>>;
+  // Single asset/NFT metadata by mint (Helius DAS) — optional.
+  asset?: (mint: string) => Promise<Record<string, unknown>>;
+  // CoinGecko coin metrics (rank/ATH/supply) — optional; mirrors server get_coin_market.
+  coinMarket?: (query: string) => Promise<Record<string, unknown>>;
+  // CoinGecko cross-chain trending — optional; mirrors server get_trending_coins.
+  trendingCoins?: () => Promise<Record<string, unknown>>;
+  // Newly-listed Solana tokens (BirdEye) — optional; mirrors server get_new_listings.
+  newListings?: () => Promise<Record<string, unknown>>;
 }
 
 function isBase58Mint(value: string): boolean {
@@ -198,6 +208,56 @@ export function createClientChatToolExecutor(deps: ClientChatToolDeps): ChatTool
         return { summary: 'Trending tokens', data: await deps.trendingTokens() };
       } catch (err) {
         return { summary: 'Trending unavailable.', data: { unavailable: true, error: err instanceof Error ? err.message : String(err) } };
+      }
+    }
+
+    if (name === 'get_wallet_nfts') {
+      const wallet = (walletAddress || '').trim();
+      if (!wallet) return { summary: 'No wallet connected.', data: { error: 'wallet not connected' } };
+      if (!deps.walletNfts) return { summary: 'NFTs unavailable.', data: { wallet, unavailable: true, reason: 'no_nft_source' } };
+      try {
+        return { summary: 'Wallet NFTs', data: await deps.walletNfts(wallet) };
+      } catch (err) {
+        return { summary: 'NFTs unavailable.', data: { wallet, unavailable: true, error: err instanceof Error ? err.message : String(err) } };
+      }
+    }
+
+    if (name === 'get_asset') {
+      const mint = mintArg || query;
+      if (!mint) return { summary: 'No mint provided.', data: { error: 'a base58 mint is required' } };
+      if (!deps.asset) return { summary: 'Asset metadata unavailable.', data: { mint, unavailable: true, reason: 'no_asset_source' } };
+      try {
+        return { summary: `Asset ${shortMint(mint)}`, data: await deps.asset(mint) };
+      } catch (err) {
+        return { summary: 'Asset metadata unavailable.', data: { mint, unavailable: true, error: err instanceof Error ? err.message : String(err) } };
+      }
+    }
+
+    if (name === 'get_coin_market') {
+      if (!query) return { summary: 'No coin provided.', data: { error: 'a coin symbol or mint is required' } };
+      if (!deps.coinMarket) return { summary: 'Coin metrics unavailable.', data: { query, unavailable: true, reason: 'no_coin_source' } };
+      try {
+        return { summary: `CoinGecko market for ${query}`, data: await deps.coinMarket(query) };
+      } catch (err) {
+        return { summary: 'Coin metrics unavailable.', data: { query, unavailable: true, error: err instanceof Error ? err.message : String(err) } };
+      }
+    }
+
+    if (name === 'get_trending_coins') {
+      if (!deps.trendingCoins) return { summary: 'Trending coins unavailable.', data: { unavailable: true, reason: 'no_trending_source' } };
+      try {
+        return { summary: 'Trending coins', data: await deps.trendingCoins() };
+      } catch (err) {
+        return { summary: 'Trending coins unavailable.', data: { unavailable: true, error: err instanceof Error ? err.message : String(err) } };
+      }
+    }
+
+    if (name === 'get_new_listings') {
+      if (!deps.newListings) return { summary: 'New listings unavailable.', data: { unavailable: true, reason: 'no_listings_source' } };
+      try {
+        return { summary: 'New listings', data: await deps.newListings() };
+      } catch (err) {
+        return { summary: 'New listings unavailable.', data: { unavailable: true, error: err instanceof Error ? err.message : String(err) } };
       }
     }
 

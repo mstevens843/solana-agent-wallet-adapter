@@ -23,6 +23,11 @@ export const CHAT_TOOL_NAMES = new Set([
   'get_connector_facts',
   'get_token_market',
   'get_trending_tokens',
+  'get_wallet_nfts',
+  'get_asset',
+  'get_coin_market',
+  'get_trending_coins',
+  'get_new_listings',
 ]);
 export const CHAT_PROPOSAL_KINDS = new Set(['transfer_sol', 'transfer_spl', 'swap', 'sign_proof']);
 export const CHAT_BASE58_MINT_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -104,6 +109,14 @@ export function chatToolStatusLabel(name: string, input: Record<string, unknown>
     return mint ? `Checking ${mint} market data…` : 'Checking market data…';
   }
   if (name === 'get_trending_tokens') return 'Checking trending tokens…';
+  if (name === 'get_wallet_nfts') return 'Reading your NFTs…';
+  if (name === 'get_asset') return 'Reading asset metadata…';
+  if (name === 'get_coin_market') {
+    const q = typeof input.query === 'string' ? input.query : '';
+    return q ? `Checking ${q} on CoinGecko…` : 'Checking coin metrics…';
+  }
+  if (name === 'get_trending_coins') return 'Checking trending coins…';
+  if (name === 'get_new_listings') return 'Checking new listings…';
   return `Running ${name}…`;
 }
 
@@ -204,6 +217,31 @@ export function chatToolsAnthropic(): Array<Record<string, unknown>> {
       name: 'get_trending_tokens',
       description: "Get the top trending Solana tokens right now (symbol, price, 24h change, market cap, volume). Call this for 'what's trending / hot / popular on Solana' questions.",
       input_schema: { type: 'object', properties: { interval: { type: 'string', description: "Trending window: '5m' | '1h' | '6h' | '24h' (default 24h)" } }, required: [] },
+    },
+    {
+      name: 'get_wallet_nfts',
+      description: "Get the connected wallet's NFTs (name, collection, mint, compressed flag). Call this for 'what NFTs do I own / hold / my NFTs / my collectibles'. Floor prices are NOT included here - use the Magic Eden or Tensor connector for collection floor.",
+      input_schema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'get_asset',
+      description: "Get on-chain metadata for a single Solana asset (NFT or token) by mint: name, symbol, collection, attributes, royalty %, creators, compressed flag. Call this for 'tell me about this NFT / what is this asset / its traits / collection'. Accepts a base58 mint.",
+      input_schema: { type: 'object', properties: { mint: { type: 'string', description: 'Base58 mint address of the asset' } }, required: ['mint'] },
+    },
+    {
+      name: 'get_coin_market',
+      description: "Get CoinGecko cross-chain market metrics for an established/listed coin: market-cap RANK, all-time high (ATH) + % from ATH, all-time low, circulating/total/max supply, and price change over 24h/7d/30d. Call this for 'what's X's market-cap rank / how far from its ATH / max supply / how's it done this month'. Best for major coins (SOL, BTC, ETH, JUP); for long-tail Solana tokens use get_token_market. Accepts a symbol or base58 mint.",
+      input_schema: { type: 'object', properties: { query: { type: 'string', description: 'Coin symbol (e.g. SOL, BTC) or base58 mint' } }, required: ['query'] },
+    },
+    {
+      name: 'get_trending_coins',
+      description: "Get the top trending coins on CoinGecko (cross-chain, by search volume): symbol, name, market-cap rank. Call this for 'what's trending in crypto overall / what are people searching'. For Solana DEX trending use get_trending_tokens instead.",
+      input_schema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'get_new_listings',
+      description: "Get newly-listed Solana tokens (symbol, mint, name, liquidity, listed time). Call this for 'what just launched / new tokens / recent listings'. WARNING: these are unvetted and high-risk - always pair with get_token_safety / get_token_market before acting.",
+      input_schema: { type: 'object', properties: {}, required: [] },
     },
     {
       name: 'propose_wallet_action',

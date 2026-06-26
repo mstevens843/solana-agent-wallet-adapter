@@ -690,3 +690,35 @@ describe('token_metric extraction', () => {
     expect(metric('liquidity > $100k')[0]?.id).toBe('atom.token_metric.liquidity.gt.100000');
   });
 });
+
+describe('coin_metric extraction', () => {
+  function metric(text: string) {
+    return byType(extractAtoms({ text }).atoms, 'coin_metric');
+  }
+
+  it('extracts market-cap rank from "rank < N" and "top N by market cap"', () => {
+    expect(metric('approve only if market cap rank < 100')[0]).toMatchObject({ field: 'market_cap_rank', op: 'lt', value: 100 });
+    expect(metric('only if ranked under 50')[0]).toMatchObject({ field: 'market_cap_rank', op: 'lt', value: 50 });
+    expect(metric('require it to be in the top 100 by market cap')[0]).toMatchObject({ field: 'market_cap_rank', op: 'lte', value: 100 });
+  });
+
+  it('does NOT also create a token_metric market_cap atom for "market cap rank"', () => {
+    const { atoms } = extractAtoms({ text: 'approve only if market cap rank < 100' });
+    expect(byType(atoms, 'token_metric').filter((a) => a.field === 'market_cap')).toHaveLength(0);
+    expect(byType(atoms, 'coin_metric')).toHaveLength(1);
+  });
+
+  it('encodes ATH distance as a signed % threshold', () => {
+    expect(metric('approve only if down at least 50% from its ATH')[0]).toMatchObject({ field: 'ath_change_pct', op: 'lte', value: -50 });
+    expect(metric('deny if within 10% of all-time high')[0]).toMatchObject({ field: 'ath_change_pct', op: 'gte', value: -10 });
+  });
+
+  it('extracts max / circulating supply with suffixes', () => {
+    expect(metric('only if max supply under 1B')[0]).toMatchObject({ field: 'max_supply', op: 'lt', value: 1_000_000_000 });
+    expect(metric('require circulating supply over 500m')[0]).toMatchObject({ field: 'circulating_supply', op: 'gt', value: 500_000_000 });
+  });
+
+  it('produces stable ids', () => {
+    expect(metric('market cap rank < 100')[0]?.id).toBe('atom.coin_metric.market_cap_rank.lt.100');
+  });
+});
