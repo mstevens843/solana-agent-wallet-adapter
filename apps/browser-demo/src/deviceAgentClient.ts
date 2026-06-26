@@ -192,8 +192,19 @@ export interface NativeChatStreamSink {
   onError(message: string): void;
 }
 let activeNativeChatStreamSink: NativeChatStreamSink | null = null;
-export function setNativeChatStreamSink(sink: NativeChatStreamSink | null): void {
+// The requestId the active sink belongs to. Native emits the requestId on every chunk/end/
+// error event (Android args / iOS event payload); we match it so a LATE event from an
+// aborted or timed-out earlier turn cannot bleed into the next turn's sink (cancelStream is
+// best-effort + async, so the old native stream can still emit after a new turn installs its
+// sink). When the active requestId is null the filter is permissive (back-compat).
+let activeNativeChatStreamRequestId: string | null = null;
+export function setNativeChatStreamSink(sink: NativeChatStreamSink | null, requestId?: string): void {
   activeNativeChatStreamSink = sink;
+  activeNativeChatStreamRequestId = sink ? (requestId ?? null) : null;
+}
+function nativeStreamEventMatches(requestId: unknown): boolean {
+  if (activeNativeChatStreamRequestId === null) return true;
+  return typeof requestId === 'string' && requestId === activeNativeChatStreamRequestId;
 }
 
 interface PendingRequest {
@@ -244,6 +255,11 @@ export function isIosDeviceAgentBridgeAvailable(): boolean {
 export interface DeviceAgentRequestOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
+  // Caller-supplied request id (must match DEVICE_AGENT_REQUEST_ID_PATTERN). Used by the
+  // native streaming path so the caller can tag its chat-stream sink with the SAME id the
+  // native side echoes on chunk/end/error events (enables stale-event filtering). When
+  // omitted or invalid, a fresh id is generated as before.
+  requestId?: string;
 }
 
 /**
@@ -311,7 +327,9 @@ export async function deviceAgentRequest<R = unknown>(
     );
     throw new DeviceAgentClientError('payload_too_large', message);
   }
-  const requestId = generateRequestId();
+  const requestId = options.requestId && DEVICE_AGENT_REQUEST_ID_PATTERN.test(options.requestId)
+    ? options.requestId
+    : generateRequestId();
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   logDeviceAgent('request', 'START', {
     method,
@@ -434,7 +452,9 @@ export async function iosDeviceAgentRequestOrThrow<R = unknown>(
     throw new DeviceAgentClientError('aborted', 'Device Agent request was aborted.');
   }
   effectivePayload = policyPreparation.payload;
-  const requestId = generateRequestId();
+  const requestId = options.requestId && DEVICE_AGENT_REQUEST_ID_PATTERN.test(options.requestId)
+    ? options.requestId
+    : generateRequestId();
   const debugBaseUrl = mobileDeviceAgentDebugBaseUrl();
   const payloadRecord: Record<string, unknown> = {
     ...(isRecord(effectivePayload) ? effectivePayload : {}),
@@ -905,13 +925,16 @@ function installCallbackBridge(): void {
       const { code, message, status, subcode } = extractRejectFields(payload);
       entry.reject(new DeviceAgentClientError(code, message, status, subcode));
     },
-    onChunk(_requestId, chunk) {
+    onChunk(requestId, chunk) {
+      if (!nativeStreamEventMatches(requestId)) return; // stale chunk from an aborted/old turn
       activeNativeChatStreamSink?.onChunk(typeof chunk === 'string' ? chunk : String(chunk ?? ''));
     },
-    onStreamEnd() {
+    onStreamEnd(requestId) {
+      if (!nativeStreamEventMatches(requestId)) return; // stale end-of-stream — must not close the new turn
       activeNativeChatStreamSink?.onEnd();
     },
-    onStreamError(_requestId, message) {
+    onStreamError(requestId, message) {
+      if (!nativeStreamEventMatches(requestId)) return; // stale error — must not abort the new turn
       activeNativeChatStreamSink?.onError(typeof message === 'string' ? message : String(message ?? 'stream error'));
     },
   };
@@ -927,6 +950,7 @@ export function installIosChatStreamListener(): void {
   iosChatStreamListenerInstalled = true;
   bridge.addListener('agenticDeviceAgentChunk', (ev) => {
     if (!activeNativeChatStreamSink) return;
+    if (!nativeStreamEventMatches(ev.requestId)) return; // stale event from an aborted/old turn
     if (ev.error !== undefined) activeNativeChatStreamSink.onError(String(ev.error ?? 'stream error'));
     else if (ev.end === true) activeNativeChatStreamSink.onEnd();
     else if (typeof ev.chunk === 'string') activeNativeChatStreamSink.onChunk(ev.chunk);

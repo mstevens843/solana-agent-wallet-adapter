@@ -5,50 +5,26 @@
 // into a compact, token-efficient block — that projection is the core token win.
 
 import type { ConnectorActionAtom, ConnectorFactArgs } from './types.js';
-import { DEFAULT_CONNECTOR_FACT_MAX_CHARS } from './types.js';
+import { asArray, clampConnectorFacts, compact, num, obj, shortMint, str, stripConnector } from './util.js';
 
-// ---- pure helpers (no deps, browser-safe) ---------------------------------------
+// Re-exported for back-compat with existing importers (index.ts, consumers).
+export { clampConnectorFacts };
 
-function asArray(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value) ? value.filter((v): v is Record<string, unknown> => !!v && typeof v === 'object') : [];
-}
-function obj(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
-}
-function str(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
-}
-function num(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-function shortMint(mint?: string): string | undefined {
-  if (!mint) return undefined;
-  return mint.length > 12 ? `${mint.slice(0, 6)}…${mint.slice(-4)}` : mint;
-}
-// Drop undefined keys so the serialized block stays small.
-function compact(record: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(record)) {
-    if (value !== undefined && value !== null) out[key] = value;
-  }
-  return out;
-}
-// Final safety net: if a projection is still oversized, return a clamped preview rather
-// than a huge blob the model would truncate mid-structure anyway.
-export function clampConnectorFacts(value: Record<string, unknown>, maxChars = DEFAULT_CONNECTOR_FACT_MAX_CHARS): Record<string, unknown> {
-  const json = JSON.stringify(value);
-  if (json.length <= maxChars) return value;
-  return { note: 'facts truncated for size; ask a narrower question', preview: json.slice(0, maxChars) };
-}
-// Strip the verbose connector capability view; keep everything else. Used by the
-// defensive formatters for the gated products whose nested shapes are less stable.
-function stripConnector(raw: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(raw)) {
-    if (key === 'connector') continue;
-    out[key] = value;
-  }
-  return out;
+// Jupiter swap order-preview envelope: { preview: {...}, facts }. Projects the quote.
+export function formatJupiterSwapQuote(raw: Record<string, unknown>): Record<string, unknown> {
+  const p = obj(raw.preview) ?? raw;
+  return compact({
+    kind: 'jupiter_swap_quote',
+    inputMint: shortMint(str(p.inputMint)),
+    outputMint: shortMint(str(p.outputMint)),
+    inAmount: str(p.inAmount),
+    outAmount: str(p.outAmount),
+    minOut: str(p.otherAmountThreshold),
+    slippageBps: num(p.slippageBps),
+    priceImpactPct: num(p.priceImpactPct) ?? str(p.priceImpact),
+    swapMode: str(p.swapMode),
+    route: Array.isArray(p.routePlan) ? (p.routePlan as unknown[]).length : undefined,
+  });
 }
 
 // ---- the atoms ------------------------------------------------------------------
@@ -263,20 +239,29 @@ export const JUPITER_ATOMS: ConnectorActionAtom[] = [
       format: (raw) => clampConnectorFacts(stripConnector(raw)),
     },
   },
-  // Knowledge-only: swap quotes + token data are already served by the dedicated chat
-  // tools (get_token_price / search_tokens / get_token_safety). The card tells the model
-  // Jupiter does swaps and to use those tools — no overlapping get_connector_facts route.
+  // Live swap quote: preview the best-route output (amount, price impact, route) before
+  // proposing. Token *prices* / safety still go through get_token_price / get_token_safety.
   {
     connectorId: 'jupiter',
     action: 'swap',
     aliases: ['swap', 'trade', 'exchange', 'convert', 'quote'],
     knowledge: {
       title: 'Jupiter Swap (Ultra / v2)',
-      summary: 'Best-route token swaps via Jupiter. For prices/quotes use the get_token_price and search_tokens tools, then propose a swap.',
-      capabilities: ['quote + prepare a swap for wallet approval'],
-      requiredParams: ['inputToken, outputToken, amount'],
-      constraints: ['Quote preview + execution refresh need a Jupiter API key', 'Use get_token_price / search_tokens for prices and mints, then propose_wallet_action kind=swap'],
+      summary: 'Best-route token swaps via Jupiter. Preview a live quote (output amount, price impact, route) with get_connector_facts action=swap, then propose the swap for approval.',
+      capabilities: ['preview a swap quote (output amount, price impact, route)', 'prepare a swap for wallet approval'],
+      requiredParams: ['inputToken, outputToken, amount (per the input token) for a live quote'],
+      constraints: ['Quote preview + execution refresh need a Jupiter API key', 'After previewing, call propose_wallet_action kind=swap to stage it for approval'],
       enabledByDefault: true,
+    },
+    factSpec: {
+      readTool: 'solana_jupiter_order_preview',
+      capability: 'swap',
+      buildInput: (a: ConnectorFactArgs) => compact({
+        ...(a.inputToken ? { inputToken: a.inputToken } : {}),
+        ...(a.outputToken ? { outputToken: a.outputToken } : {}),
+        ...(a.amount ? { amount: a.amount } : {}),
+      }),
+      format: formatJupiterSwapQuote,
     },
   },
   // Knowledge-only: a Jupiter "portfolio" is assembled from the lend + borrow position

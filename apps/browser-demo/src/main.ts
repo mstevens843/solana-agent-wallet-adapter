@@ -3069,6 +3069,7 @@ interface PersistedState {
   aiConnector?: AiConnector;
   aiMultiReviewer?: boolean;
   aiAutoBackgroundWatch?: boolean;
+  aiReasoningEffort?: ChatReasoningLevel;
   notificationSettings?: Partial<Omit<NotificationSettingsState, 'permission'>>;
 }
 
@@ -21010,8 +21011,10 @@ function chatLoadErrorState(session: ChatSession): string {
 function chatMessageHtml(msg: ChatMessage, sessionId: string): string {
   if (msg.role === 'user') {
     // ✎ edit-and-resend: truncates the chat to before this message + loads it into the
-    // composer to re-ask an edited version. Hidden while a stream is in flight.
-    const editBtn = chatStreamMsgId
+    // composer to re-ask an edited version. Hidden while a stream is in flight OR during a
+    // send's preflight (gate on chatStreamActive(), not just chatStreamMsgId, which is null
+    // until the assistant placeholder is created — the buttons are inert then but shouldn't show).
+    const editBtn = chatStreamActive()
       ? ''
       : `<button type="button" class="chat-msg-edit" data-chat-edit="${escapeHtml(msg.id)}" title="${escapeHtml(t('Edit & resend'))}" aria-label="${escapeHtml(t('Edit & resend'))}">✎</button>`;
     return `<div class="chat-msg user" dir="auto" data-chat-msg-id="${escapeHtml(msg.id)}"><span class="chat-user-text">${escapeHtml(msg.content)}</span>${editBtn}</div>`;
@@ -21043,7 +21046,7 @@ function chatMessageHtml(msg: ChatMessage, sessionId: string): string {
         ${msg.receiveCard ? `<div class="chat-card">${chatReceiveCardHtml(msg.receiveCard.address)}</div>` : ''}
         ${msg.recurringCardId ? chatRecurringCardLookupHtml(msg.recurringCardId) : ''}
         ${chatMessageFooterHtml(msg)}
-        ${(!isStreaming && !chatStreamMsgId && isLastAssistantChatMessage(msg, sessionId))
+        ${(!isStreaming && !chatStreamActive() && isLastAssistantChatMessage(msg, sessionId))
           ? `<div class="chat-msg-actions"><button type="button" class="chat-msg-regenerate" data-chat-regenerate title="${escapeHtml(t('Regenerate'))}" aria-label="${escapeHtml(t('Regenerate'))}">↻ ${escapeHtml(t('Regenerate'))}</button></div>`
           : ''}
       </div>
@@ -21068,7 +21071,9 @@ function chatMessageFooterHtml(msg: ChatMessage): string {
   if (msg.status === 'streaming') return '';
   const parts: string[] = [];
   if (msg.citations && msg.citations.length > 0) {
-    const links = msg.citations.slice(0, 8).map((c) => {
+    // Show the same number we store (loop.ts dedupes + caps at 12) so stored citations
+    // aren't silently dropped at render.
+    const links = msg.citations.slice(0, 12).map((c) => {
       let label = (c.title ?? '').trim();
       if (!label) {
         try { label = new URL(c.url).hostname.replace(/^www\./, ''); } catch { label = c.url; }
@@ -21108,6 +21113,7 @@ function chatToolRunningLabel(tool: string): string {
   if (tool === 'get_market_regime') return t('Checking the market…');
   if (tool === 'get_token_age') return t('Checking token age…');
   if (tool === 'get_wallet_history') return t('Reading wallet history…');
+  if (tool === 'get_connector_facts') return t('Reading connector data…');
   return tf('Running {tool}…', { tool: chatToolDisplayName(tool) });
 }
 
@@ -21118,6 +21124,7 @@ function chatToolDisplayName(tool: string): string {
   if (tool === 'get_market_regime') return t('Market regime');
   if (tool === 'get_token_age') return t('Token age');
   if (tool === 'get_wallet_history') return t('Wallet history');
+  if (tool === 'get_connector_facts') return t('Connector data');
   return chatToolLabel(tool);
 }
 
@@ -22903,6 +22910,11 @@ function chatReasoningEffort(): ChatReasoningLevel {
   return state.aiSettings.reasoningEffort ?? 'medium';
 }
 
+// Validate a persisted/cloud-synced reasoning depth before applying it.
+function isChatReasoningLevel(value: unknown): value is ChatReasoningLevel {
+  return value === 'minimal' || value === 'low' || value === 'medium' || value === 'high';
+}
+
 function buildClientChatToolDeps(): ClientChatToolDeps {
   return {
     searchTokens: async (query) =>
@@ -23024,6 +23036,20 @@ function deviceAgentChatLoopRequest(request: AgentChatRequest): {
 // 'complete' method is a thin authenticated fetch (key stays native) that returns
 // the raw provider response { httpStatus, body }; JS parses it. Non-streaming, so
 // the answer lands on the loop's `done` event (turn granularity).
+// Per-turn ceiling for a native chat completion (streaming + non-streaming). A reasoning-High
+// turn (extended thinking can run for minutes with no visible tokens) routinely exceeds the
+// 120s default; native clamps timeoutMs to 300s, so this is the effective max. Passed BOTH as
+// the JS pending-request timeout AND in the payload (native readTimeout) so neither kills a
+// healthy long stream at 120s.
+const NATIVE_CHAT_STREAM_TIMEOUT_MS = 300_000;
+// Monotonic id for a native chat-stream turn, used to tag the stream sink so the native side's
+// echoed requestId can be matched (stale-event filtering). Matches DEVICE_AGENT_REQUEST_ID_PATTERN.
+let nativeChatStreamSeq = 0;
+function nextNativeChatStreamRequestId(): string {
+  nativeChatStreamSeq += 1;
+  return `chat-stream-${Date.now().toString(36)}-${nativeChatStreamSeq.toString(36)}`;
+}
+
 function nativeDeviceAgentRunProviderTurn(adapter: ChatTransportAdapter, transport: ChatAiTransport, system: string, model: string, openAiNative: boolean): RunProviderTurn {
   return async (messages, _onToken, signal) => {
     // openAiNative gates the OpenAI-only reasoning fields (max_completion_tokens /
@@ -23040,8 +23066,8 @@ function nativeDeviceAgentRunProviderTurn(adapter: ChatTransportAdapter, transpo
       try {
         result = await invokeDeviceAgentNative<{ httpStatus?: number; body?: string }>(
           'complete',
-          { transport, model, body },
-          { action: 'chat-complete', ...(signal ? { signal } : {}) },
+          { transport, model, body, timeoutMs: NATIVE_CHAT_STREAM_TIMEOUT_MS },
+          { action: 'chat-complete', timeoutMs: NATIVE_CHAT_STREAM_TIMEOUT_MS, ...(signal ? { signal } : {}) },
         );
       } catch (err) {
         if (signal?.aborted || attempt >= CHAT_MAX_FETCH_ATTEMPTS - 1) throw err;
@@ -23120,6 +23146,7 @@ async function runNativeStreamingTurn(
   installIosChatStreamListener();
   // openAiNative → request stream_options.include_usage (usage on native OpenAI streaming).
   const body = adapter.buildBody(system, messages, model, adapter.toolSpecs(), { streaming: true, reasoningEffort: chatReasoningEffort(), openAiNative });
+  const requestId = nextNativeChatStreamRequestId();
   const encoder = new TextEncoder();
   let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
   let closed = false;
@@ -23130,7 +23157,10 @@ async function runNativeStreamingTurn(
     onEnd() { closeStream(); },
     onError(message) { if (!closed && controllerRef) { closed = true; try { controllerRef.error(new Error(message)); } catch { /* closed */ } } },
   };
-  setNativeChatStreamSink(sink);
+  // Tag the sink with this turn's requestId so a late chunk/end/error from an aborted or
+  // timed-out EARLIER turn (cancelStream is best-effort + async) is filtered out by the
+  // bridge instead of bleeding into this turn's stream.
+  setNativeChatStreamSink(sink, requestId);
   // Stop mid-stream → cancel the in-flight NATIVE request (else it runs to completion/
   // timeout, wasting tokens). Best-effort; the JS stream is abandoned regardless.
   const onAbort = (): void => { void invokeDeviceAgentNative('cancelStream', {}, { action: 'chat-cancel-stream' }).catch(() => {}); };
@@ -23138,11 +23168,29 @@ async function runNativeStreamingTurn(
   try {
     // Start consuming the synthetic SSE Response (hardened parser) WITHOUT awaiting.
     const parsePromise = adapter.parseStream(new Response(stream), onToken, signal);
-    const result = await invokeDeviceAgentNative<{ httpStatus?: number; body?: string }>(
-      'completeStream',
-      { transport, model, body },
-      { action: 'chat-complete-stream', ...(signal ? { signal } : {}) },
-    );
+    // Guard against an unhandled rejection: parseStream can reject (e.g. iOS pushes a
+    // mid-stream onError → controller.error) WHILE we're still suspended on the
+    // completeStream call below and no handler is attached yet. The real outcome is still
+    // observed via `await parsePromise` on the 2xx path.
+    parsePromise.catch(() => {});
+    let result: { httpStatus?: number; body?: string };
+    try {
+      result = await invokeDeviceAgentNative<{ httpStatus?: number; body?: string }>(
+        'completeStream',
+        // timeoutMs in the payload raises the NATIVE readTimeout; in options it raises the JS
+        // pending-request timeout — both off the 120s default so a healthy long stream
+        // (reasoning High) isn't killed mid-flight. requestId ties native's echoed event ids
+        // to this turn's sink.
+        { transport, model, body, timeoutMs: NATIVE_CHAT_STREAM_TIMEOUT_MS },
+        { action: 'chat-complete-stream', requestId, timeoutMs: NATIVE_CHAT_STREAM_TIMEOUT_MS, ...(signal ? { signal } : {}) },
+      );
+    } catch (err) {
+      // The JS call was abandoned (timeout / bridge error). Stop the native stream so it
+      // doesn't keep consuming the provider and so a late chunk can't bleed into the next
+      // turn. On a user abort, onAbort already sent cancelStream — skip the duplicate.
+      if (!signal?.aborted) void invokeDeviceAgentNative('cancelStream', {}, { action: 'chat-cancel-stream' }).catch(() => {});
+      throw err;
+    }
     const httpStatus = typeof result?.httpStatus === 'number' ? result.httpStatus : 0;
     if (httpStatus < 200 || httpStatus >= 300) {
       closeStream();
@@ -23598,12 +23646,13 @@ function regenerateLastChatTurn(): void {
   if (chatSubmitBlocked()) return;
   const session = activeChatSession();
   if (!session) return;
-  const dropped: ChatMessage[] = [];
-  while (session.messages.length > 0 && session.messages[session.messages.length - 1]?.role === 'assistant') {
-    const popped = session.messages.pop();
-    if (popped) dropped.push(popped);
-  }
-  if ((session.messages[session.messages.length - 1]?.role) !== 'user') return;
+  // Locate the trailing run of assistant messages and the user turn before it WITHOUT
+  // mutating first. Bail out early if no user turn precedes them (e.g. an all-assistant tail
+  // from the "sign" shortcut), so state.chat is never left out of sync with persisted storage.
+  let cut = session.messages.length;
+  while (cut > 0 && session.messages[cut - 1]?.role === 'assistant') cut -= 1;
+  if (cut === 0 || session.messages[cut - 1]?.role !== 'user') return;
+  const dropped = session.messages.splice(cut);
   dropOrphanedChatPreparedActions(dropped);
   saveChatHistoryState();
   void rerunChatTurn(session);
@@ -23918,10 +23967,16 @@ async function runChatStream(sessionId: string, assistantId: string): Promise<vo
     // Final SR announcement: the settled answer (or the error) so a screen reader
     // hears the complete reply once, even if the debounced progress was mid-cycle.
     chatSrAnnounce(message.status === 'error' ? (message.error ?? '') : message.content);
-    if (stillActive) chatStreamMsgId = null;
-    chatStreamSessionId = null;
-    chatActiveTool = null;
-    cancelChatCheckpoint();
+    // Gate ALL shared-stream teardown on stillActive: if a newer submit already replaced the
+    // controller (Stop+resend race), clearing chatStreamSessionId/chatActiveTool/checkpoint
+    // here would corrupt the NEW stream's bookkeeping (defeat the cloud-hydrate restub guard
+    // that keys off chatStreamSessionId, and skip the new stream's partial-save on Stop).
+    if (stillActive) {
+      chatStreamMsgId = null;
+      chatStreamSessionId = null;
+      chatActiveTool = null;
+      cancelChatCheckpoint();
+    }
     saveChatHistoryState();
     // Mirror the completed assistant turn to the cloud (debounced token saves
     // stayed local; this is the single end-of-turn cloud write).
@@ -32117,10 +32172,14 @@ function currentDeviceAgentRuntimeSurface() {
 async function invokeDeviceAgentNative<R>(
   method: 'generatePlan' | 'reviewPlan' | 'ask' | 'localize' | 'chat' | 'complete' | 'completeStream' | 'cancelStream',
   payload: unknown,
-  options: { action: string; signal?: AbortSignal },
+  options: { action: string; signal?: AbortSignal; requestId?: string; timeoutMs?: number },
 ): Promise<R> {
   try {
-    const requestOptions = options.signal ? { signal: options.signal } : {};
+    const requestOptions: { signal?: AbortSignal; requestId?: string; timeoutMs?: number } = {
+      ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.requestId ? { requestId: options.requestId } : {}),
+      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    };
     const route = chooseDeviceAgentRequestRoute(currentDeviceAgentRuntimeSurface());
     logDebug({
       level: 'info',
@@ -65861,6 +65920,7 @@ function persistedAiSettings(
     ...(persistedState.aiEngine ? { agentEngine: persistedState.aiEngine } : {}),
     ...(persistedState.pairedBridge ? { pairedBridge: true } : {}),
     ...(persistedState.aiConnector ? { connector: persistedState.aiConnector } : {}),
+    ...(isChatReasoningLevel(persistedState.aiReasoningEffort) ? { reasoningEffort: persistedState.aiReasoningEffort } : {}),
   };
   const settings = {
     mode,
@@ -66868,6 +66928,7 @@ function loadPersistedState(): PersistedState {
       ...((parsed.aiConnector === 'codex' || parsed.aiConnector === 'gemini' || parsed.aiConnector === 'claude') && { aiConnector: parsed.aiConnector }),
       ...(typeof parsed.aiMultiReviewer === 'boolean' && { aiMultiReviewer: parsed.aiMultiReviewer }),
       ...(typeof parsed.aiAutoBackgroundWatch === 'boolean' && { aiAutoBackgroundWatch: parsed.aiAutoBackgroundWatch }),
+      ...(isChatReasoningLevel(parsed.aiReasoningEffort) && { aiReasoningEffort: parsed.aiReasoningEffort }),
       ...(isPersistedNotificationSettings(parsed.notificationSettings) && {
         notificationSettings: parsed.notificationSettings,
       }),
@@ -66901,6 +66962,7 @@ function savePersistedState(): void {
         ...(state.aiSettings.agentEngine ? { aiEngine: state.aiSettings.agentEngine } : {}),
         ...(state.aiSettings.pairedBridge ? { pairedBridge: true } : {}),
         ...(state.aiSettings.connector ? { aiConnector: state.aiSettings.connector } : {}),
+        ...(state.aiSettings.reasoningEffort ? { aiReasoningEffort: state.aiSettings.reasoningEffort } : {}),
         aiMultiReviewer: state.aiSettings.multiReviewer === true,
         aiAutoBackgroundWatch: state.aiSettings.autoBackgroundWatch === true,
         notificationSettings: {
@@ -67419,6 +67481,7 @@ function cloudPreferencePayload(namespace: CloudPreferenceNamespace): unknown {
         model: state.aiSettings.model,
         multiReviewer: state.aiSettings.multiReviewer === true,
         autoBackgroundWatch: state.aiSettings.autoBackgroundWatch === true,
+        ...(state.aiSettings.reasoningEffort ? { reasoningEffort: state.aiSettings.reasoningEffort } : {}),
       };
   }
 }
@@ -67537,6 +67600,9 @@ function applyCloudAiSettings(payload: unknown): boolean {
   }
   state.aiSettings.multiReviewer = payload.multiReviewer === true;
   state.aiSettings.autoBackgroundWatch = payload.autoBackgroundWatch === true;
+  if (isChatReasoningLevel(payload.reasoningEffort)) {
+    state.aiSettings.reasoningEffort = payload.reasoningEffort;
+  }
   ensureAiProviderAllowedForMode();
   state.aiSettings.mode = normalizeAiModeForSurface(
     state.aiSettings.mode,

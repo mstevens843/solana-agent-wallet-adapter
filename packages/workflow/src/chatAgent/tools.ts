@@ -109,6 +109,20 @@ export function chatProposalSchema(): Record<string, unknown> {
       params: {
         type: 'object',
         description: 'transfer_sol: {recipient, amountSol}. transfer_spl: {token, recipient, amount}. swap: {inputToken, outputToken, amount, slippageBps}. sign_proof: {statement} (the exact claim to sign; no transaction).',
+        // Explicit (union-of-kinds, all optional) properties: only the fields for the chosen
+        // `kind` are filled; the validator enforces per-kind requirements. Declaring them is
+        // strictly more guidance for OpenAI/Anthropic and is REQUIRED for Gemini, whose
+        // function-declaration schema rejects an OBJECT with no `properties` (400).
+        properties: {
+          recipient: { type: 'string', description: 'transfer_sol/transfer_spl: destination base58 address' },
+          amountSol: { type: 'string', description: 'transfer_sol: amount of SOL to send' },
+          token: { type: 'string', description: 'transfer_spl: token mint or major symbol (SOL/USDC/USDT/PYUSD)' },
+          amount: { type: 'string', description: 'transfer_spl/swap: amount in the sent/input token units' },
+          inputToken: { type: 'string', description: 'swap: input token symbol or base58 mint' },
+          outputToken: { type: 'string', description: 'swap: output token symbol or base58 mint' },
+          slippageBps: { type: 'number', description: 'swap: optional slippage in basis points' },
+          statement: { type: 'string', description: 'sign_proof: the exact claim to sign' },
+        },
       },
       note: { type: 'string' },
       resolution: {
@@ -159,14 +173,17 @@ export function chatToolsAnthropic(): Array<Record<string, unknown>> {
     },
     {
       name: 'get_connector_facts',
-      description: "Get live, pre-formatted facts for a DeFi connector action (Jupiter today). Call this for questions about the user's Jupiter Lend/Earn positions, Borrow positions & health, Limit/TP-SL (trigger) orders, DCA/recurring orders, Perps status, or prediction markets - e.g. 'my Jupiter lend positions', 'show my limit orders', 'what's my borrow health'. For token prices/safety use get_token_price / get_token_safety instead. connectorId defaults to 'jupiter'.",
+      description: "Get live, pre-formatted facts for a DeFi connector action. Jupiter (connectorId 'jupiter', default): Lend/Earn positions, Borrow positions & health, Limit/TP-SL (trigger) orders, DCA/recurring orders, Perps status, prediction markets, and a Swap quote (action 'swap' — preview output/price-impact/route; pass inputToken, outputToken, amount). Raydium / Orca / Meteora (action 'liquidity'): the wallet's LP positions. Kamino / Lulo (action 'lend'): supplied positions + earned interest. Jito / Marinade (action 'stake'): JitoSOL / mSOL balance, native stake accounts, unstake tickets. Drift (action 'vault'): strategy-vault positions (read-only). Wormhole (action 'bridge'): your bridge exposure (pending/recent transfers + redeem status). Pyth (action 'oracle'): on-chain oracle price + confidence + freshness for a symbol (pass it in query). Call this for 'my Kamino positions', 'my JitoSOL balance', 'my Drift vaults', 'my Lulo balances', 'my Wormhole transfers', 'Pyth price of SOL', 'preview swapping 1 SOL to USDC'. For plain token spot prices/safety use get_token_price / get_token_safety instead.",
       input_schema: {
         type: 'object',
         properties: {
-          connectorId: { type: 'string', description: "Connector id, e.g. 'jupiter' (default)" },
-          action: { type: 'string', description: 'lend | borrow | limit | dca | perps | prediction' },
+          connectorId: { type: 'string', description: "Connector id: jupiter (default) | raydium | orca | meteora | kamino | jito | marinade | drift | lulo | wormhole | pyth" },
+          action: { type: 'string', description: 'jupiter: lend|borrow|limit|dca|perps|prediction|swap. raydium/orca/meteora: liquidity. kamino/lulo: lend. jito/marinade: stake. drift: vault. wormhole: bridge. pyth: oracle' },
           mint: { type: 'string', description: 'Optional token/asset mint to scope the read' },
-          query: { type: 'string', description: 'Optional search query (e.g. for prediction events)' },
+          query: { type: 'string', description: 'Optional search query / symbol (e.g. SOL for a Pyth oracle price, or a prediction event search)' },
+          inputToken: { type: 'string', description: 'Swap quote only: input token symbol or mint (e.g. SOL)' },
+          outputToken: { type: 'string', description: 'Swap quote only: output token symbol or mint (e.g. USDC)' },
+          amount: { type: 'string', description: 'Swap quote only: input amount (per the input token, e.g. "1")' },
         },
         required: ['action'],
       },
@@ -197,16 +214,65 @@ export function chatToolsOpenAi(): Array<Record<string, unknown>> {
   }));
 }
 
+// Gemini's function-declaration schema is STRICTER than OpenAI/Anthropic: an OBJECT-typed
+// schema MUST carry a non-empty `properties` map or generateContent returns
+// `400 ... parameters.properties: should be non-empty for OBJECT type`. Our no-arg tools
+// ({type:object, properties:{}}) and any property-less nested object would trip this on
+// EVERY Gemini turn (the always-present propose_wallet_action included), making Gemini chat
+// unusable. Produce a Gemini-safe schema: recursively DROP empty-properties OBJECT
+// subschemas and return undefined when the whole `parameters` object collapses to empty
+// (→ omit `parameters` for that no-arg tool). Pure transform; OpenAI/Anthropic keep the
+// raw input_schema (they tolerate empty-properties objects).
+export function geminiSanitizeSchema(node: unknown): Record<string, unknown> | undefined {
+  if (!node || typeof node !== 'object') return undefined;
+  const n = node as Record<string, unknown>;
+  if (n.type === 'object') {
+    const rawProps = n.properties && typeof n.properties === 'object' ? (n.properties as Record<string, unknown>) : {};
+    const outProps: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(rawProps)) {
+      const sanitizedChild = geminiSanitizeChild(child);
+      if (sanitizedChild !== undefined) outProps[key] = sanitizedChild;
+    }
+    // An OBJECT with no usable properties is invalid for Gemini → signal "omit me".
+    if (Object.keys(outProps).length === 0) return undefined;
+    const out: Record<string, unknown> = { ...n, type: 'object', properties: outProps };
+    if (Array.isArray(n.required)) {
+      const required = (n.required as unknown[]).filter((r): r is string => typeof r === 'string' && r in outProps);
+      if (required.length > 0) out.required = required;
+      else delete out.required;
+    }
+    return out;
+  }
+  return n;
+}
+
+// Sanitize a property's schema. Object subschemas that collapse to empty are dropped
+// (caller omits the property); arrays recurse into `items`; scalars pass through.
+function geminiSanitizeChild(child: unknown): unknown {
+  if (!child || typeof child !== 'object') return child;
+  const c = child as Record<string, unknown>;
+  if (c.type === 'object') return geminiSanitizeSchema(c); // may be undefined → dropped
+  if (c.type === 'array' && c.items && typeof c.items === 'object') {
+    const items = geminiSanitizeChild(c.items);
+    return items === undefined ? child : { ...c, items };
+  }
+  return child;
+}
+
 // Gemini function-declaration format: a single tools[] entry holding all
-// functionDeclarations { name, description, parameters }.
+// functionDeclarations { name, description, parameters? }.
 export function chatToolsGemini(): Array<Record<string, unknown>> {
   return [
     {
-      functionDeclarations: chatToolsAnthropic().map((tool) => ({
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.input_schema,
-      })),
+      functionDeclarations: chatToolsAnthropic().map((tool) => {
+        const parameters = geminiSanitizeSchema(tool.input_schema);
+        return {
+          name: tool.name,
+          description: tool.description,
+          // Omit `parameters` entirely for no-arg tools — Gemini rejects an empty OBJECT.
+          ...(parameters ? { parameters } : {}),
+        };
+      }),
     },
   ];
 }

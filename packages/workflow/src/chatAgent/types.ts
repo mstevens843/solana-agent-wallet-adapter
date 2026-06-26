@@ -67,6 +67,15 @@ export interface ChatToolCall {
   args: string; // raw JSON arguments (parsed by the loop)
 }
 
+// Anthropic extended-thinking blocks captured from a turn so they can be replayed
+// verbatim on the NEXT request. When thinking is enabled and an assistant turn contains
+// a tool_use, Anthropic REQUIRES the originating thinking block (with its signature) to be
+// passed back unchanged on the follow-up turn, or it 400s. Carried opaquely; only the
+// Anthropic adapter produces/consumes these.
+export type ChatThinkingBlock =
+  | { type: 'thinking'; thinking: string; signature: string }
+  | { type: 'redacted_thinking'; data: string };
+
 // The result of one model completion: streamed text plus any tool calls.
 export interface ChatTurnOutcome {
   text: string;
@@ -79,6 +88,10 @@ export interface ChatTurnOutcome {
   usage?: ChatUsage;
   // Web sources the model cited this turn (Anthropic native web_search).
   citations?: ChatCitation[];
+  // Anthropic extended-thinking blocks from this turn, in order, so pushAssistant can
+  // replay them on the next request (required when thinking is enabled + a tool_use is
+  // present). Absent for non-Anthropic transports / when thinking is off.
+  thinking?: ChatThinkingBlock[];
 }
 
 // One executed tool result to echo back to the model. `content` is the canonical

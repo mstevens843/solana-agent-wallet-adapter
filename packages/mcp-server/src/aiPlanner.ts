@@ -1004,11 +1004,13 @@ export class BridgeAiPlanner {
     if (!config) {
       throw new ProtocolError('unsupported_method', 'Bridge AI is not configured. Set AGENTIC_AI_API_KEY or provide a bridge session key.');
     }
-    // H7-D (scoped): the single-shot generators fan out across ~20 shared
-    // plan/review/ask/research helpers, so per-fetch signal threading is deferred. We at
-    // least short-circuit if the client has ALREADY disconnected before the (often
-    // multi-round-trip, costly) web-research work begins. The streaming loop — the common
-    // path — already aborts mid-stream.
+    // Abort handling: short-circuit if the client has ALREADY disconnected before the (often
+    // multi-round-trip, costly) work begins, AND thread the signal into the web-research
+    // single-shot fetches (gemini-native + openai-responses) so a mid-flight disconnect
+    // cancels the upstream provider call instead of burning the user's BYOK tokens to
+    // completion. The streaming loop — the common path — already aborts mid-stream. The
+    // non-research single-shots (anthropic / openai-compatible) are quick and remain
+    // best-effort (short-circuit only).
     if (signal?.aborted) throw new ProtocolError('invalid_request', 'Chat request was aborted.');
     const normalizedRequest = normalizeChatRequest(request);
     assertAiChatRequestAllowed(normalizedRequest);
@@ -1024,10 +1026,10 @@ export class BridgeAiPlanner {
       return this.generateConnectorChat(config, normalizedRequest);
     }
     if (transport === 'gemini-native') {
-      return this.generateGeminiChat(config, normalizedRequest);
+      return this.generateGeminiChat(config, normalizedRequest, signal);
     }
     if (transport === 'openai-responses' && chatNeedsWebResearch(normalizedRequest)) {
-      return this.generateOpenAiResponsesChat(config, normalizedRequest);
+      return this.generateOpenAiResponsesChat(config, normalizedRequest, signal);
     }
     if (transport === 'anthropic-messages') {
       return this.generateAnthropicChat(config, normalizedRequest);
@@ -1239,10 +1241,14 @@ export class BridgeAiPlanner {
         return { summary: `${connectorId} ${atom.action} info`, data: { knowledge: atom.knowledge } };
       }
       const factSpec = atom.factSpec;
+      const argStr = (key: string): string | undefined => (typeof input[key] === 'string' && (input[key] as string).trim() ? (input[key] as string).trim() : undefined);
       const args = {
         ...(walletAddress ? { walletAddress } : {}),
-        ...(typeof input.mint === 'string' && input.mint.trim() ? { mint: input.mint.trim() } : {}),
+        ...(argStr('mint') ? { mint: argStr('mint') } : {}),
         ...(query ? { query } : {}),
+        ...(argStr('amount') ? { amount: argStr('amount') } : {}),
+        ...(argStr('inputToken') ? { inputToken: argStr('inputToken') } : {}),
+        ...(argStr('outputToken') ? { outputToken: argStr('outputToken') } : {}),
       };
       const raw = await this.connectorFactResolver(factSpec.capability, factSpec.buildInput(args), connectorId);
       const formatted = clampConnectorFacts(factSpec.format(raw), factSpec.maxChars);
@@ -1339,6 +1345,7 @@ export class BridgeAiPlanner {
   private async generateOpenAiResponsesChat(
     config: AiRuntimeConfig,
     normalizedRequest: Required<AiChatRequest>,
+    signal?: AbortSignal,
   ): Promise<AiChatResult> {
     const messages = aiChatMessages(normalizedRequest);
     const systemMessage = messages[0]?.content ?? '';
@@ -1362,6 +1369,9 @@ export class BridgeAiPlanner {
           reasoning: { effort: OPENAI_REASONING_EFFORT },
         }),
       }),
+      // A client disconnect cancels this (often multi-round-trip web-research) fetch so it
+      // stops burning the user's BYOK tokens after they hit Stop.
+      ...(signal ? { signal } : {}),
     }).catch((err) => {
       throw new ProtocolError(
         'wallet_unreachable',
@@ -1851,6 +1861,7 @@ export class BridgeAiPlanner {
   private async generateGeminiChat(
     config: AiRuntimeConfig,
     normalizedRequest: Required<AiChatRequest>,
+    signal?: AbortSignal,
   ): Promise<AiChatResult> {
     const messages = aiChatMessages(normalizedRequest);
     const payload = await this.postGeminiGenerateContent(
@@ -1862,6 +1873,7 @@ export class BridgeAiPlanner {
         temperature: 0.3,
         maxOutputTokens: 1200,
         research: chatNeedsWebResearch(normalizedRequest),
+        ...(signal ? { signal } : {}),
       },
     );
     return aiChatFromPayload(payload);
@@ -1877,6 +1889,9 @@ export class BridgeAiPlanner {
       temperature: number;
       maxOutputTokens: number;
       research: boolean;
+      // When provided (chat path), a client disconnect cancels the upstream provider fetch so
+      // a long web-research turn stops burning the user's BYOK tokens after they hit Stop.
+      signal?: AbortSignal;
     },
   ): Promise<unknown> {
     const generationConfig: Record<string, unknown> = {
@@ -1904,6 +1919,7 @@ export class BridgeAiPlanner {
         generationConfig,
         ...(options.research ? { tools: [{ google_search: {} }] } : {}),
       }),
+      ...(options.signal ? { signal: options.signal } : {}),
     }).catch((err) => {
       throw new ProtocolError(
         'wallet_unreachable',

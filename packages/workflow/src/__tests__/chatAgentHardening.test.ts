@@ -7,6 +7,7 @@ import {
   chatLoopExhaustedMessage,
   chatNoTextFallback,
   chatRetryDelayMs,
+  chatToolsGemini,
   chatTransportAdapter,
   chatTruncatedSuffix,
   createStreamingProviderTurn,
@@ -263,10 +264,13 @@ describe('provider-specific correctness (Phase G)', () => {
     }
   });
 
-  it('Gemini buildBody relaxes the DANGEROUS_CONTENT safety filter for wallet ops', () => {
+  it('Gemini buildBody relaxes DANGEROUS_CONTENT to BLOCK_ONLY_HIGH (never BLOCK_NONE, which 400s non-allowlisted keys)', () => {
     const body = chatTransportAdapter('gemini-native').buildBody('SYS', [], 'gemini-2.5-flash', []);
     const settings = body.safetySettings as Array<{ category: string; threshold: string }>;
-    expect(settings.find((s) => s.category === 'HARM_CATEGORY_DANGEROUS_CONTENT')?.threshold).toBe('BLOCK_NONE');
+    // BLOCK_NONE returns a hard 400 ("restricted HarmBlockThreshold setting BLOCK_NONE") on
+    // accounts that are not allowlisted / not on invoiced billing — it must never be sent.
+    expect(settings.every((s) => s.threshold !== 'BLOCK_NONE')).toBe(true);
+    expect(settings.find((s) => s.category === 'HARM_CATEGORY_DANGEROUS_CONTENT')?.threshold).toBe('BLOCK_ONLY_HIGH');
   });
 
   it('extracts finishReason and flags truncation (all 3 adapters)', () => {
@@ -447,5 +451,129 @@ describe('loop never strands a tool chip when executeTool throws (F2)', () => {
     expect(statuses.some((e) => e.type === 'tool_status' && e.phase === 'start')).toBe(true);
     expect(statuses.some((e) => e.type === 'tool_status' && e.phase === 'done')).toBe(true);
     expect(events.some((e) => e.type === 'done')).toBe(true);
+  });
+});
+
+// ── Reasoning-depth + Gemini correctness (audit fixes B1/B2/B3/C5) ──────────────────────
+describe('Gemini tool-schema sanitization (B2)', () => {
+  function hasEmptyObjectSchema(node: unknown): boolean {
+    if (!node || typeof node !== 'object') return false;
+    const n = node as Record<string, unknown>;
+    if (n.type === 'object') {
+      const props = n.properties && typeof n.properties === 'object' ? (n.properties as Record<string, unknown>) : undefined;
+      if (!props || Object.keys(props).length === 0) return true;
+      return Object.values(props).some(hasEmptyObjectSchema);
+    }
+    if (n.type === 'array' && n.items) return hasEmptyObjectSchema(n.items);
+    return false;
+  }
+  function geminiDecls(): Array<Record<string, unknown>> {
+    return (chatToolsGemini()[0] as { functionDeclarations: Array<Record<string, unknown>> }).functionDeclarations;
+  }
+
+  it('no functionDeclaration sends an OBJECT schema with empty/absent properties (Gemini 400 guard)', () => {
+    for (const d of geminiDecls()) {
+      if (d.parameters !== undefined) expect(hasEmptyObjectSchema(d.parameters)).toBe(false);
+    }
+  });
+
+  it('omits parameters for no-arg tools and gives the proposal params a non-empty properties map', () => {
+    const byName = new Map(geminiDecls().map((d) => [d.name as string, d]));
+    expect(byName.get('get_market_regime')?.parameters).toBeUndefined();
+    expect(byName.get('get_wallet_history')?.parameters).toBeUndefined();
+    const params = byName.get('propose_wallet_action')?.parameters as { properties: Record<string, { properties?: Record<string, unknown> }> };
+    expect(Object.keys(params.properties.params?.properties ?? {}).length).toBeGreaterThan(0);
+  });
+});
+
+describe('Anthropic extended-thinking block replay (B1)', () => {
+  const adapter = chatTransportAdapter('anthropic-messages');
+
+  it('parseResponse captures thinking + redacted_thinking blocks in order', () => {
+    const out = adapter.parseResponse({
+      content: [
+        { type: 'thinking', thinking: 'let me think', signature: 'sig123' },
+        { type: 'redacted_thinking', data: 'enc' },
+        { type: 'text', text: 'hi' },
+        { type: 'tool_use', id: 't1', name: 'get_token_price', input: { query: 'SOL' } },
+      ],
+      stop_reason: 'tool_use',
+    });
+    expect(out.thinking).toEqual([
+      { type: 'thinking', thinking: 'let me think', signature: 'sig123' },
+      { type: 'redacted_thinking', data: 'enc' },
+    ]);
+    expect(out.toolCalls.map((t) => t.name)).toEqual(['get_token_price']);
+  });
+
+  it('pushAssistant replays thinking blocks BEFORE the tool_use block (else the next turn 400s)', () => {
+    const messages: unknown[] = [];
+    adapter.pushAssistant(messages, {
+      text: 'hi',
+      toolCalls: [{ id: 't1', name: 'get_token_price', args: '{"query":"SOL"}' }],
+      thinking: [{ type: 'thinking', thinking: 'reason', signature: 'sig' }],
+    });
+    const content = (messages[0] as { content: Array<Record<string, unknown>> }).content;
+    expect(content[0]).toEqual({ type: 'thinking', thinking: 'reason', signature: 'sig' });
+    const thinkingIdx = content.findIndex((b) => b.type === 'thinking');
+    const toolIdx = content.findIndex((b) => b.type === 'tool_use');
+    expect(thinkingIdx).toBeGreaterThanOrEqual(0);
+    expect(thinkingIdx).toBeLessThan(toolIdx);
+  });
+
+  it('parseStream captures thinking_delta + signature_delta', async () => {
+    const frames = [
+      'event: content_block_start\ndata: {"index":0,"content_block":{"type":"thinking"}}\n\n',
+      'event: content_block_delta\ndata: {"index":0,"delta":{"type":"thinking_delta","thinking":"abc"}}\n\n',
+      'event: content_block_delta\ndata: {"index":0,"delta":{"type":"signature_delta","signature":"sig"}}\n\n',
+      'event: content_block_start\ndata: {"index":1,"content_block":{"type":"text"}}\n\n',
+      'event: content_block_delta\ndata: {"index":1,"delta":{"type":"text_delta","text":"hello"}}\n\n',
+      'event: message_delta\ndata: {"delta":{"stop_reason":"end_turn"}}\n\n',
+    ].join('');
+    const out = await adapter.parseStream(sseResponse(frames), () => {});
+    expect(out.thinking).toEqual([{ type: 'thinking', thinking: 'abc', signature: 'sig' }]);
+    expect(out.text).toBe('hello');
+  });
+});
+
+describe('reasoning-depth output headroom (B3)', () => {
+  it('Gemini maxOutputTokens exceeds the thinking budget at High', () => {
+    const body = chatTransportAdapter('gemini-native').buildBody('SYS', [], 'gemini-2.5-flash', [], { streaming: true, reasoningEffort: 'high' }) as {
+      generationConfig: { maxOutputTokens: number; thinkingConfig?: { thinkingBudget: number } };
+    };
+    expect(body.generationConfig.thinkingConfig?.thinkingBudget).toBe(8192);
+    expect(body.generationConfig.maxOutputTokens).toBeGreaterThan(body.generationConfig.thinkingConfig!.thinkingBudget);
+  });
+
+  it('OpenAI max_completion_tokens is raised above the answer floor for reasoning models at High', () => {
+    const body = chatTransportAdapter('openai-compatible').buildBody('SYS', [], 'o3', [], { streaming: true, reasoningEffort: 'high', openAiNative: true }) as {
+      max_completion_tokens?: number;
+      reasoning_effort?: string;
+    };
+    expect(body.max_completion_tokens ?? 0).toBeGreaterThan(2048);
+    expect(body.reasoning_effort).toBe('high');
+  });
+});
+
+describe('Anthropic model-generation gate (C5)', () => {
+  const a = chatTransportAdapter('anthropic-messages');
+  type AnthropicBody = { temperature?: number; thinking?: { type: string; budget_tokens?: number } };
+
+  it('older models (sonnet-4-5): temperature at Medium, enabled+budget_tokens at High, no temperature', () => {
+    const med = a.buildBody('S', [], 'claude-sonnet-4-5', [], { streaming: true, reasoningEffort: 'medium' }) as AnthropicBody;
+    expect(med.temperature).toBe(0.3);
+    expect(med.thinking).toBeUndefined();
+    const high = a.buildBody('S', [], 'claude-sonnet-4-5', [], { streaming: true, reasoningEffort: 'high' }) as AnthropicBody;
+    expect(high.thinking).toEqual({ type: 'enabled', budget_tokens: 6144 });
+    expect(high.temperature).toBeUndefined();
+  });
+
+  it('flagship (opus-4-8): never sends temperature; uses adaptive thinking at High', () => {
+    const med = a.buildBody('S', [], 'claude-opus-4-8', [], { streaming: true, reasoningEffort: 'medium' }) as AnthropicBody;
+    expect(med.temperature).toBeUndefined();
+    expect(med.thinking).toBeUndefined();
+    const high = a.buildBody('S', [], 'claude-opus-4-8', [], { streaming: true, reasoningEffort: 'high' }) as AnthropicBody;
+    expect(high.thinking).toEqual({ type: 'adaptive' });
+    expect(high.temperature).toBeUndefined();
   });
 });

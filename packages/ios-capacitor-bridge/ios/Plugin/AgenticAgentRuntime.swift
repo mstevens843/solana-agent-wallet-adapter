@@ -610,13 +610,22 @@ final class AgenticAgentRuntime {
         // Cancel any prior in-flight stream (one chat stream at a time). Clear the held
         // task ref when THIS stream completes so a finished task isn't retained.
         cancelActiveStream()
+        // Capture THIS stream's task so its late completion only clears the held ref when it
+        // is still the active one. Without the identity check, stream A's late completion
+        // (after a Stop+resend already started stream B) would null out B's task ref, and a
+        // subsequent Stop could no longer cancel B → the native request runs on, wasting the
+        // user's BYOK tokens. (Android already does the equivalent identity-checked clear.)
+        var createdTask: URLSessionTask?
         let clearingCompletion: (Result<[String: Any], AgenticAgentError>) -> Void = { [weak self] result in
-            if let self = self { self.queue.sync { self._activeStreamTask = nil } }
+            if let self = self {
+                self.queue.sync { if self._activeStreamTask === createdTask { self._activeStreamTask = nil } }
+            }
             completion(result)
         }
         let delegate = AgenticChatStreamDelegate(onChunk: onChunk, onEnd: onEnd, onError: onError, completion: clearingCompletion)
         let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
         let task = session.dataTask(with: req)
+        createdTask = task
         queue.sync { _activeStreamTask = task }
         task.resume()
     }
@@ -993,6 +1002,16 @@ final class AgenticChatStreamDelegate: NSObject, URLSessionDataDelegate {
             }
         }
         // Nothing decodable yet (still mid-sequence) — keep buffering for the next chunk.
+        // Robustness guard: a valid incomplete UTF-8 sequence is ≤3 trailing bytes, so if
+        // undecodable bytes pile up far beyond that the stream is corrupt (e.g. a misbehaving
+        // custom gateway emitting non-UTF-8). Without this the back-off above never drains and
+        // `pending` would grow while output silently stalls for the rest of the turn. Lossily
+        // flush (invalid bytes → U+FFFD) and reset so we degrade instead of stalling.
+        if pending.count > 64 * 1024 {
+            let salvaged = String(decoding: pending, as: UTF8.self)
+            if !salvaged.isEmpty { onChunk(salvaged) }
+            pending.removeAll(keepingCapacity: false)
+        }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {

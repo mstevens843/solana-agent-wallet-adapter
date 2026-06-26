@@ -3,18 +3,40 @@
 
 import type { ConnectorActionAtom } from './types.js';
 import { JUPITER_ATOMS, clampConnectorFacts } from './jupiter.js';
+import { AMM_ATOMS } from './amm.js';
+import { STAKING_ATOMS } from './staking.js';
+import { LEND_VAULT_ATOMS } from './lendVault.js';
+import { BRIDGE_ORACLE_ATOMS } from './bridgeOracle.js';
 
 export type { ConnectorActionAtom, ConnectorActionKnowledge, ConnectorFactSpec, ConnectorFactArgs, ConnectorFactCapability } from './types.js';
 export { DEFAULT_CONNECTOR_FACT_MAX_CHARS } from './types.js';
 export { clampConnectorFacts };
+export { formatAmmLiquidity } from './amm.js';
+export { formatJupiterSwapQuote } from './jupiter.js';
+export { formatJitoStake, formatMarinadeStake } from './staking.js';
+export { formatKaminoLend, formatDriftVault, formatLuloLend } from './lendVault.js';
+export { formatWormholeBridge, formatPythOracle } from './bridgeOracle.js';
 
-// v1 = Jupiter only. The other 19 connectors slot in by pushing atoms of the same shape.
-export const CONNECTOR_ATOMS: ConnectorActionAtom[] = [...JUPITER_ATOMS];
+// Jupiter (built-in API) + first-class AMM liquidity, liquid-staking, lend/vault, and
+// bridge/oracle connectors. The remaining connectors slot in by pushing atoms of the
+// same shape.
+export const CONNECTOR_ATOMS: ConnectorActionAtom[] = [...JUPITER_ATOMS, ...AMM_ATOMS, ...STAKING_ATOMS, ...LEND_VAULT_ATOMS, ...BRIDGE_ORACLE_ATOMS];
 
 // Connector-name tokens that gate single-shot intent detection (so a bare "lend
-// position" question can't hijack a generic chat). Extend as connectors are added.
+// position" / "my positions" question can't hijack a generic chat). Extend as
+// connectors are added.
 const CONNECTOR_INTENT_TOKENS: Record<string, string[]> = {
   jupiter: ['jupiter', 'jup'],
+  raydium: ['raydium', 'ray'],
+  orca: ['orca', 'whirlpool', 'whirlpools'],
+  meteora: ['meteora', 'dlmm'],
+  kamino: ['kamino', 'klend'],
+  jito: ['jito', 'jitosol'],
+  marinade: ['marinade', 'msol'],
+  drift: ['drift'],
+  lulo: ['lulo'],
+  wormhole: ['wormhole', 'portal'],
+  pyth: ['pyth'],
 };
 
 function normalize(value: string): string {
@@ -61,11 +83,11 @@ export function findConnectorAtomByIntent(text: string): ConnectorActionAtom | u
 // what exists and which tool to call WITHOUT a discovery round-trip. Tiny on purpose.
 export function connectorCapabilityIndex(): string {
   const lines = CONNECTOR_ATOMS.map((atom) => {
+    // Fact-bearing atoms route to the tool; the only knowledge-only atom is Jupiter
+    // 'portfolio', which is assembled from the lend + borrow reads.
     const route = atom.factSpec
       ? `get_connector_facts action=${atom.action}`
-      : atom.action === 'swap'
-        ? 'use get_token_price / search_tokens then propose_wallet_action'
-        : 'combine action=lend + action=borrow';
+      : 'combine action=lend + action=borrow';
     const gated = atom.knowledge.enabledByDefault ? '' : ' [enable flag]';
     return `${atom.connectorId}/${atom.action}: ${atom.knowledge.summary} (${route})${gated}`;
   });

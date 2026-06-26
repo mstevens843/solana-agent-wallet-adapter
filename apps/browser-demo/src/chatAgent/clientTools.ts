@@ -158,10 +158,14 @@ export function createClientChatToolExecutor(deps: ClientChatToolDeps): ChatTool
         return { summary: `${connectorId} ${atom.action} info`, data: { knowledge: atom.knowledge } };
       }
       const factSpec = atom.factSpec;
+      const argStr = (key: string): string | undefined => (typeof input[key] === 'string' && (input[key] as string).trim() ? (input[key] as string).trim() : undefined);
       const factArgs = {
         ...(walletAddress ? { walletAddress } : {}),
         ...(mintArg ? { mint: mintArg } : {}),
         ...(query ? { query } : {}),
+        ...(argStr('amount') ? { amount: argStr('amount') } : {}),
+        ...(argStr('inputToken') ? { inputToken: argStr('inputToken') } : {}),
+        ...(argStr('outputToken') ? { outputToken: argStr('outputToken') } : {}),
       };
       try {
         const raw = await deps.connectorFacts({ connectorId, capability: factSpec.capability, ...factSpec.buildInput(factArgs) });

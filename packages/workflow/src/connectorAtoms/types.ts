@@ -22,7 +22,8 @@ export type ConnectorFactCapability =
   | 'perps'
   | 'trigger'
   | 'recurring'
-  | 'swap';
+  | 'swap'
+  | 'oracle';
 
 // Static capability card: what an action does + how to use it. Short and
 // capability-level (stable), never parameter-level (volatile), to minimize drift.
@@ -41,6 +42,10 @@ export interface ConnectorFactArgs {
   mint?: string;
   query?: string;
   limit?: number;
+  // Swap-quote args (Jupiter swap action). Optional; only the swap factSpec reads them.
+  amount?: string;
+  inputToken?: string;
+  outputToken?: string;
 }
 
 export interface ConnectorFactSpec {

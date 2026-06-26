@@ -212,16 +212,21 @@ internal class DefaultHttpExecutor(
                         return@suspendCancellableCoroutine
                     }
                     // 2xx: relay the body incrementally. JS reassembles SSE frames, so an
-                    // arbitrary read boundary is fine. Cap retained as a runaway guard.
+                    // arbitrary read boundary is fine. Chunks are relayed (not buffered), so the
+                    // per-read buffer is the only memory held — the cumulative ceiling is purely a
+                    // runaway guard. It must NOT reuse the 1 MiB non-streaming body cap: a long
+                    // SSE transcript (per-event `data:` framing + thinking deltas) legitimately
+                    // dwarfs the underlying text, so the 1 MiB cap would abort healthy long
+                    // streams mid-answer. Use a generous streaming-only ceiling instead.
                     val reader = InputStreamReader(connection.inputStream, Charsets.UTF_8)
                     val buffer = CharArray(BUFFER_CHARS)
-                    var total = 0
+                    var total = 0L
                     while (true) {
                         if (!cont.isActive) return@suspendCancellableCoroutine
                         val read = reader.read(buffer)
                         if (read == -1) break
                         total += read
-                        if (total > MAX_RESPONSE_BYTES) throw ResponseTooLargeException()
+                        if (total > MAX_STREAM_TOTAL_CHARS) throw ResponseTooLargeException()
                         if (read > 0) onChunk(String(buffer, 0, read))
                     }
                     cont.resume(HttpResponse(status = status, body = ""))
@@ -273,6 +278,10 @@ internal class DefaultHttpExecutor(
 
     companion object {
         const val MAX_RESPONSE_BYTES: Int = 1_048_576
+        // Streaming runaway guard only (chunks are relayed, not buffered). Generous so a long
+        // SSE transcript — whose framing/thinking-delta overhead inflates the char count
+        // several-fold over the visible answer — is never aborted mid-stream.
+        private const val MAX_STREAM_TOTAL_CHARS: Long = 64L * 1024 * 1024
         private const val BUFFER_CHARS: Int = 8 * 1024
     }
 }

@@ -5,6 +5,7 @@ import {
   appendReviewFinding,
   assertPlanGuardrails,
   connectorActionCard,
+  connectorAtomsFor,
   evaluatePlanGuardrails,
   extractAtoms,
   formatDollar,
@@ -2251,14 +2252,22 @@ const PLAN_ACTION_ATOM_KEYWORDS: Array<[RegExp, string]> = [
   [/(recurring|dca)/i, 'dca'],
   [/perp/i, 'perps'],
   [/prediction/i, 'prediction'],
+  [/(liquidity|whirlpool|dlmm|clmm|cpmm|\blp\b)/i, 'liquidity'],
 ];
 function planConnectorActionCard(request: AiPlanRequest, selected: Record<string, unknown> | undefined): string {
   const connectorId = selected && typeof selected.id === 'string' ? selected.id : '';
   if (!connectorId) return '';
   const haystack = `${request.template?.actionType ?? ''} ${request.template?.category ?? ''}`;
   const match = PLAN_ACTION_ATOM_KEYWORDS.find(([re]) => re.test(haystack));
-  if (!match) return '';
-  return connectorActionCard(getConnectorAtom(connectorId, match[1]));
+  if (match) {
+    const card = connectorActionCard(getConnectorAtom(connectorId, match[1]));
+    if (card) return card;
+  }
+  // Fallback: most connectors (kamino/jito/marinade/drift/raydium/orca/meteora) have a
+  // single fact-bearing atom, so the action keyword isn't needed — use it directly.
+  // Jupiter (many atoms) still relies on the keyword match above.
+  const factAtoms = connectorAtomsFor(connectorId).filter((atom) => atom.factSpec);
+  return factAtoms.length === 1 ? connectorActionCard(factAtoms[0]) : '';
 }
 
 export function aiMessages(request: AiPlanRequest): Array<{ role: 'system' | 'user'; content: string }> {
