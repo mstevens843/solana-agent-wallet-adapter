@@ -81,6 +81,10 @@ const browserDeviceAgent =
 // hidden and the tab layout reverts to the pre-Chat arrangement. Baked at build;
 // each running app checks its runtime-detected surface against the list.
 const hideChatTab = process.env.HIDE_CHAT_TAB ?? '';
+// CHAT_AGENT: when true/1, the Chat tab uses the new agentic chat loop; when
+// empty/0/false it uses the on-device planner. Baked at build so a Render redeploy
+// flips it for every surface's live bundle (no native build needed).
+const chatAgent = process.env.CHAT_AGENT ?? '';
 const deviceAgentWalletAllowlist =
   process.env.VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST ??
   process.env.AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST ??
@@ -162,6 +166,7 @@ export default defineConfig({
     'import.meta.env.VITE_AGENTIC_DEVICE_AGENT': JSON.stringify(deviceAgent),
     'import.meta.env.VITE_AGENTIC_BROWSER_DEVICE_AGENT': JSON.stringify(browserDeviceAgent),
     'import.meta.env.VITE_HIDE_CHAT_TAB': JSON.stringify(hideChatTab),
+    'import.meta.env.VITE_CHAT_AGENT': JSON.stringify(chatAgent),
     'import.meta.env.VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST': JSON.stringify(deviceAgentWalletAllowlist),
     'import.meta.env.VITE_AGENTIC_CLOUD_API_BASE_URL': JSON.stringify(cloudApiBaseUrl),
     'import.meta.env.VITE_AGENTIC_QR_CONNECT_APP_URL': JSON.stringify(qrConnectAppUrl),

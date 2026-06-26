@@ -5483,6 +5483,17 @@
     "{count} item is still saved on this device": "仍有 {count} 個項目儲存在此裝置上",
     "{count} items are still saved on this device": "仍有 {count} 個項目儲存在此裝置上",
     "{phrase} ({reason}). They stay safe here and will retry next sign-in.": "{phrase}（{reason}）。它們會安全地保留在此，並於下次登入時重試。",
-    "{phrase}. They stay safe here and will retry next sign-in.": "{phrase}。它們會安全地保留在此，並於下次登入時重試。"
+    "{phrase}. They stay safe here and will retry next sign-in.": "{phrase}。它們會安全地保留在此，並於下次登入時重試。",
+    "Some sources couldn’t be reached — tap refresh to retry.": "部分來源無法連線 — 點選重新整理以重試。",
+    "above trigger": "高於觸發價",
+    "below trigger": "低於觸發價",
+    "Borrow position": "借貸部位",
+    "New action": "新增操作",
+    "Progress": "進度",
+    "Redeem all": "全部贖回",
+    "Unknown": "未知",
+    "Withdraw funds": "提領資金",
+    "Marinade staked": "Marinade 已質押",
+    "OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.": "在瀏覽器工作階段模式下無法直接呼叫 OpenAI 金鑰。請選擇 Hosted BYOK 或 Local bridge。"
   }
 }

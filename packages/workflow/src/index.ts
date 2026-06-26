@@ -30,6 +30,7 @@ export type { ApprovalSummaryHint, LabelTone, StatusLabel } from './labels.js';
 // without pulling node:crypto into Vite/Rollup.
 //   import * as DevLayer1 from '@solana-agent-wallet-adapter/workflow/dev';
 export * from './agentPlans.js';
+export * from './chatAgent/index.js';
 export * from './agentFactRouter.js';
 export * from './agentEvidence.js';
 export * from './agentEvidenceRequirements.js';

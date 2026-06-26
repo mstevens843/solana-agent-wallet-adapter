@@ -7,6 +7,7 @@ export {
   __resetBrowserDeviceAgentForTests,
   browserDeviceAgentRequest,
   browserDeviceAgentStatusSnapshot,
+  getBrowserDeviceAgentChatProfile,
   getBrowserDeviceAgentSecretStoreMode,
   initBrowserDeviceAgent,
   isBrowserDeviceAgentInitialized,

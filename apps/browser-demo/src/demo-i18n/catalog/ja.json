@@ -5483,6 +5483,17 @@
     "{count} item is still saved on this device": "{count} 件のアイテムがまだこのデバイスに保存されています",
     "{count} items are still saved on this device": "{count} 件のアイテムがまだこのデバイスに保存されています",
     "{phrase} ({reason}). They stay safe here and will retry next sign-in.": "{phrase}（{reason}）。ここで安全に保持され、次回のサインイン時に再試行されます。",
-    "{phrase}. They stay safe here and will retry next sign-in.": "{phrase}。ここで安全に保持され、次回のサインイン時に再試行されます。"
+    "{phrase}. They stay safe here and will retry next sign-in.": "{phrase}。ここで安全に保持され、次回のサインイン時に再試行されます。",
+    "Some sources couldn’t be reached — tap refresh to retry.": "一部のソースに接続できませんでした — 更新をタップして再試行してください。",
+    "above trigger": "トリガー価格より上",
+    "below trigger": "トリガー価格より下",
+    "Borrow position": "借入ポジション",
+    "New action": "新規アクション",
+    "Progress": "進行状況",
+    "Redeem all": "すべて償還",
+    "Unknown": "不明",
+    "Withdraw funds": "資金を引き出す",
+    "Marinade staked": "Marinade でステーク済み",
+    "OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.": "OpenAI キーはブラウザのセッションモードから直接呼び出すことはできません。Hosted BYOK または Local bridge を選択してください。"
   }
 }

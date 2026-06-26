@@ -5483,6 +5483,17 @@
     "{count} item is still saved on this device": "{count} элемент по-прежнему сохранён на этом устройстве",
     "{count} items are still saved on this device": "{count} элементов по-прежнему сохранены на этом устройстве",
     "{phrase} ({reason}). They stay safe here and will retry next sign-in.": "{phrase} ({reason}). Они остаются в безопасности здесь и будут повторно отправлены при следующем входе.",
-    "{phrase}. They stay safe here and will retry next sign-in.": "{phrase}. Они остаются в безопасности здесь и будут повторно отправлены при следующем входе."
+    "{phrase}. They stay safe here and will retry next sign-in.": "{phrase}. Они остаются в безопасности здесь и будут повторно отправлены при следующем входе.",
+    "Some sources couldn’t be reached — tap refresh to retry.": "Не удалось получить данные из некоторых источников — нажмите «Обновить», чтобы повторить.",
+    "above trigger": "выше триггера",
+    "below trigger": "ниже триггера",
+    "Borrow position": "Заёмная позиция",
+    "New action": "Новое действие",
+    "Progress": "Прогресс",
+    "Redeem all": "Погасить всё",
+    "Unknown": "Неизвестно",
+    "Withdraw funds": "Вывести средства",
+    "Marinade staked": "Застейкано в Marinade",
+    "OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.": "Ключи OpenAI нельзя использовать напрямую в режиме сессии браузера. Выберите Hosted BYOK или Local bridge."
   }
 }

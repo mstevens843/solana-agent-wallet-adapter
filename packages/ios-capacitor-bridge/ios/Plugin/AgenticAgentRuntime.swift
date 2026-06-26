@@ -485,6 +485,148 @@ final class AgenticAgentRuntime {
         dispatch(method: "localize", systemPrompt: AgenticDeviceAgentSystemPrompts.localize, payload: payload, completion: completion)
     }
 
+    // On-device chat-agent completion. The JS chat loop built the full provider request
+    // `body` for the given `transport`; native injects the stored key and POSTs it,
+    // returning the RAW provider response { httpStatus, body } for JS to parse (tool calls
+    // + text). The key never leaves native. The endpoint URL is chosen by `transport` and
+    // built from the stored config's baseUrl — never from a URL supplied by JS — so there is
+    // no key-exfiltration surface. A thin authenticated fetch (no plan/policy pipeline).
+    func complete(_ payload: [String: Any], completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void) {
+        let captured = queue.sync { _config }
+        guard let cfg = captured else {
+            completion(.failure(AgenticAgentError(code: AgenticProviderErrorCodes.invalidConfig, message: "Device Agent is not configured.")))
+            return
+        }
+        guard let bodyObject = payload["body"],
+              JSONSerialization.isValidJSONObject(bodyObject),
+              let bodyData = try? JSONSerialization.data(withJSONObject: bodyObject, options: []) else {
+            completion(.failure(AgenticAgentError(code: AgenticProviderErrorCodes.invalidResponse, message: "Device Agent complete payload is missing a valid request body.")))
+            return
+        }
+        let apiKey = (cfg.apiKey ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try AgenticProviderHttp.assertApiKeyHeaderSafe(apiKey)
+        } catch let err as AgenticAgentError {
+            completion(.failure(err))
+            return
+        } catch {
+            completion(.failure(AgenticAgentError(code: AgenticProviderErrorCodes.invalidConfig, message: "AI API key is invalid.")))
+            return
+        }
+        // Generic keyed-fetch mode (JS supplies url+headers+keyHeader, host-validated)
+        // or the transport switch (native builds url+headers from config). Generic mode
+        // future-proofs new providers/endpoints/headers (ships via Render, no build).
+        let resolvedEndpoint: AgenticCompleteEndpoint?
+        let jsUrl = (payload["url"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !jsUrl.isEmpty {
+            resolvedEndpoint = genericCompleteEndpoint(url: jsUrl, headers: payload["headers"] as? [String: Any], keyHeader: payload["keyHeader"] as? [String: Any], config: cfg, apiKey: apiKey)
+        } else {
+            let transport = (payload["transport"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            resolvedEndpoint = completeEndpoint(transport: transport, config: cfg, apiKey: apiKey)
+        }
+        guard let endpoint = resolvedEndpoint else {
+            completion(.failure(AgenticAgentError(code: AgenticProviderErrorCodes.invalidConfig, message: "Could not resolve a valid provider chat endpoint.")))
+            return
+        }
+        // Allow JS to tune the read timeout (clamped 5s–300s); default 120s.
+        let timeoutMs = (payload["timeoutMs"] as? Int).map { max(5_000, min(300_000, $0)) } ?? 120_000
+        var req = URLRequest(url: endpoint.url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: Double(timeoutMs) / 1000.0)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        for (name, value) in endpoint.headers {
+            req.setValue(value, forHTTPHeaderField: name)
+        }
+        req.httpBody = bodyData
+        let session = URLSession(configuration: .ephemeral)
+        let task = session.dataTask(with: req) { data, response, error in
+            defer { session.finishTasksAndInvalidate() }
+            if let error {
+                completion(.failure(AgenticAgentError(code: AgenticProviderErrorCodes.network, message: error.localizedDescription)))
+                return
+            }
+            guard let http = response as? HTTPURLResponse else {
+                completion(.failure(AgenticAgentError(code: AgenticProviderErrorCodes.network, message: "No HTTP response from AI provider.")))
+                return
+            }
+            // Return the raw provider response for ANY status (including 4xx/5xx) so the
+            // JS loop can parse the provider's error message; only transport errors fail.
+            let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            completion(.success(["httpStatus": http.statusCode, "body": text]))
+        }
+        task.resume()
+    }
+
+    private struct AgenticCompleteEndpoint {
+        let url: URL
+        let headers: [String: String]
+    }
+
+    private func completeEndpoint(transport: String, config: AgenticAgentRuntimeConfig, apiKey: String) -> AgenticCompleteEndpoint? {
+        let openRouter = config.provider.lowercased() == "openrouter"
+            || (config.baseUrl ?? "").localizedCaseInsensitiveContains("openrouter.ai")
+        switch transport {
+        case "anthropic-messages":
+            let format = openRouter ? "openai-compatible" : "anthropic"
+            let base = AgenticProviderHttp.normalizeBaseUrl(config.baseUrl, apiFormat: format)
+            guard let url = URL(string: "\(base)/messages") else { return nil }
+            let headers: [String: String] = openRouter
+                ? [
+                    "Authorization": "Bearer \(apiKey)",
+                    "X-OpenRouter-Metadata": "enabled",
+                    "HTTP-Referer": "https://ios-device-agent.local",
+                    "X-Title": "Agentic iOS Device Agent",
+                ]
+                : ["x-api-key": apiKey, "anthropic-version": "2023-06-01"]
+            return AgenticCompleteEndpoint(url: url, headers: headers)
+        case "gemini-native":
+            let base = AgenticProviderHttp.normalizeNativeBaseUrl(config.baseUrl)
+            let model = config.model.trimmingCharacters(in: .whitespacesAndNewlines)
+            let encodedModel = model.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? model
+            guard let url = URL(string: "\(base)/models/\(encodedModel):generateContent") else { return nil }
+            return AgenticCompleteEndpoint(url: url, headers: ["x-goog-api-key": apiKey])
+        default:
+            // openai-compatible (and OpenAI / OpenRouter non-anthropic) → /chat/completions.
+            let base = AgenticProviderHttp.normalizeBaseUrl(config.baseUrl, apiFormat: "openai-compatible")
+            guard let url = URL(string: "\(base)/chat/completions") else { return nil }
+            var headers = ["Authorization": "Bearer \(apiKey)"]
+            if openRouter {
+                headers["HTTP-Referer"] = "https://ios-device-agent.local"
+                headers["X-Title"] = "Agentic iOS Device Agent"
+            }
+            return AgenticCompleteEndpoint(url: url, headers: headers)
+        }
+    }
+
+    // Generic keyed-fetch mode: JS supplies the full url + headers + key-injection.
+    // The url must be https and its host must match one of the hosts derivable from the
+    // stored config baseUrl, so a compromised WebView can never point the stored key at
+    // an attacker host. Returns nil (→ caller fails the call) when not allowed.
+    private func genericCompleteEndpoint(url: String, headers: [String: Any]?, keyHeader: [String: Any]?, config: AgenticAgentRuntimeConfig, apiKey: String) -> AgenticCompleteEndpoint? {
+        guard url.lowercased().hasPrefix("https://"), let parsed = URL(string: url), let host = parsed.host?.lowercased() else { return nil }
+        guard completeAllowedHosts(config: config).contains(host) else { return nil }
+        var out: [String: String] = [:]
+        if let headers {
+            for (name, value) in headers {
+                if let str = value as? String { out[name] = str }
+            }
+        }
+        let rawName = (keyHeader?["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let name = rawName.isEmpty ? "Authorization" : rawName
+        let scheme = ((keyHeader?["scheme"] as? String) ?? "").lowercased()
+        out[name] = scheme == "bearer" ? "Bearer \(apiKey)" : apiKey
+        return AgenticCompleteEndpoint(url: parsed, headers: out)
+    }
+
+    private func completeAllowedHosts(config: AgenticAgentRuntimeConfig) -> Set<String> {
+        let candidates = [
+            AgenticProviderHttp.normalizeBaseUrl(config.baseUrl, apiFormat: "openai-compatible"),
+            AgenticProviderHttp.normalizeBaseUrl(config.baseUrl, apiFormat: "anthropic"),
+            AgenticProviderHttp.normalizeNativeBaseUrl(config.baseUrl),
+        ]
+        return Set(candidates.compactMap { URL(string: $0)?.host?.lowercased() })
+    }
+
     // MARK: - Dispatch
 
     private func dispatch(
@@ -634,6 +776,17 @@ final class AgenticAgentRuntime {
         } else {
             status["message"] = "Ready"
         }
+        // Advertise on-device chat-agent capabilities so JS can feature-detect this
+        // binary. `chatComplete` gates the loop vs the planner; `chatCompleteGeneric`
+        // means `complete` accepts the JS url+headers fetch mode; `chatCompleteStream`
+        // is false until native token streaming ships (a future build).
+        status["capabilities"] = [
+            "chatComplete": true,
+            "chatCompleteGeneric": true,
+            "chatCompleteStream": false,
+            "version": "1",
+            "supportedTransports": ["openai-compatible", "anthropic-messages", "gemini-native"],
+        ]
         return status
     }
 

@@ -102,7 +102,21 @@ import {
   type TransactionFinalizationRecord as WorkflowTransactionFinalizationRecord,
   workflowDecisionProofMessage,
   workflowFinalizationProofMessage,
+  chatAgenticSystemPrompt,
+  chatTransportAdapter,
+  createStreamingProviderTurn,
+  providerFailureMessage,
+  resolveChatTransport,
+  runAgentChatLoop,
+  safeParseJsonObject,
+  type AgentChatStreamEvent,
+  type ChatAiTransport,
+  type ChatModelProfile,
+  type ChatTransportAdapter,
+  type RunProviderTurn,
 } from '@solana-agent-wallet-adapter/workflow';
+import { createClientChatToolExecutor, type ClientChatToolDeps, type ClientResolvedToken } from './chatAgent/clientTools.js';
+import { browserOriginForOpenRouter } from './deviceAgent/provider/openRouterHeaders.js';
 import {
   detectMwaEnvironment,
   registerAgentMobileWalletAdapter,
@@ -1700,6 +1714,14 @@ const SHOW_ANDROID_EXAMPLE_TAB = resolveAndroidExampleTab();
 const HIDE_CHAT_TAB_RAW = String(
   (import.meta as ImportMeta & { env?: { VITE_HIDE_CHAT_TAB?: string } }).env?.VITE_HIDE_CHAT_TAB ?? '',
 );
+// CHAT_AGENT (build-time, Render-flippable): true/1 → the Chat tab's ON-DEVICE paths
+// (Device Agent + browser Session) use the new agentic chat loop; empty/0/false →
+// they use the on-device planner (safe interim). Lets us ship the binary now with the
+// planner and flip the device chat agent on later via a Render redeploy (no build).
+// Hosted BYOK / Local Bridge / Plan Connector always use the proven server chat.
+const CHAT_AGENT_ENABLED = /^(true|1)$/i.test(
+  String((import.meta as ImportMeta & { env?: { VITE_CHAT_AGENT?: string } }).env?.VITE_CHAT_AGENT ?? '').trim(),
+);
 const CHAT_AI_CONNECTION_GATE_ENABLED = false;
 const CHAT_AI_NOT_CONNECTED_TOAST_KEY = 'chat-ai-not-connected';
 function currentAppSurfaceType(): AppSurfaceType {
@@ -2262,8 +2284,10 @@ interface PositionLiveRow {
   details: PositionDetail[];
   progress?: { current: number; total: number };
   distancePct?: number | null; // limit: % from trigger
-  cancel?: { kind: PreparedActionKind; orderId: string; outputMint?: string };
-  extras?: Array<{ kind: string; label: string; orderId: string }>; // secondary manage actions (edit, collect fees…)
+  // Primary manage action. `fields` = extra templateFields to prefill (e.g. borrow needs vaultId+positionId,
+  // unstake needs the amount); `label` overrides the kind-derived button label.
+  cancel?: { kind: PreparedActionKind; orderId: string; outputMint?: string; fields?: Record<string, string>; label?: string };
+  extras?: Array<{ kind: string; label: string; orderId: string; fields?: Record<string, string> }>; // secondary manage actions
 }
 interface PositionsLiveEntry {
   rows: PositionLiveRow[];
@@ -2271,6 +2295,7 @@ interface PositionsLiveEntry {
   loading: boolean;
   error?: string;
   cluster: Cluster;
+  partial?: boolean; // some (not all) connectors in a multi-source section failed
 }
 
 // Snapshot of a position's live metrics captured when the user manages/closes it, so the Done card
@@ -3207,6 +3232,7 @@ interface DemoState {
   positionsCategory: PositionSectionId;
   positionsLive: Partial<Record<PositionSectionId, PositionsLiveEntry>>;
   positionsClosed: Record<string, { kind: string; metrics: PositionClosedMetrics }>;
+  positionsPrefetched: boolean; // fired all-section live fetch once this session so count pills are accurate
   completedPlanFilter: CompletedPlanFilter;
   selectedRuntimePath: RuntimePathId;
   recentCopyId: string;
@@ -4364,6 +4390,7 @@ const state: DemoState = {
   positionsCategory: 'orders',
   positionsLive: {},
   positionsClosed: {},
+  positionsPrefetched: false,
   completedPlanFilter: 'all',
   selectedRuntimePath: 'exec',
   recentCopyId: '',
@@ -5484,6 +5511,7 @@ function hydrateLocalWorkspaceForWallet(): void {
   state.positions = loadPositions(state.address);
   state.positionsClosed = loadPositionsClosed(state.address);
   state.positionsLive = {}; // old wallet's live data must not bleed across a switch
+  state.positionsPrefetched = false;
   refreshBrowserWorkflowData();
   if (recovered.changed) saveGeneratedPlans();
   selectFallbackGeneratedPlan();
@@ -22768,6 +22796,236 @@ async function runDeviceAgentPlannerChat(
   handlers.onDone?.(result);
 }
 
+// --- Real on-device chat agent (shared tool-calling loop) --------------------
+// Device Agent now runs the SAME agentic loop the cloud/bridge use (shared from
+// @solana-agent-wallet-adapter/workflow), with the keyed model call kept on-device:
+// browser/Tauri stream the provider directly from JS (key from the device-agent
+// secret store); Android/iOS delegate one completion per turn to the native
+// 'complete' bridge method. Read tools run client-side against cloud/public
+// endpoints. If the runtime can't do a tool-calling completion (e.g. an old APK
+// without native 'complete', or no key), we fall back to the single-shot planner.
+
+const CHAT_OPENROUTER_TITLE = 'Agentic Chat';
+
+// Attach OpenRouter attribution (HTTP-Referer + X-Title) for the in-JS streaming
+// paths (Device Agent browser/Tauri + browser Session). No-op for non-OpenRouter.
+function withChatOpenRouterAttribution(profile: ChatModelProfile): ChatModelProfile {
+  return { ...profile, openRouterReferer: browserOriginForOpenRouter(), openRouterTitle: CHAT_OPENROUTER_TITLE };
+}
+
+// The non-secret model profile from the active AI settings (provider/model/baseUrl).
+// Used to resolve transport + (for native) build the request; the key is supplied
+// separately by the caller.
+function deviceAgentChatProfile(): ChatModelProfile {
+  return {
+    provider: state.aiSettings.provider,
+    apiFormat: state.aiSettings.apiFormat,
+    baseUrl: state.aiSettings.baseUrl,
+    model: state.aiSettings.model,
+  };
+}
+
+function buildClientChatToolDeps(): ClientChatToolDeps {
+  return {
+    searchTokens: async (query) =>
+      (await searchTokens(query)).map((r): ClientResolvedToken => ({
+        mint: r.mint,
+        symbol: r.symbol,
+        name: r.name,
+        priceUsd: r.priceUsd ?? null,
+      })),
+    priceForMints: async (mints) => {
+      const map = await fetchWalletBalancePriceInfoMap(mints, state.cluster);
+      return mints.map((mint) => ({ mint, usdPrice: map.get(mint)?.priceUsd ?? null }));
+    },
+    tokenSafety: async (mint) => tokenMarketRequest('/token-security', { address: mint }),
+    tokenAge: async (mint) => {
+      // BirdEye token metadata carries a creation timestamp for most tokens; surface
+      // it (the executor + model read createdAt/age). bridge→cloud handled inside.
+      const payload = await tokenMarketRequest('/token-meta', { addresses: [mint] });
+      const row = asRecord(payload?.data) ?? asRecord(payload);
+      const entry = (row && asRecord(row[mint])) ?? row ?? {};
+      const created = numberField(entry.creationTime) ?? numberField(entry.created_time) ?? numberField(entry.createdAt) ?? numberField(entry.blockTime);
+      if (created === undefined) return { mint, unavailable: true, reason: 'no_creation_time', source: 'birdeye' };
+      const createdMs = created > 1e12 ? created : created * 1000;
+      return { mint, createdAt: new Date(createdMs).toISOString(), ageSeconds: Math.max(0, Math.floor((Date.now() - createdMs) / 1000)), source: 'birdeye' };
+    },
+    marketRegime: async () => {
+      const [global, fearGreed] = await Promise.all([
+        fetchCoinGeckoGlobalSnapshot().catch(() => undefined),
+        fetchFearGreedIndex().catch(() => undefined),
+      ]);
+      const out: Record<string, unknown> = { source: 'coingecko+alternative.me' };
+      if (global?.btcDominancePct !== undefined) out.btcDominancePct = global.btcDominancePct;
+      if (global?.totalMarketCapUsd !== undefined) out.totalMarketCapUsd = global.totalMarketCapUsd;
+      if (fearGreed) { out.fearGreed = fearGreed.value; out.fearGreedLabel = fearGreed.classification; }
+      if (out.btcDominancePct === undefined && out.totalMarketCapUsd === undefined && out.fearGreed === undefined) {
+        return { unavailable: true, error: 'market data unavailable' };
+      }
+      return out;
+    },
+    walletHistory: async (wallet) => {
+      const summary = await fetchAgentWalletTransfers(wallet);
+      return (summary.rows ?? []).slice(0, 5).map((row) => ({
+        ...(typeof row.signature === 'string' ? { signature: row.signature } : {}),
+        ...(typeof row.type === 'string' ? { type: row.type } : {}),
+        ...(typeof row.timestamp === 'number' ? { timestamp: row.timestamp } : {}),
+        ...(typeof row.description === 'string' ? { description: (row.description as string).slice(0, 160) } : {}),
+      }));
+    },
+  };
+}
+
+// Map shared-loop stream events onto the existing ChatStreamHandlers.
+function chatLoopEmitter(handlers: ChatStreamHandlers): (event: AgentChatStreamEvent) => void {
+  return (event) => {
+    if (event.type === 'token') handlers.onToken?.(event.text);
+    else if (event.type === 'tool_status') handlers.onToolStatus?.(event);
+    else if (event.type === 'proposal') handlers.onProposal?.(event.proposal);
+    else if (event.type === 'error') handlers.onError?.(event.message);
+    else if (event.type === 'done') handlers.onDone?.(event.result);
+  };
+}
+
+function deviceAgentChatLoopRequest(request: AgentChatRequest): {
+  messages: AgentChatRequest['messages'];
+  walletAddress?: string;
+  cluster?: string;
+  context?: Record<string, unknown>;
+} {
+  return {
+    messages: request.messages,
+    ...(request.walletAddress || state.address ? { walletAddress: request.walletAddress || state.address } : {}),
+    ...(request.cluster ? { cluster: request.cluster } : {}),
+    ...(request.context ? { context: request.context } : {}),
+  };
+}
+
+// Native (android/iOS) completion: one model call per turn. The loop builds the
+// full non-streaming provider body in JS via the shared adapter; the native
+// 'complete' method is a thin authenticated fetch (key stays native) that returns
+// the raw provider response { httpStatus, body }; JS parses it. Non-streaming, so
+// the answer lands on the loop's `done` event (turn granularity).
+function nativeDeviceAgentRunProviderTurn(adapter: ChatTransportAdapter, transport: ChatAiTransport, system: string, model: string): RunProviderTurn {
+  return async (messages, _onToken, signal) => {
+    const body = adapter.buildBody(system, messages, model, adapter.toolSpecs(), false);
+    const result = await invokeDeviceAgentNative<{ httpStatus?: number; body?: string }>(
+      'complete',
+      { transport, model, body },
+      { action: 'chat-complete', ...(signal ? { signal } : {}) },
+    );
+    const httpStatus = typeof result?.httpStatus === 'number' ? result.httpStatus : 0;
+    const text = typeof result?.body === 'string' ? result.body : '';
+    if (httpStatus < 200 || httpStatus >= 300) {
+      throw new Error(providerFailureMessage(safeParseJsonObject(text), httpStatus));
+    }
+    return adapter.parseResponse(safeParseJsonObject(text));
+  };
+}
+
+// Whether the native runtime advertises the 'complete' capability (set by a future
+// APK/IPA in its status payload). Until then native Device Agent uses the planner.
+function deviceAgentRuntimeSupportsChatComplete(): boolean {
+  return Boolean(state.deviceAgentStatus?.capabilities?.chatComplete);
+}
+
+// The shared "direct browser" chat loop: stream the provider straight from JS with
+// the key in this WebView's heap (no cloud relay). Used by Device Agent (browser/
+// Tauri) AND browser Session mode — both hold the key in JS and call the provider
+// directly. Full token-by-token streaming + the same client tools.
+async function runDirectBrowserChatLoop(
+  profile: ChatModelProfile,
+  apiKey: string,
+  request: AgentChatRequest,
+  handlers: ChatStreamHandlers,
+  options: { signal?: AbortSignal } = {},
+): Promise<void> {
+  const transport = resolveChatTransport(profile);
+  const adapter = chatTransportAdapter(transport);
+  const loopRequest = deviceAgentChatLoopRequest(request);
+  const system = chatAgenticSystemPrompt({ ...(loopRequest.walletAddress ? { walletAddress: loopRequest.walletAddress } : {}), ...(loopRequest.context ? { context: loopRequest.context } : {}) });
+  const runProviderTurn = createStreamingProviderTurn({ adapter, profile, apiKey, systemPrompt: system, model: profile.model });
+  await runAgentChatLoop({
+    request: loopRequest,
+    adapter,
+    runProviderTurn,
+    executeTool: createClientChatToolExecutor(buildClientChatToolDeps()),
+    emit: chatLoopEmitter(handlers),
+    ...(options.signal ? { signal: options.signal } : {}),
+  });
+}
+
+// Browser Session mode (`mode:'session'`) = direct browser provider call with the
+// key in JS settings, NO cloud relay. Same shared loop as Device Agent browser. The
+// browser cannot call OpenAI directly (no CORS) — mirror generateSessionAiPlan.
+function shouldUseSessionChat(): boolean {
+  return state.aiSettings.mode === 'session';
+}
+
+async function runSessionChatLoop(
+  request: AgentChatRequest,
+  handlers: ChatStreamHandlers,
+  options: { signal?: AbortSignal } = {},
+): Promise<void> {
+  const apiKey = (state.aiSettings.apiKey || '').trim();
+  if (!apiKey) throw new Error('Session AI key is required.');
+  if (state.aiSettings.provider === 'openai') {
+    throw new Error(t('OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.'));
+  }
+  const profile = withChatOpenRouterAttribution(deviceAgentChatProfile());
+  await runDirectBrowserChatLoop(profile, apiKey, request, handlers, options);
+}
+
+async function runDeviceAgentChatLoop(
+  request: AgentChatRequest,
+  handlers: ChatStreamHandlers,
+  options: { signal?: AbortSignal } = {},
+): Promise<void> {
+  const profile = deviceAgentChatProfile();
+  const transport = resolveChatTransport(profile);
+  // Subscription connectors have no tool loop here — defer to the single-shot planner.
+  if (transport === 'cli-agent') {
+    await runDeviceAgentPlannerChat(request, handlers, options);
+    return;
+  }
+  const route = chooseDeviceAgentRequestRoute(currentDeviceAgentRuntimeSurface());
+  const loopRequest = deviceAgentChatLoopRequest(request);
+  const executeTool = createClientChatToolExecutor(buildClientChatToolDeps());
+  const emit = chatLoopEmitter(handlers);
+
+  // Browser / Tauri: the key is in this WebView's heap — stream the provider turn
+  // directly for a true token-by-token experience (shared with browser Session mode).
+  if (route === 'browser-native' || route === 'tauri-native') {
+    const mod = await ensureBrowserDeviceAgentInitialized();
+    const live = mod ? await mod.getBrowserDeviceAgentChatProfile() : null;
+    if (!live?.apiKey) {
+      await runDeviceAgentPlannerChat(request, handlers, options);
+      return;
+    }
+    const liveProfile = withChatOpenRouterAttribution({
+      provider: live.provider || profile.provider,
+      apiFormat: live.apiFormat || profile.apiFormat,
+      baseUrl: live.baseUrl || profile.baseUrl,
+      model: live.model || profile.model,
+    });
+    await runDirectBrowserChatLoop(liveProfile, live.apiKey, request, handlers, options);
+    return;
+  }
+
+  // Android / iOS native: delegate the keyed completion to the native runtime, but
+  // only when the binary advertises 'complete'. Otherwise use the planner interim.
+  if ((route === 'android-native' || route === 'ios-native') && deviceAgentRuntimeSupportsChatComplete()) {
+    const adapter = chatTransportAdapter(transport);
+    const system = chatAgenticSystemPrompt({ ...(loopRequest.walletAddress ? { walletAddress: loopRequest.walletAddress } : {}), ...(loopRequest.context ? { context: loopRequest.context } : {}) });
+    const runProviderTurn = nativeDeviceAgentRunProviderTurn(adapter, transport, system, profile.model);
+    await runAgentChatLoop({ request: loopRequest, adapter, runProviderTurn, executeTool, emit, ...(options.signal ? { signal: options.signal } : {}) });
+    return;
+  }
+
+  // No tool-calling completion available here → single-shot planner.
+  await runDeviceAgentPlannerChat(request, handlers, options);
+}
+
 // Turn a raw stream/transport error into product-grade copy.
 function friendlyChatError(raw: string): string {
   // Standalone Device Agent never talks to the Cloud relay, so it must never surface
@@ -23215,8 +23473,16 @@ async function runChatStream(sessionId: string, assistantId: string): Promise<vo
       // Native paired Plan Connector → forward to the desktop connector (non-streaming).
       await runPairedConnectorChat(request, handlers, { signal: abort.signal });
     } else if (shouldUseDeviceAgentPlannerChat()) {
-      // Standalone Device Agent → reuse the on-device planner (non-streaming), no relay.
-      await runDeviceAgentPlannerChat(request, handlers, { signal: abort.signal });
+      // Standalone Device Agent. CHAT_AGENT gates the new agentic loop vs the safe
+      // on-device planner — so we can ship the binary now (planner) and flip the
+      // device chat agent on later via a Render redeploy. The loop also falls back
+      // internally to the planner when the runtime can't do a tool-calling completion.
+      if (CHAT_AGENT_ENABLED) await runDeviceAgentChatLoop(request, handlers, { signal: abort.signal });
+      else await runDeviceAgentPlannerChat(request, handlers, { signal: abort.signal });
+    } else if (shouldUseSessionChat() && CHAT_AGENT_ENABLED) {
+      // Browser Session → direct browser provider call (key in JS), no cloud relay.
+      // Only when CHAT_AGENT is on; otherwise it falls through to the prior behavior.
+      await runSessionChatLoop(request, handlers, { signal: abort.signal });
     } else {
       // Ensure the native cloud Bearer token is hydrated before the first request
       // (iOS cold-launch race) so we don't 401 with a misleading "sign in" error.
@@ -31398,7 +31664,7 @@ function currentDeviceAgentRuntimeSurface() {
 }
 
 async function invokeDeviceAgentNative<R>(
-  method: 'generatePlan' | 'reviewPlan' | 'ask' | 'localize' | 'chat',
+  method: 'generatePlan' | 'reviewPlan' | 'ask' | 'localize' | 'chat' | 'complete',
   payload: unknown,
   options: { action: string; signal?: AbortSignal },
 ): Promise<R> {
@@ -31442,7 +31708,7 @@ async function invokeDeviceAgentNative<R>(
 }
 
 async function invokeBrowserDeviceAgent<R>(
-  method: 'status' | 'configure' | 'start' | 'stop' | 'generatePlan' | 'reviewPlan' | 'ask' | 'localize' | 'chat',
+  method: 'status' | 'configure' | 'start' | 'stop' | 'generatePlan' | 'reviewPlan' | 'ask' | 'localize' | 'chat' | 'complete',
   payload: Record<string, unknown>,
   options: { signal?: AbortSignal } = {},
 ): Promise<{ status: DeviceAgentStatus; result?: R }> {
@@ -33951,6 +34217,15 @@ function bind(): void {
       const kind = button.dataset.positionCancelKind;
       if (!kind) return;
       const orderId = button.dataset.positionCancelOrderId ?? '';
+      let fields: Record<string, string> | undefined;
+      const fieldsRaw = button.dataset.positionFields;
+      if (fieldsRaw) {
+        try {
+          fields = JSON.parse(fieldsRaw) as Record<string, string>;
+        } catch {
+          fields = undefined;
+        }
+      }
       // Snapshot the live row's metrics keyed by the id we pass to the form, so the Done card can
       // show the real numbers (cycles, spend, price) once this close action signs. ONLY for the
       // primary CLOSE action (data-position-capture) — not Edit/Collect extras, which aren't closes.
@@ -33963,7 +34238,7 @@ function bind(): void {
           savePositionsClosed();
         }
       }
-      openManageForm(kind, orderId);
+      openManageForm(kind, orderId, fields);
     });
   }
 
@@ -40887,11 +41162,32 @@ function posStr(value: unknown): string | undefined {
   return typeof value === 'string' && value ? value : undefined;
 }
 function posUsd(n: number): string {
-  // Fixed en-US so the "$" symbol + separators stay consistent regardless of the user's browser locale.
-  return `$${n.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+  if (!Number.isFinite(n)) return '$0';
+  // Fixed en-US so "$" + separators stay consistent regardless of browser locale. Sub-dollar prices
+  // (memecoins) would round to "$0" at 2dp → switch to significant digits so they stay readable.
+  const abs = Math.abs(n);
+  const opts: Intl.NumberFormatOptions =
+    abs > 0 && abs < 1 ? { maximumSignificantDigits: 4 } : { maximumFractionDigits: 2 };
+  return `$${n.toLocaleString('en-US', opts)}`;
+}
+// Round a token amount for display (full-precision adapter strings are noisy). Keeps a few significant
+// digits for dust so it never collapses to "0"; caps decimals otherwise. Returns the unit-less number.
+function posAmount(value: unknown, maxDp = 6): string {
+  const n = posNum(value);
+  if (!Number.isFinite(n)) return typeof value === 'string' ? value : '';
+  const abs = Math.abs(n);
+  const opts: Intl.NumberFormatOptions =
+    abs > 0 && abs < 1 ? { maximumSignificantDigits: 4 } : { maximumFractionDigits: maxDp };
+  return n.toLocaleString('en-US', opts);
 }
 function posMint(mint?: string): string {
   return mint ? `${mint.slice(0, 4)}…${mint.slice(-4)}` : '—';
+}
+// Resolve a token symbol from the in-memory known-token map (SOL/USDC/USDT/JUP/BONK/WIF/PYUSD/mSOL/JitoSOL),
+// falling back to a truncated mint — same behavior as wallet-balance rows. No fetch.
+function posSymbol(mint?: string): string {
+  if (!mint) return '—';
+  return KNOWN_BROWSER_TOKENS_BY_MINT.get(mint)?.symbol ?? posMint(mint);
 }
 async function posPrices(mints: Array<string | undefined>): Promise<Map<string, WalletBalancePriceInfo>> {
   const list = [...new Set(mints.filter((m): m is string => Boolean(m)))];
@@ -40903,11 +41199,10 @@ async function posPrices(mints: Array<string | undefined>): Promise<Map<string, 
   }
 }
 
-async function parseLimitRows(res: Record<string, unknown> | null | undefined): Promise<PositionLiveRow[]> {
+function parseLimitRows(res: Record<string, unknown> | null | undefined, prices: Map<string, WalletBalancePriceInfo>): PositionLiveRow[] {
   if (!res) return [];
-  const orders = posArray(((res.result ?? res) as Record<string, unknown>).orders);
+  const orders = posArray(((res.result ?? res) as Record<string, unknown>).orders).filter((o) => posStr(o.orderId)); // skip id-less (actionless) rows
   if (!orders.length) return [];
-  const prices = await posPrices(orders.map((o) => posStr(o.triggerMint) ?? posStr(o.outputMint)));
   return orders.map((o) => {
     const orderId = posStr(o.orderId) ?? '';
     const trigger = posNum(o.triggerPriceUsd);
@@ -40921,23 +41216,27 @@ async function parseLimitRows(res: Record<string, unknown> | null | undefined): 
     if (Number.isFinite(trigger)) details.push({ label: 'Trigger price', value: posUsd(trigger) });
     if (typeof cur === 'number') details.push({ label: 'Current price', value: posUsd(cur) });
     if (posStr(o.remainingInputAmount)) {
-      details.push({ label: 'Size', value: `${o.remainingInputAmount} ${posMint(posStr(o.inputMint))}` });
+      details.push({ label: 'Size', value: `${posAmount(o.remainingInputAmount)} ${posSymbol(posStr(o.inputMint))}` });
     }
+    const limitExtras: Array<{ kind: string; label: string; orderId: string }> = [
+      { kind: 'jupiter_trigger_edit_order', label: t('Edit'), orderId },
+    ];
+    // Filled/cancelled/expired orders leave funds in the Jupiter vault — surface the reclaim path.
+    if (o.withdrawable === true) limitExtras.push({ kind: 'jupiter_trigger_withdraw_order_funds', label: t('Withdraw funds'), orderId });
     return {
       section: 'orders', id: orderId, connectorId: 'jupiter', kind: 'limit',
-      title: `${posMint(posStr(o.inputMint))} → ${posMint(posStr(o.outputMint))}`,
+      title: `${posSymbol(posStr(o.inputMint))} → ${posSymbol(posStr(o.outputMint))}`,
       status: posStr(o.state), details, distancePct,
       cancel: o.cancellable ? { kind: 'jupiter_trigger_cancel_order', orderId } : undefined,
-      extras: orderId ? [{ kind: 'jupiter_trigger_edit_order', label: t('Edit'), orderId }] : undefined,
+      extras: limitExtras,
     };
   });
 }
 
-async function parseDcaRows(res: Record<string, unknown> | null | undefined): Promise<PositionLiveRow[]> {
+function parseDcaRows(res: Record<string, unknown> | null | undefined, prices: Map<string, WalletBalancePriceInfo>): PositionLiveRow[] {
   if (!res) return [];
-  const orders = posArray(((res.result ?? res) as Record<string, unknown>).orders);
+  const orders = posArray(((res.result ?? res) as Record<string, unknown>).orders).filter((o) => posStr(o.orderId)); // skip id-less rows
   if (!orders.length) return [];
-  const prices = await posPrices(orders.map((o) => posStr(o.inputMint)));
   return orders.map((o) => {
     const orderId = posStr(o.orderId) ?? '';
     const total = posNum(o.numberOfOrders, 0);
@@ -40947,14 +41246,14 @@ async function parseDcaRows(res: Record<string, unknown> | null | undefined): Pr
     const inMint = posStr(o.inputMint);
     const inPrice = inMint ? prices.get(inMint)?.priceUsd : undefined;
     const details: PositionDetail[] = [];
-    if (posStr(o.amountPerCycle)) details.push({ label: 'Per cycle', value: `${o.amountPerCycle} ${posMint(inMint)}` });
+    if (posStr(o.amountPerCycle)) details.push({ label: 'Per cycle', value: `${posAmount(o.amountPerCycle)} ${posSymbol(inMint)}` });
     if (Number.isFinite(perCycle) && typeof inPrice === 'number' && executed > 0) {
       details.push({ label: 'Spent', value: posUsd(perCycle * executed * inPrice) });
     }
     if (posStr(o.nextExecutionAt)) details.push({ label: 'Next fill', value: formatDateTime(posStr(o.nextExecutionAt)!) });
     return {
       section: 'orders', id: orderId, connectorId: 'jupiter', kind: 'dca',
-      title: `${posMint(inMint)} → ${posMint(posStr(o.outputMint))}`,
+      title: `${posSymbol(inMint)} → ${posSymbol(posStr(o.outputMint))}`,
       status: posStr(o.status), details,
       progress: total ? { current: executed, total } : undefined,
       cancel: { kind: 'jupiter_recurring_cancel_order', orderId },
@@ -40962,23 +41261,25 @@ async function parseDcaRows(res: Record<string, unknown> | null | undefined): Pr
   });
 }
 
-async function parseLendRows(res: Record<string, unknown> | null | undefined): Promise<PositionLiveRow[]> {
+function parseLendRows(res: Record<string, unknown> | null | undefined, prices: Map<string, WalletBalancePriceInfo>): PositionLiveRow[] {
   if (!res) return [];
   const positions = posArray(res.positions);
   if (!positions.length) return [];
-  const prices = await posPrices(positions.map((p) => posStr(p.assetMint)));
   return positions.map((p) => {
     const supplied = posNum(p.underlyingAmount);
     const price = posStr(p.assetMint) ? prices.get(posStr(p.assetMint)!)?.priceUsd : undefined;
     const sym = posStr(p.tokenSymbol) ?? posMint(posStr(p.assetMint));
     const details: PositionDetail[] = [];
-    if (posStr(p.underlyingAmount)) details.push({ label: 'Supplied', value: `${p.underlyingAmount} ${sym}` });
+    if (posStr(p.underlyingAmount)) details.push({ label: 'Supplied', value: `${posAmount(p.underlyingAmount)} ${sym}` });
     if (Number.isFinite(supplied) && typeof price === 'number') details.push({ label: 'Value', value: posUsd(supplied * price) });
     if (typeof p.apy === 'number') details.push({ label: 'APY', value: `${(p.apy as number).toFixed(2)}%`, tone: p.apy >= 0 ? 'good' : 'warn' });
+    const assetMint = posStr(p.assetMint) ?? '';
     return {
       section: 'lending', id: posStr(p.shareMint) ?? posStr(p.assetMint) ?? sym, connectorId: 'jupiter', kind: 'lend',
       title: `${sym} supplied`, status: 'earning', details,
-      cancel: { kind: 'jupiter_lend_earn_withdraw', orderId: posStr(p.assetMint) ?? '' },
+      cancel: { kind: 'jupiter_lend_earn_withdraw', orderId: assetMint },
+      // Withdraw is partial (by amount); Redeem-all is the clean full-exit by shares.
+      extras: assetMint ? [{ kind: 'jupiter_lend_earn_redeem', label: t('Redeem all'), orderId: assetMint }] : undefined,
     };
   });
 }
@@ -40990,23 +41291,46 @@ function parseBorrowRows(res: Record<string, unknown> | null | undefined): Posit
     const tone: PositionDetail['tone'] =
       status === 'safe' ? 'good' : status === 'at_risk' ? 'warn' : status === 'liquidatable' || status === 'liquidated' ? 'bad' : undefined;
     const health = p.healthRatio == null ? null : posNum(p.healthRatio);
+    const debtUsd = posNum(p.debtValueUsd);
+    const debtAmt = posNum(p.debtAmount);
+    const colUsd = posNum(p.collateralValueUsd);
+    const colAmt = posNum(p.collateralAmount);
+    const hasDebt = (Number.isFinite(debtUsd) && debtUsd > 0) || (Number.isFinite(debtAmt) && debtAmt > 0);
+    const hasCollateral = (Number.isFinite(colUsd) && colUsd > 0) || (Number.isFinite(colAmt) && colAmt > 0);
     const details: PositionDetail[] = [];
     if (posStr(p.debtValueUsd)) details.push({ label: 'Debt', value: posUsd(posNum(p.debtValueUsd, 0)) });
-    else if (posStr(p.debtAmount)) details.push({ label: 'Debt', value: String(p.debtAmount) });
+    else if (posStr(p.debtAmount)) details.push({ label: 'Debt', value: posAmount(p.debtAmount) });
     if (posStr(p.collateralValueUsd)) details.push({ label: 'Collateral', value: posUsd(posNum(p.collateralValueUsd, 0)) });
     if (health != null && Number.isFinite(health)) details.push({ label: 'Health', value: health.toFixed(2), tone });
-    const borrowId = posStr(p.positionAddress) ?? '';
+
+    // Borrow manage needs the NUMERIC positionId + vaultId (the picker is valued by positionId &
+    // dependsOn vaultId; the prepare action requires both). positionAddress is display-only.
+    const vaultId = posNum(p.vaultId);
+    const positionId = posNum(p.positionId);
+    const hasIds = Number.isFinite(vaultId) && Number.isFinite(positionId);
+    const manageId = hasIds ? String(positionId) : '';
+    const manageFields = hasIds ? { vaultId: String(vaultId), positionId: String(positionId) } : undefined;
+    // Order actions so the most relevant is primary: Repay if there's debt, else Withdraw-collateral.
+    const actions: Array<{ kind: PreparedActionKind; label: string }> = [];
+    if (hasDebt) actions.push({ kind: 'jupiter_lend_borrow_repay', label: t('Repay') });
+    if (hasCollateral) actions.push({ kind: 'jupiter_lend_borrow_withdraw_collateral', label: t('Withdraw collateral') });
+    actions.push({ kind: 'jupiter_lend_borrow_deposit_collateral', label: t('Add collateral') });
+    if (hasCollateral) actions.push({ kind: 'jupiter_lend_borrow_borrow', label: t('Borrow more') });
+    const primary = actions[0];
     return {
-      section: 'borrowing', id: posStr(p.positionAddress) ?? String(p.positionId ?? ''), connectorId: 'jupiter', kind: 'borrow',
-      title: posStr(p.healthRatioText) ?? 'Borrow position', status, details,
-      cancel: { kind: 'jupiter_lend_borrow_repay', orderId: borrowId },
-      extras: borrowId
-        ? [
-            { kind: 'jupiter_lend_borrow_deposit_collateral', label: t('Add collateral'), orderId: borrowId },
-            { kind: 'jupiter_lend_borrow_withdraw_collateral', label: t('Withdraw collateral'), orderId: borrowId },
-            { kind: 'jupiter_lend_borrow_borrow', label: t('Borrow more'), orderId: borrowId },
-          ]
-        : undefined,
+      section: 'borrowing',
+      id: posStr(p.positionAddress) ?? String(p.positionId ?? ''),
+      connectorId: 'jupiter',
+      kind: 'borrow',
+      title: t('Borrow position'),
+      status,
+      details,
+      ...(hasIds && primary
+        ? { cancel: { kind: primary.kind, orderId: manageId, fields: manageFields, label: primary.label } }
+        : {}),
+      ...(hasIds && actions.length > 1
+        ? { extras: actions.slice(1).map((a) => ({ kind: a.kind, label: a.label, orderId: manageId, fields: manageFields })) }
+        : {}),
     };
   });
 }
@@ -41019,29 +41343,31 @@ function parseStakeRows(connectorId: string, res: Record<string, unknown> | null
   const rows: PositionLiveRow[] = [];
   if (posStr(r.msolBalance) || posStr(r.estimatedSolValue)) {
     const details: PositionDetail[] = [];
-    if (posStr(r.msolBalance)) details.push({ label: 'mSOL', value: String(r.msolBalance) });
-    if (posStr(r.estimatedSolValue)) details.push({ label: 'Est. SOL', value: String(r.estimatedSolValue) });
-    rows.push({ section: 'staking', id: `${connectorId}-msol`, connectorId, kind: 'stake', title: 'Marinade staked', details, cancel: { kind: 'marinade_liquid_unstake', orderId: '' } });
+    if (posStr(r.msolBalance)) details.push({ label: 'mSOL', value: posAmount(r.msolBalance) });
+    if (posStr(r.estimatedSolValue)) details.push({ label: 'Est. SOL', value: posAmount(r.estimatedSolValue) });
+    // Prefill the unstake form's required amount with the full mSOL balance the card already knows.
+    const msolBal = posStr(r.msolBalance);
+    rows.push({ section: 'staking', id: `${connectorId}-msol`, connectorId, kind: 'stake', title: t('Marinade staked'), details, cancel: { kind: 'marinade_liquid_unstake', orderId: '', ...(msolBal ? { fields: { msolAmount: msolBal } } : {}) } });
   }
   const jitoSol = r.jitoSol as Record<string, unknown> | undefined;
   if (jitoSol && posStr(jitoSol.amount)) {
-    rows.push({ section: 'staking', id: `${connectorId}-jitosol`, connectorId, kind: 'stake', title: 'JitoSOL', details: [{ label: 'Balance', value: String(jitoSol.amount) }], cancel: { kind: 'jito_unstake_jitosol', orderId: '' } });
+    const jitoBal = posStr(jitoSol.amount)!;
+    rows.push({ section: 'staking', id: `${connectorId}-jitosol`, connectorId, kind: 'stake', title: 'JitoSOL', details: [{ label: 'Balance', value: posAmount(jitoBal) }], cancel: { kind: 'jito_unstake_jitosol', orderId: '', fields: { jitoSolAmount: jitoBal } } });
   }
   for (const lst of posArray(r.rows)) {
-    if (!posStr(lst.amount)) continue;
+    // SanctumWalletPosition exposes the human balance as `amountUi` (not `amount`).
+    const lstAmount = posStr(lst.amountUi);
+    if (!lstAmount) continue;
     const sym = posStr(lst.symbol) ?? posMint(posStr(lst.mint));
-    rows.push({ section: 'staking', id: `${connectorId}-${posStr(lst.mint) ?? sym}`, connectorId, kind: 'stake', title: sym, details: [{ label: 'Balance', value: `${lst.amount} ${sym}` }], cancel: { kind: 'sanctum_unstake_lst_to_sol', orderId: posStr(lst.mint) ?? '' } });
+    rows.push({ section: 'staking', id: `${connectorId}-${posStr(lst.mint) ?? sym}`, connectorId, kind: 'stake', title: sym, details: [{ label: 'Balance', value: `${posAmount(lstAmount)} ${sym}` }], cancel: { kind: 'sanctum_unstake_lst_to_sol', orderId: posStr(lst.mint) ?? '' } });
   }
   return rows;
 }
 
-async function parseLpRows(connectorId: string, res: Record<string, unknown> | null | undefined): Promise<PositionLiveRow[]> {
+function parseLpRows(connectorId: string, res: Record<string, unknown> | null | undefined, prices: Map<string, WalletBalancePriceInfo>): PositionLiveRow[] {
   if (!res) return [];
   const positions = posArray(((res.result ?? res) as Record<string, unknown>).positions);
   if (!positions.length) return [];
-  const mints: Array<string | undefined> = [];
-  for (const p of positions) for (const ta of posArray(p.tokenAmounts)) mints.push(posStr(ta.mint));
-  const prices = await posPrices(mints);
   return positions.map((p, i) => {
     const parts: string[] = [];
     let usd = 0;
@@ -41049,7 +41375,7 @@ async function parseLpRows(connectorId: string, res: Record<string, unknown> | n
     for (const ta of posArray(p.tokenAmounts)) {
       const m = posStr(ta.mint);
       const sym = posStr(ta.symbol) ?? posMint(m);
-      if (posStr(ta.amount)) parts.push(`${ta.amount} ${sym}`);
+      if (posStr(ta.amount)) parts.push(`${posAmount(ta.amount)} ${sym}`);
       const amt = posNum(ta.amount);
       const price = m ? prices.get(m)?.priceUsd : undefined;
       if (Number.isFinite(amt) && typeof price === 'number') {
@@ -41068,16 +41394,18 @@ async function parseLpRows(connectorId: string, res: Record<string, unknown> | n
       : connectorId === 'orca' ? 'orca_decrease_liquidity'
       : connectorId === 'raydium' ? 'raydium_remove_liquidity'
       : undefined;
-    const removeId = connectorId === 'meteora' ? (posStr(p.positionAddress) ?? '') : (posStr(p.positionMint) ?? posStr(p.positionAddress) ?? '');
+    // Picker is valued by positionAddress (meteora) / positionMint (orca,raydium) — match exactly, no fallback.
+    const removeId = connectorId === 'meteora' ? (posStr(p.positionAddress) ?? '') : (posStr(p.positionMint) ?? '');
     const collectKind =
       connectorId === 'meteora' ? 'meteora_claim_fees'
       : connectorId === 'orca' ? 'orca_collect_fees'
       : connectorId === 'raydium' ? 'raydium_collect_fees'
       : undefined;
+    // NOTE: raydium has no frontend `raydium_harvest` form (only meteora/orca expose a rewards form),
+    // so we don't offer a Claim-rewards button that would dead-end.
     const rewardsKind =
       connectorId === 'meteora' ? 'meteora_claim_rewards'
       : connectorId === 'orca' ? 'orca_collect_rewards'
-      : connectorId === 'raydium' ? 'raydium_harvest'
       : undefined;
     const lpExtras: Array<{ kind: string; label: string; orderId: string }> = [];
     if (collectKind && removeId) lpExtras.push({ kind: collectKind, label: t('Collect fees'), orderId: removeId });
@@ -41089,7 +41417,7 @@ async function parseLpRows(connectorId: string, res: Record<string, unknown> | n
       kind: 'lp' as ActionCategory,
       title: `${positionConnectorName(connectorId)} ${t('Liquidity')}`,
       details,
-      ...(removeKind ? { cancel: { kind: removeKind as PreparedActionKind, orderId: removeId } } : {}),
+      ...(removeKind && removeId ? { cancel: { kind: removeKind as PreparedActionKind, orderId: removeId } } : {}),
       ...(lpExtras.length ? { extras: lpExtras } : {}),
     };
   });
@@ -41112,17 +41440,25 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
   state.positionsLive[section] = { rows: existing && existing.cluster === cluster ? existing.rows : [], fetchedAt: existing?.fetchedAt ?? 0, loading: true, error: existing?.error, cluster };
   try {
     let rows: PositionLiveRow[] = [];
+    let partial = false; // multi-source section where some (not all) connectors failed
     if (section === 'orders') {
       const [trig, rec] = await settleReads([
         connectorRead('jupiter', 'trigger', { triggerOperation: 'orders', triggerState: 'open' }),
         connectorRead('jupiter', 'recurring', { recurringOperation: 'orders', recurringState: 'active', recurringType: 'time' }),
       ]);
       if (trig === null && rec === null) throw new Error('signed-out');
-      rows = [...(await parseLimitRows(trig)), ...(await parseDcaRows(rec))];
+      partial = [trig, rec].includes(null);
+      const orderMints = [
+        ...(trig ? posArray(((trig.result ?? trig) as Record<string, unknown>).orders) : []).map((o) => posStr(o.triggerMint) ?? posStr(o.outputMint)),
+        ...(rec ? posArray(((rec.result ?? rec) as Record<string, unknown>).orders) : []).map((o) => posStr(o.inputMint)),
+      ];
+      const prices = await posPrices(orderMints); // ONE price fetch for both limit + DCA parsers
+      rows = [...parseLimitRows(trig, prices), ...parseDcaRows(rec, prices)];
     } else if (section === 'lending') {
       const res = await connectorRead('jupiter', 'earn');
       if (res === null) throw new Error('signed-out');
-      rows = await parseLendRows(res);
+      const prices = await posPrices(posArray(res.positions).map((p) => posStr(p.assetMint)));
+      rows = parseLendRows(res, prices);
     } else if (section === 'borrowing') {
       const res = await connectorRead('jupiter', 'positions');
       if (res === null) throw new Error('signed-out');
@@ -41134,6 +41470,7 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
         connectorRead('sanctum', 'positions'),
       ]);
       if (m === null && j === null && s === null) throw new Error('signed-out');
+      partial = [m, j, s].includes(null);
       rows = [...parseStakeRows('marinade', m), ...parseStakeRows('jito', j), ...parseStakeRows('sanctum', s)];
     } else if (section === 'liquidity') {
       const [me, o, ra] = await settleReads([
@@ -41142,12 +41479,23 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
         connectorRead('raydium', 'positions'),
       ]);
       if (me === null && o === null && ra === null) throw new Error('signed-out');
-      rows = [...(await parseLpRows('meteora', me)), ...(await parseLpRows('orca', o)), ...(await parseLpRows('raydium', ra))];
+      partial = [me, o, ra].includes(null);
+      const lpMints: Array<string | undefined> = [];
+      for (const lpRes of [me, o, ra]) {
+        if (!lpRes) continue;
+        for (const p of posArray(((lpRes.result ?? lpRes) as Record<string, unknown>).positions)) {
+          for (const ta of posArray(p.tokenAmounts)) lpMints.push(posStr(ta.mint));
+        }
+      }
+      const prices = await posPrices(lpMints); // ONE price fetch for all 3 LP connectors
+      rows = [...parseLpRows('meteora', me, prices), ...parseLpRows('orca', o, prices), ...parseLpRows('raydium', ra, prices)];
     }
     // Discard if the cluster changed mid-flight (stale fetch).
     if (state.cluster !== cluster) return;
-    state.positionsLive[section] = { rows, fetchedAt: Date.now(), loading: false, cluster };
-    expireStaleSeededForSection(section, cluster); // live is authoritative now — retire old bridge records
+    state.positionsLive[section] = { rows, fetchedAt: Date.now(), loading: false, cluster, ...(partial ? { partial: true } : {}) };
+    // Only retire bridge records when live actually returned rows (live is populated + authoritative).
+    // If live is EMPTY, a just-opened position may still be indexing — don't expire it prematurely.
+    if (rows.length > 0) expireStaleSeededForSection(section, cluster);
   } catch (e) {
     if (state.cluster !== cluster) return;
     state.positionsLive[section] = {
@@ -41190,7 +41538,8 @@ function positionDetailLabel(key: string): string {
 
 function formatPositionStatus(status: string | undefined): string {
   if (!status) return '';
-  switch (status) {
+  switch (status.toLowerCase()) {
+    case 'unknown': return t('Unknown');
     case 'open': return t('Open');
     case 'pending': return t('Pending');
     case 'active': return t('Active');
@@ -41213,6 +41562,20 @@ function positionConnectorName(connectorId: string): string {
   return getAdapterMeta(connectorId as ConnectedDappId)?.name ?? connectorId.charAt(0).toUpperCase() + connectorId.slice(1);
 }
 
+// Single source of truth for the .positions-card chrome — BOTH positionLiveCard (live) and positionCard
+// (seeded fallback) compose this so their structure/CSS can't drift. Each supplies its own head/summary/
+// body/actions HTML.
+function positionCardShell(opts: { id: string; head: string; summary: string; body?: string; actions: string; focused?: boolean }): string {
+  return `
+    <div class="positions-card${opts.focused ? ' positions-card-focused' : ''}" data-position-id="${escapeHtml(opts.id)}">
+      <div class="positions-card-head">${opts.head}</div>
+      <div class="positions-card-summary">${opts.summary}</div>
+      ${opts.body ?? ''}
+      <div class="positions-card-actions">${opts.actions}</div>
+    </div>
+  `;
+}
+
 function positionLiveCard(row: PositionLiveRow): string {
   const chip =
     connectorChip(row.connectorId, positionConnectorName(row.connectorId)) ||
@@ -41225,35 +41588,36 @@ function positionLiveCard(row: PositionLiveRow): string {
     .join('');
   const distance =
     typeof row.distancePct === 'number'
-      ? `<span class="positions-distance" title="${escapeHtml(t('Distance between the current price and the trigger price'))}">${Math.abs(row.distancePct).toFixed(1)}% ${escapeHtml(t('from trigger'))}</span>`
+      ? `<span class="positions-distance" title="${escapeHtml(t('Distance between the current price and the trigger price'))}">${Math.abs(row.distancePct).toFixed(1)}% ${escapeHtml(row.distancePct >= 0 ? t('below trigger') : t('above trigger'))}</span>`
       : '';
   const progress = row.progress && row.progress.total > 0
-    ? `<div class="positions-progress"><span class="positions-progress-track"><span class="positions-progress-fill" style="width:${Math.min(100, Math.round((row.progress.current / row.progress.total) * 100))}%"></span></span><span class="positions-progress-label">${row.progress.current}/${row.progress.total}</span></div>`
+    ? `<div class="positions-progress"><span class="positions-progress-track" role="progressbar" aria-valuenow="${row.progress.current}" aria-valuemin="0" aria-valuemax="${row.progress.total}" aria-label="${escapeHtml(t('Progress'))}"><span class="positions-progress-fill" style="width:${Math.min(100, Math.round((row.progress.current / row.progress.total) * 100))}%"></span></span><span class="positions-progress-label">${row.progress.current}/${row.progress.total}</span></div>`
     : '';
-  const cancelLabel = row.kind === 'lend' ? t('Withdraw') : row.kind === 'borrow' ? t('Repay') : row.kind === 'stake' ? t('Unstake') : row.kind === 'lp' ? t('Remove') : t('Cancel');
+  const fieldsAttr = (f?: Record<string, string>) => (f ? ` data-position-fields='${escapeHtml(JSON.stringify(f))}'` : '');
+  const cancelLabel =
+    row.cancel?.label ??
+    (row.kind === 'lend' ? t('Withdraw') : row.kind === 'borrow' ? t('Repay') : row.kind === 'stake' ? t('Unstake') : row.kind === 'lp' ? t('Remove') : t('Cancel'));
   const cancelBtn = row.cancel
-    ? `<button class="utility" data-position-cancel="${escapeHtml(row.id)}" data-position-cancel-kind="${escapeHtml(row.cancel.kind)}" data-position-cancel-order-id="${escapeHtml(row.cancel.orderId)}" data-position-capture="1">${escapeHtml(cancelLabel)}</button>`
+    ? `<button class="utility" data-position-cancel="${escapeHtml(row.id)}" data-position-cancel-kind="${escapeHtml(row.cancel.kind)}" data-position-cancel-order-id="${escapeHtml(row.cancel.orderId)}"${fieldsAttr(row.cancel.fields)} data-position-capture="1">${escapeHtml(cancelLabel)}</button>`
     : '';
   const extrasBtns = (row.extras ?? [])
     .map(
       (e) =>
-        `<button class="utility positions-extra" data-position-cancel="${escapeHtml(row.id)}" data-position-cancel-kind="${escapeHtml(e.kind)}" data-position-cancel-order-id="${escapeHtml(e.orderId)}">${escapeHtml(e.label)}</button>`,
+        `<button class="utility positions-extra" data-position-cancel="${escapeHtml(row.id)}" data-position-cancel-kind="${escapeHtml(e.kind)}" data-position-cancel-order-id="${escapeHtml(e.orderId)}"${fieldsAttr(e.fields)}>${escapeHtml(e.label)}</button>`,
     )
     .join('');
   const statusLabel = formatPositionStatus(row.status);
-  return `
-    <div class="positions-card" data-position-id="${escapeHtml(row.id)}">
-      <div class="positions-card-head">
+  return positionCardShell({
+    id: row.id,
+    head: `
         <span class="positions-badge">${escapeHtml(positionCategoryLabel(row.kind))}</span>
         ${chip}
-        ${statusLabel ? `<span class="positions-status" title="${escapeHtml(statusLabel)}">${escapeHtml(statusLabel)}</span>` : ''}
-      </div>
-      <div class="positions-card-summary">${escapeHtml(row.title)} ${distance}</div>
-      ${detailRows ? `<div class="positions-details">${detailRows}</div>` : ''}
-      ${progress}
-      <div class="positions-card-actions">${cancelBtn}${extrasBtns}</div>
-    </div>
-  `;
+        ${statusLabel ? `<span class="positions-status" title="${escapeHtml(statusLabel)}">${escapeHtml(statusLabel)}</span>` : ''}`,
+    summary: `${escapeHtml(row.title)} ${distance}`,
+    body: `${detailRows ? `<div class="positions-details">${detailRows}</div>` : ''}
+      ${progress}`,
+    actions: `${cancelBtn}${extrasBtns}`,
+  });
 }
 
 // The form field that identifies WHAT to manage, per manage-action kind (default 'orderId').
@@ -41274,13 +41638,12 @@ const MANAGE_ID_FIELD_BY_KIND: Record<string, string> = {
   meteora_claim_rewards: 'positionAddress',
   raydium_remove_liquidity: 'positionMint',
   raydium_collect_fees: 'positionMint',
-  raydium_harvest: 'positionMint',
 };
 
 // Precise manage (cancel/withdraw/repay/edit/collect): open the action's connector form with the right
 // sub-action + the live order/position id pre-filled, then land in New Request → Needs Approval → sign.
 // Safer than building a PreparedAction directly (keeps form validation + user review).
-function openManageForm(kind: string, orderId: string): void {
+function openManageForm(kind: string, orderId: string, fields?: Record<string, string>): void {
   const category = ACTION_TYPE_CATEGORY[kind];
   const form = connectorActionFormByActionType(kind);
   if (form) {
@@ -41292,6 +41655,8 @@ function openManageForm(kind: string, orderId: string): void {
     }
     const idField = MANAGE_ID_FIELD_BY_KIND[kind] ?? 'orderId';
     if (orderId) state.templateFields[idField] = orderId;
+    // Extra prefill fields (e.g. borrow vaultId+positionId, unstake amount) — applied after the id field.
+    if (fields) for (const [k, v] of Object.entries(fields)) state.templateFields[k] = v;
   }
   if (category) state.createActionCategory = category;
   state.oneTimePlanView = 'create';
@@ -41403,9 +41768,12 @@ function pythQuestionDisplayLabel(value: string): string {
 function positionMetricsSpread(action?: PreparedAction): { positionMetrics?: PositionClosedMetrics } {
   if (!action) return {};
   const params = action.params ?? {};
-  for (const key of ['orderId', 'assetMint', 'positionId', 'positionAddress', 'positionMint', 'lstMint']) {
+  // positionId/vaultId arrive as NUMBERS (borrow) — coerce to string for the positionsClosed key.
+  for (const key of ['orderId', 'assetMint', 'positionId', 'positionAddress', 'positionMint', 'lstMint', 'vaultId']) {
     const v = params[key];
-    if (typeof v === 'string' && state.positionsClosed[v]) return { positionMetrics: state.positionsClosed[v].metrics };
+    if ((typeof v === 'string' || typeof v === 'number') && state.positionsClosed[String(v)]) {
+      return { positionMetrics: state.positionsClosed[String(v)]!.metrics };
+    }
   }
   return {};
 }
@@ -47839,6 +48207,21 @@ function cloudApprovalToPreparedAction(value: unknown): PreparedAction | null {
   };
 }
 
+// Cloud-synced completed records bypass the local completedPlanFrom* factories, so reconcile the
+// locally-captured close metrics (positionsClosed) onto them by any id present on the record/metadata.
+function cloudPositionMetricsSpread(...sources: Array<Record<string, unknown> | undefined>): { positionMetrics?: PositionClosedMetrics } {
+  for (const src of sources) {
+    if (!src) continue;
+    for (const key of ['orderId', 'assetMint', 'positionId', 'positionAddress', 'positionMint', 'lstMint', 'vaultId']) {
+      const v = src[key];
+      if ((typeof v === 'string' || typeof v === 'number') && state.positionsClosed[String(v)]) {
+        return { positionMetrics: state.positionsClosed[String(v)]!.metrics };
+      }
+    }
+  }
+  return {};
+}
+
 function cloudCompletedToCompletedPlan(value: unknown): CompletedPlanRecord | null {
   if (!value || typeof value !== 'object') return null;
   const record = value as Partial<CloudCompletedRecord>;
@@ -47904,6 +48287,9 @@ function cloudCompletedToCompletedPlan(value: unknown): CompletedPlanRecord | nu
     ...(decisionProofVerified !== undefined && { decisionProofVerified }),
     ...(decisionProofMessage !== undefined && { decisionProofMessage }),
     ...(metadata ? { metadata } : {}),
+    // Surface the manage-action kind (→ the Done Outcome row) + captured position metrics when present.
+    ...(typeof metadata?.kind === 'string' && { actionKind: metadata.kind as string }),
+    ...cloudPositionMetricsSpread(metadata, record as unknown as Record<string, unknown>),
     copyPayload: stableJson(record.payload ?? record.copyPayload ?? record),
     ...(trustBundlePayload ? { trustBundlePayload } : {}),
     detailRows: Array.isArray(record.detailRows) && record.detailRows.every(isDetailRow)
@@ -57907,6 +58293,8 @@ function resetWalletConnection(): void {
   state.positionsLive = {};
   state.positionsClosed = {};
   state.positionsCategory = 'orders';
+  state.positionsPrefetched = false;
+  stopPositionsTicker();
   // Clear chat from memory on disconnect (on-disk per-wallet history is kept,
   // and reloads when the wallet reconnects). Cancel any in-flight stream first.
   cancelChatStream();
@@ -58315,20 +58703,18 @@ function positionCard(p: PositionRecord): string {
   const explorer = p.txid
     ? `<a class="positions-tx" href="${escapeHtml(explorerUrl(p.txid, p.cluster))}" target="_blank" rel="noreferrer">${escapeHtml(t('View transaction'))}</a>`
     : '';
-  return `
-    <div class="positions-card ${focused ? 'positions-card-focused' : ''}" data-position-id="${escapeHtml(p.id)}">
-      <div class="positions-card-head">
+  return positionCardShell({
+    id: p.id,
+    focused,
+    head: `
         <span class="positions-badge">${escapeHtml(positionCategoryLabel(p.category))}</span>
-        <span class="positions-opened">${escapeHtml(tf('Opened {when}', { when: formatDateTime(p.openedAt) }))}</span>
-      </div>
-      <div class="positions-card-summary">${escapeHtml(p.summary || positionCategoryLabel(p.category))}</div>
-      <div class="positions-card-actions">
+        <span class="positions-opened">${escapeHtml(tf('Opened {when}', { when: formatDateTime(p.openedAt) }))}</span>`,
+    summary: `${escapeHtml(p.summary || positionCategoryLabel(p.category))}`,
+    actions: `
         ${explorer}
-        <button class="utility" data-position-manage="${escapeHtml(p.id)}">${escapeHtml(t('Manage'))}</button>
-        <button class="utility" data-position-close="${escapeHtml(p.id)}">${escapeHtml(t('Move to Done'))}</button>
-      </div>
-    </div>
-  `;
+        <button class="utility" data-position-manage="${escapeHtml(p.id)}">${escapeHtml(t('New action'))}</button>
+        <button class="utility" data-position-close="${escapeHtml(p.id)}">${escapeHtml(t('Move to Done'))}</button>`,
+  });
 }
 
 function positionsSectionTitle(id: PositionSectionId): string {
@@ -58374,17 +58760,58 @@ function positionsEmpty(): string {
 
 function positionsRefreshButton(section: PositionSectionId, entry?: PositionsLiveEntry): string {
   const when = entry && entry.fetchedAt ? formatRelativeTime(new Date(entry.fetchedAt).toISOString()) : '';
-  return `<div class="positions-refresh-row"><button class="utility" data-positions-refresh="${escapeHtml(section)}" ${entry?.loading ? 'disabled' : ''}>${escapeHtml(entry?.loading ? t('Refreshing…') : t('Refresh'))}</button>${when ? `<span class="positions-updated">${escapeHtml(tf('Updated {when}', { when }))}</span>` : ''}</div>`;
+  // role=status/aria-live announces Refreshing…→Updated; data-positions-updated lets the 30s ticker
+  // patch just this text node (no full re-render).
+  return `<div class="positions-refresh-row" role="status" aria-live="polite"><button class="utility" data-positions-refresh="${escapeHtml(section)}" ${entry?.loading ? 'disabled' : ''}>${escapeHtml(entry?.loading ? t('Refreshing…') : t('Refresh'))}</button>${when ? `<span class="positions-updated" data-positions-updated="${entry?.fetchedAt ?? 0}">${escapeHtml(tf('Updated {when}', { when }))}</span>` : ''}</div>`;
+}
+
+// Keep the "Updated {when}" relative time fresh: re-render every 30s while the Positions tab is open.
+// The interval self-clears once the user navigates away. (Does NOT refetch — the freshness guard holds.)
+let positionsTickTimer: ReturnType<typeof setInterval> | undefined;
+function stopPositionsTicker(): void {
+  if (positionsTickTimer !== undefined) {
+    clearInterval(positionsTickTimer);
+    positionsTickTimer = undefined;
+  }
+}
+// Surgically rewrite just the "Updated {when}" text nodes — NO full render() (which would rebuild the
+// whole app DOM + re-fire analytics every 30s).
+function tickPositionsUpdatedTimes(): void {
+  for (const el of document.querySelectorAll<HTMLElement>('[data-positions-updated]')) {
+    const ts = Number(el.dataset.positionsUpdated);
+    if (Number.isFinite(ts) && ts > 0) {
+      el.textContent = tf('Updated {when}', { when: formatRelativeTime(new Date(ts).toISOString()) });
+    }
+  }
+}
+function ensurePositionsTicker(): void {
+  if (positionsTickTimer !== undefined) return;
+  positionsTickTimer = setInterval(() => {
+    if (state.activeTab !== 'positions') {
+      stopPositionsTicker();
+      return;
+    }
+    if (!document.hidden) tickPositionsUpdatedTimes();
+  }, 30_000);
 }
 
 function positionsPanel(): string {
   const mobile = isMobileAppViewport();
+  ensurePositionsTicker();
   const open = openPositions();
   const section = POSITIONS_SECTIONS.find((s) => s.id === state.positionsCategory) ?? POSITIONS_SECTIONS[0]!;
   const live = section.id !== 'perps';
   if (live && state.address) {
     const cur = state.positionsLive[section.id];
     if (!cur || cur.cluster !== state.cluster) void fetchPositionCategory(section.id); // lazy: sets loading+cluster synchronously
+  }
+  // On first Positions open, eagerly fetch ALL live sections (parallel, non-blocking, freshness-guarded)
+  // so every selector count pill is accurate without the user visiting each tab.
+  if (state.address && !state.positionsPrefetched) {
+    state.positionsPrefetched = true;
+    for (const s of POSITIONS_SECTIONS) {
+      if (s.id !== 'perps') void fetchPositionCategory(s.id);
+    }
   }
   const rawEntry = state.positionsLive[section.id];
   const entry = rawEntry && rawEntry.cluster === state.cluster ? rawEntry : undefined;
@@ -58400,8 +58827,11 @@ function positionsPanel(): string {
     body = `<p class="positions-empty">${escapeHtml(t('Loading your positions…'))}</p>`;
   } else if (entry && !entry.error) {
     toolbar = positionsRefreshButton(section.id, entry);
+    const partialNote = entry.partial
+      ? `<p class="positions-note">${escapeHtml(t('Some sources couldn’t be reached — tap refresh to retry.'))}</p>`
+      : '';
     if (entry.rows.length) {
-      body = entry.rows.map(positionLiveCard).join('');
+      body = partialNote + entry.rows.map(positionLiveCard).join('');
     } else {
       // Live read succeeded but is empty — a just-signed position may not be on-chain yet. Show recent
       // seeded bridge-records as "Pending confirmation" instead of a misleading "nothing open".
@@ -58409,13 +58839,18 @@ function positionsPanel(): string {
       body = pending.length
         ? `<p class="positions-note">${escapeHtml(t('Pending confirmation — your new position is being confirmed on-chain and will appear here shortly.'))}</p>` +
           pending.map(positionCard).join('')
-        : positionsEmpty();
+        : partialNote + positionsEmpty();
     }
   } else {
     const hint = entry?.error === 'signed-out'
       ? t('Sign in to Agentic Cloud or connect a local bridge to see live position details.')
       : t('Could not refresh live data — showing what you opened. Tap refresh to retry.');
-    toolbar = positionsRefreshButton(section.id, entry);
+    // When signed out, Refresh alone just re-fails — surface a working Sign-in button (reuses the global
+    // [data-cloud-action="sign-in"] → runCloudSignIn handler).
+    const signInRow = entry?.error === 'signed-out'
+      ? `<div class="positions-refresh-row"><button type="button" class="primary" data-cloud-action="sign-in" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Sign in'))}</button></div>`
+      : '';
+    toolbar = signInRow + positionsRefreshButton(section.id, entry);
     // Only claim "showing what you opened" when a seeded fallback exists; else the empty copy is right.
     const showHint = entry?.error === 'signed-out' || seededCards.length > 0;
     body = (showHint ? `<p class="positions-note">${escapeHtml(hint)}</p>` : '') + (seededCards.length ? seededCards.map(positionCard).join('') : positionsEmpty());

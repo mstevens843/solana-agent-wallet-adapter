@@ -277,6 +277,31 @@ export async function browserDeviceAgentRequest<R = unknown>(
   }
 }
 
+// Read the configured key + non-secret model profile for the browser/Tauri Device
+// Agent so the (in-JS) chat loop can stream a provider turn directly. The key is
+// already resident in this module's heap (handleStart reads it the same way); this
+// just surfaces it just-in-time to the streaming turn. Native runtimes never expose
+// the key — they run completions in Kotlin/Swift via the 'complete' bridge method.
+export async function getBrowserDeviceAgentChatProfile(): Promise<{
+  apiKey: string;
+  provider: string;
+  apiFormat: string;
+  model: string;
+  baseUrl: string;
+}> {
+  const state = ensureState();
+  await waitForHydration(state);
+  const apiKey = (await state.secretStore.get(API_KEY_SECRET_KEY)) ?? '';
+  const metadata = state.metadata;
+  return {
+    apiKey,
+    provider: metadata?.provider ?? '',
+    apiFormat: metadata?.apiFormat ?? '',
+    model: metadata?.model ?? '',
+    baseUrl: metadata?.baseUrl ?? '',
+  };
+}
+
 export async function __resetBrowserDeviceAgentForTests(): Promise<void> {
   const previous = _state;
   _state = null;

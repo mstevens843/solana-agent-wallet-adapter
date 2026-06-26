@@ -1,15 +1,1 @@
-[
-  "Add collateral",
-  "Borrow more",
-  "CLI command",
-  "Kept on this device",
-  "Pending confirmation — your new position is being confirmed on-chain and will appear here shortly.",
-  "Withdraw collateral",
-  "command",
-  "{copied} transferred, {failed} kept locally ({reason}).",
-  "{copied} transferred, {failed} kept locally.",
-  "{count} item is still saved on this device",
-  "{count} items are still saved on this device",
-  "{phrase} ({reason}). They stay safe here and will retry next sign-in.",
-  "{phrase}. They stay safe here and will retry next sign-in."
-]
+[]

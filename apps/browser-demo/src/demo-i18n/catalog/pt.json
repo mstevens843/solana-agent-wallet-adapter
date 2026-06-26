@@ -5483,6 +5483,17 @@
     "{count} item is still saved on this device": "{count} item ainda está salvo neste dispositivo",
     "{count} items are still saved on this device": "{count} itens ainda estão salvos neste dispositivo",
     "{phrase} ({reason}). They stay safe here and will retry next sign-in.": "{phrase} ({reason}). Eles permanecem seguros aqui e serão tentados novamente no próximo login.",
-    "{phrase}. They stay safe here and will retry next sign-in.": "{phrase}. Eles permanecem seguros aqui e serão tentados novamente no próximo login."
+    "{phrase}. They stay safe here and will retry next sign-in.": "{phrase}. Eles permanecem seguros aqui e serão tentados novamente no próximo login.",
+    "Some sources couldn’t be reached — tap refresh to retry.": "Não foi possível acessar algumas fontes — toque em atualizar para tentar novamente.",
+    "above trigger": "acima do gatilho",
+    "below trigger": "abaixo do gatilho",
+    "Borrow position": "Posição de empréstimo",
+    "New action": "Nova ação",
+    "Progress": "Progresso",
+    "Redeem all": "Resgatar tudo",
+    "Unknown": "Desconhecido",
+    "Withdraw funds": "Sacar fundos",
+    "Marinade staked": "Em stake na Marinade",
+    "OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.": "As chaves da OpenAI não podem ser usadas diretamente no modo de sessão do navegador. Selecione Hosted BYOK ou Local bridge."
   }
 }

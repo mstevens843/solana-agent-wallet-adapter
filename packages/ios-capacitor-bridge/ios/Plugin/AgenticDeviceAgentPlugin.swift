@@ -15,6 +15,8 @@ enum AgenticDeviceAgentBridgeEnvelope {
         "reviewPlan",
         "ask",
         "localize",
+        // On-device chat-agent completion: one keyed model call per loop turn.
+        "complete",
     ]
 
     static func isSupportedMethod(_ method: String) -> Bool {
@@ -245,6 +247,10 @@ public class AgenticDeviceAgentPlugin: CAPPlugin, CAPBridgedPlugin {
         case "localize":
             dispatchEnvelope(call, method: method, requestId: requestId, payload: payload, debugBaseUrl: payloadDebugBaseUrl) { payload, completion in
                 AgenticAgentRuntime.shared.localize(payload, completion: completion)
+            }
+        case "complete":
+            dispatchEnvelope(call, method: method, requestId: requestId, payload: payload, debugBaseUrl: payloadDebugBaseUrl) { payload, completion in
+                AgenticAgentRuntime.shared.complete(payload, completion: completion)
             }
         default:
             resolveEnvelopeError(

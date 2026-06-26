@@ -409,6 +409,26 @@ interface BorrowActionConfig {
   extraPreview?: (input: JupiterLendBorrowActionInput) => Record<string, unknown>;
 }
 
+// The browser connector-approval path delivers form values as STRINGS (Record<string,string>), but the
+// borrow flow requires numeric vaultId/positionId/minHealthRatio/maxLtvBps. Coerce defensively at the
+// action boundary so both the agent/MCP (already numeric) and browser (string) callers work. Mutates in
+// place; only overwrites when the value is a finite number.
+function coerceBorrowNumbers(obj: Record<string, unknown>): void {
+  const num = (v: unknown): number | undefined => {
+    if (typeof v === 'number') return Number.isFinite(v) ? v : undefined;
+    if (typeof v === 'string' && v.trim() !== '') {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : undefined;
+    }
+    return undefined;
+  };
+  for (const key of ['vaultId', 'positionId', 'minHealthRatio', 'maxLtvBps']) {
+    const n = num(obj[key]);
+    if (n !== undefined) obj[key] = n;
+  }
+  if (obj.repayAll === 'true') obj.repayAll = true;
+}
+
 function buildBorrowAction(
   operation: JupiterLendBorrowOperation,
   config: BorrowActionConfig,
@@ -417,6 +437,7 @@ function buildBorrowAction(
     id: operation,
     kind: config.kind,
     async prepare(input, ctx): Promise<AdapterPrepareResult> {
+      coerceBorrowNumbers(input as unknown as Record<string, unknown>); // browser sends string ids
       const walletAddress = await ctx.backend.getAddress();
       if (!Number.isFinite(input.vaultId)) {
         throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', `${operation} requires vaultId.`);
@@ -498,6 +519,7 @@ function buildBorrowAction(
     async execute(action: PreparedAction, ctx: DAppAdapterContext): Promise<AdapterExecuteResult> {
       const walletAddress = await ctx.backend.getAddress();
       assertOwnership(action, walletAddress);
+      coerceBorrowNumbers(action.params); // defensive: if a browser-built action reaches execute with string ids
       const client = await getJupiterLendClient(walletAddress, ctx.config);
       const vaultIdValue = action.params.vaultId;
       if (typeof vaultIdValue !== 'number' || !Number.isFinite(vaultIdValue)) {

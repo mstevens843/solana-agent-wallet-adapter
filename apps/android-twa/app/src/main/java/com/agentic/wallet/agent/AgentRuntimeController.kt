@@ -5,6 +5,10 @@ import android.content.Intent
 import androidx.core.content.ContextCompat
 import com.agentic.wallet.BuildConfig
 import com.agentic.wallet.NativeSecureStore
+import com.agentic.wallet.agent.provider.DefaultHttpExecutor
+import com.agentic.wallet.agent.provider.ProviderErrorCodes
+import com.agentic.wallet.agent.provider.ProviderHttp
+import com.agentic.wallet.agent.provider.ProviderHttpException
 import com.agentic.wallet.agent.runtime.ProviderExecutor
 import com.agentic.wallet.agent.runtime.RuntimeConfig
 import com.agentic.wallet.agent.runtime.RuntimeError
@@ -65,6 +69,19 @@ class AgentRuntimeController(
         json.put(
             "updatedAt",
             if (transitionAtMs > 0L) isoTimestamp(transitionAtMs) else JSONObject.NULL,
+        )
+        // Advertise on-device chat-agent capabilities so JS can feature-detect this
+        // binary. `chatComplete` gates the loop vs the planner; `chatCompleteGeneric`
+        // means `complete` accepts the JS url+headers fetch mode; `chatCompleteStream`
+        // is false until native token streaming ships (a future build).
+        json.put(
+            "capabilities",
+            JSONObject()
+                .put("chatComplete", true)
+                .put("chatCompleteGeneric", true)
+                .put("chatCompleteStream", false)
+                .put("version", "1")
+                .put("supportedTransports", org.json.JSONArray(listOf("openai-compatible", "anthropic-messages", "gemini-native"))),
         )
         return json
     }
@@ -134,6 +151,111 @@ class AgentRuntimeController(
         context.stopService(Intent(context, AgentRuntimeService::class.java))
         AgentMwaLog.info("AgentRuntime", "stop", "DONE", "device agent foreground service stopped")
         return statusJson()
+    }
+
+    // On-device chat-agent completion. The JS chat loop built the full provider
+    // request `body`; native injects the stored key and POSTs it, returning the RAW
+    // provider response `{ httpStatus, body }` for JS to parse. The key never leaves
+    // native. Two modes:
+    //  - Transport mode (current): JS sends `transport`; native builds url+headers
+    //    from its own config (no URL from JS).
+    //  - Generic mode (future-proof): JS sends `url` + `headers` + `keyHeader`; native
+    //    validates the url host against its configured provider host (anti-exfiltration)
+    //    and injects the key — so future providers/endpoints/headers ship via Render
+    //    with no native build.
+    suspend fun complete(payload: JSONObject): JSONObject {
+        if (!BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT) {
+            throw ProviderHttpException(ProviderErrorCodes.INVALID_CONFIG, "Android Device Agent is disabled for this build.")
+        }
+        val config = RuntimeConfig.fromJson(configJson())
+            ?: throw ProviderHttpException(ProviderErrorCodes.INVALID_CONFIG, "Device Agent is not configured.")
+        val body = payload.optJSONObject("body")?.toString()
+            ?: throw ProviderHttpException(ProviderErrorCodes.INVALID_RESPONSE, "Device Agent complete payload is missing the request body.")
+        val apiKey = (config.apiKey ?: "").trim()
+        ProviderHttp.assertApiKeyHeaderSafe(apiKey)
+        // Chat tool-using turns can run long; allow JS to tune the read timeout (clamped).
+        val timeoutMs = payload.optInt("timeoutMs", 120_000).coerceIn(5_000, 300_000)
+        val http = DefaultHttpExecutor(readTimeoutMs = timeoutMs)
+        val jsUrl = payload.optString("url", "").trim()
+        val endpoint = if (jsUrl.isNotEmpty()) {
+            assertCompleteUrlHostAllowed(jsUrl, config)
+            CompleteEndpoint(jsUrl, injectKeyHeader(jsonToStringMap(payload.optJSONObject("headers")), payload.optJSONObject("keyHeader"), apiKey))
+        } else {
+            completeEndpoint(payload.optString("transport", "").trim(), config, apiKey)
+        }
+        val response = http.postJson(endpoint.url, endpoint.headers, body)
+        return JSONObject()
+            .put("httpStatus", response.status)
+            .put("body", response.body)
+    }
+
+    private data class CompleteEndpoint(val url: String, val headers: Map<String, String>)
+
+    private fun jsonToStringMap(obj: JSONObject?): Map<String, String> {
+        if (obj == null) return emptyMap()
+        val out = LinkedHashMap<String, String>()
+        val keys = obj.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val value = obj.opt(key)
+            if (value is String) out[key] = value
+        }
+        return out
+    }
+
+    private fun injectKeyHeader(headers: Map<String, String>, keyHeader: JSONObject?, apiKey: String): Map<String, String> {
+        val name = keyHeader?.optString("name", "")?.trim().orEmpty().ifEmpty { "Authorization" }
+        val scheme = keyHeader?.optString("scheme", "")?.trim()?.lowercase().orEmpty()
+        val value = if (scheme == "bearer") "Bearer $apiKey" else apiKey
+        return headers + (name to value)
+    }
+
+    // Generic-mode guard: the JS-supplied URL must be https and its host must match one
+    // of the hosts derivable from the stored config baseUrl — so a compromised WebView
+    // can never point the stored key at an attacker host.
+    private fun assertCompleteUrlHostAllowed(url: String, config: RuntimeConfig) {
+        if (!url.startsWith("https://", ignoreCase = true)) {
+            throw ProviderHttpException(ProviderErrorCodes.INVALID_CONFIG, "Device Agent completion URL must use https://.")
+        }
+        val host = runCatching { java.net.URI(url).host?.lowercase() }.getOrNull()
+            ?: throw ProviderHttpException(ProviderErrorCodes.INVALID_CONFIG, "Device Agent completion URL is invalid.")
+        val allowed = listOf(
+            ProviderHttp.normalizeBaseUrl(config.baseUrl, "openai-compatible"),
+            ProviderHttp.normalizeBaseUrl(config.baseUrl, "anthropic"),
+            ProviderHttp.normalizeNativeBaseUrl(config.baseUrl),
+        ).mapNotNull { runCatching { java.net.URI(it).host?.lowercase() }.getOrNull() }.toSet()
+        if (host !in allowed) {
+            throw ProviderHttpException(ProviderErrorCodes.INVALID_CONFIG, "Device Agent completion URL host is not allowed for this provider.")
+        }
+    }
+
+    private fun completeEndpoint(transport: String, config: RuntimeConfig, apiKey: String): CompleteEndpoint {
+        val openRouter = ProviderHttp.isOpenRouterConfig(config.provider, config.baseUrl)
+        return when (transport) {
+            "anthropic-messages" -> {
+                val format = if (openRouter) "openai-compatible" else "anthropic"
+                val base = ProviderHttp.normalizeBaseUrl(config.baseUrl, format)
+                val headers = if (openRouter) {
+                    mapOf("Authorization" to "Bearer $apiKey", "X-OpenRouter-Metadata" to "enabled") +
+                        ProviderHttp.openRouterAttributionHeaders(true)
+                } else {
+                    mapOf("x-api-key" to apiKey, "anthropic-version" to "2023-06-01")
+                }
+                CompleteEndpoint("$base/messages", headers)
+            }
+            "gemini-native" -> {
+                val base = ProviderHttp.normalizeNativeBaseUrl(config.baseUrl)
+                val encodedModel = java.net.URLEncoder.encode(config.model.trim(), "UTF-8")
+                CompleteEndpoint("$base/models/$encodedModel:generateContent", mapOf("x-goog-api-key" to apiKey))
+            }
+            else -> {
+                // openai-compatible (and OpenAI / OpenRouter non-anthropic) → /chat/completions.
+                val base = ProviderHttp.normalizeBaseUrl(config.baseUrl, "openai-compatible")
+                val headers = mapOf("Authorization" to "Bearer $apiKey") +
+                    ProviderHttp.openRouterAttributionHeaders(openRouter)
+                CompleteEndpoint("$base/chat/completions", headers)
+            }
+        }
     }
 
     suspend fun submit(request: RuntimeRequest): RuntimeResult =

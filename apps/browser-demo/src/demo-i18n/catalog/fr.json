@@ -5483,6 +5483,17 @@
     "{count} item is still saved on this device": "{count} élément est toujours enregistré sur cet appareil",
     "{count} items are still saved on this device": "{count} éléments sont toujours enregistrés sur cet appareil",
     "{phrase} ({reason}). They stay safe here and will retry next sign-in.": "{phrase} ({reason}). Ils restent en sécurité ici et seront réessayés à la prochaine connexion.",
-    "{phrase}. They stay safe here and will retry next sign-in.": "{phrase}. Ils restent en sécurité ici et seront réessayés à la prochaine connexion."
+    "{phrase}. They stay safe here and will retry next sign-in.": "{phrase}. Ils restent en sécurité ici et seront réessayés à la prochaine connexion.",
+    "Some sources couldn’t be reached — tap refresh to retry.": "Certaines sources n’ont pas pu être jointes — appuyez sur actualiser pour réessayer.",
+    "above trigger": "au-dessus du déclencheur",
+    "below trigger": "en dessous du déclencheur",
+    "Borrow position": "Position d'emprunt",
+    "New action": "Nouvelle action",
+    "Progress": "Progression",
+    "Redeem all": "Tout récupérer",
+    "Unknown": "Inconnu",
+    "Withdraw funds": "Retirer les fonds",
+    "Marinade staked": "Staké sur Marinade",
+    "OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.": "Les clés OpenAI ne peuvent pas être appelées directement en mode session navigateur. Sélectionnez Hosted BYOK ou Local bridge."
   }
 }

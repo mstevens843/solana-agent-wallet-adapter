@@ -94,12 +94,26 @@ services:
       # and revert to the pre-Chat tab layout. Web + desktop + iOS expose Chat:
       # iOS Plan-Connector chat is pure-JS (WebCrypto relay → desktop /bridge/ai/chat)
       # and iOS cloud chat history syncs via the same /api/chat/* endpoints, so iOS
-      # ships via this Render redeploy with no IPA. Android stays gated until the APK
-      # with the native RuntimeMethod.CHAT handler ships — its Plan-Connector chat
-      # routes through the native device-agent runtime, so an old APK can't forward
-      # /bridge/ai/chat. Drop "android" here once that APK is on the Play Store.
+      # ships via this Render redeploy with no IPA.
+      #
+      # Android: the native runtime methods are now BOTH implemented — `complete`
+      # (Device Agent on-device chat loop) and `chat` (paired Plan-Connector relay
+      # forward, allow-listed in MainActivity.kt). But this var ships LIVE via Render
+      # while the APK does not, so dropping "android" here BEFORE the new APK is on the
+      # Play Store would show Chat to existing installs whose old APK lacks those
+      # methods (Plan-Connector chat would error). Keep "android" gated and drop it in
+      # the SAME release as the new APK.
       - key: HIDE_CHAT_TAB
         value: "android"
+      # CHAT_AGENT: true/1 → the Chat tab uses the NEW agentic chat loop (device chat
+      # agent); empty/0/false → it uses the on-device PLANNER (safe interim). Baked at
+      # build, so flipping it is a Render redeploy (no native build) and reaches every
+      # surface's live bundle. Ship with "" (planner) and flip to "true" once the new
+      # binary is live and the device chat agent is tested. Only governs the on-device
+      # paths (Device Agent + browser Session); Hosted BYOK / Local Bridge / Plan
+      # Connector always use the proven server chat.
+      - key: CHAT_AGENT
+        value: ""
       # Evidence-provider operator keys. The cloud `/api/birdeye/*` and
       # `/api/coingecko/*` endpoints are the fall-through path used by Device
       # Agent and any client that does not have the local bridge running. Set

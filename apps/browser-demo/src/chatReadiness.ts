@@ -29,10 +29,12 @@ export function chatHostedRelayReadinessError(input: {
   hostedRelayAvailable: boolean;
 }): string | null {
   if (!chatAiConnectorConfigured(input)) return CHAT_AI_CONNECTOR_REQUIRED;
-  // Local bridge, paired Plan Connector, and a configured standalone Device Agent all
-  // run the AI without the Cloud relay — none of them needs a hosted sign-in.
+  // Local bridge, browser Session (direct provider call), paired Plan Connector, and a
+  // configured standalone Device Agent all run the AI without the Cloud relay — none of
+  // them needs a hosted sign-in. Only true Hosted BYOK goes through the relay.
   if (
     input.mode === 'bridge'
+    || input.mode === 'session'
     || input.pairedPlanConnector
     || (input.mode === 'device-agent' && Boolean(input.deviceAgentConfigured))
   ) return null;

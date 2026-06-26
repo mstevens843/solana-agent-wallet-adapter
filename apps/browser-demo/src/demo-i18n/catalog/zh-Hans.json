@@ -5483,6 +5483,17 @@
     "{count} item is still saved on this device": "仍有 {count} 项保存在此设备上",
     "{count} items are still saved on this device": "仍有 {count} 项保存在此设备上",
     "{phrase} ({reason}). They stay safe here and will retry next sign-in.": "{phrase}（{reason}）。它们会安全地保留在此处，并将在下次登录时重试。",
-    "{phrase}. They stay safe here and will retry next sign-in.": "{phrase}。它们会安全地保留在此处，并将在下次登录时重试。"
+    "{phrase}. They stay safe here and will retry next sign-in.": "{phrase}。它们会安全地保留在此处，并将在下次登录时重试。",
+    "Some sources couldn’t be reached — tap refresh to retry.": "部分数据源无法连接 — 点按刷新重试。",
+    "above trigger": "高于触发价",
+    "below trigger": "低于触发价",
+    "Borrow position": "借贷仓位",
+    "New action": "新建操作",
+    "Progress": "进度",
+    "Redeem all": "全部赎回",
+    "Unknown": "未知",
+    "Withdraw funds": "提取资金",
+    "Marinade staked": "Marinade 质押",
+    "OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.": "在浏览器会话模式下无法直接调用 OpenAI 密钥。请选择 Hosted BYOK 或 Local bridge。"
   }
 }

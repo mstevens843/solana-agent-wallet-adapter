@@ -5483,6 +5483,17 @@
     "{count} item is still saved on this device": "{count} item is still saved on this device",
     "{count} items are still saved on this device": "{count} items are still saved on this device",
     "{phrase} ({reason}). They stay safe here and will retry next sign-in.": "{phrase} ({reason}). They stay safe here and will retry next sign-in.",
-    "{phrase}. They stay safe here and will retry next sign-in.": "{phrase}. They stay safe here and will retry next sign-in."
+    "{phrase}. They stay safe here and will retry next sign-in.": "{phrase}. They stay safe here and will retry next sign-in.",
+    "Some sources couldn’t be reached — tap refresh to retry.": "Some sources couldn’t be reached — tap refresh to retry.",
+    "above trigger": "above trigger",
+    "below trigger": "below trigger",
+    "Borrow position": "Borrow position",
+    "New action": "New action",
+    "Progress": "Progress",
+    "Redeem all": "Redeem all",
+    "Unknown": "Unknown",
+    "Withdraw funds": "Withdraw funds",
+    "Marinade staked": "Marinade staked",
+    "OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.": "OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge."
   }
 }

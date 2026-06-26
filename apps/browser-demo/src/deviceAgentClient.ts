@@ -32,7 +32,11 @@ export type DeviceAgentMethod =
   // Native Plan-Connector chat: the paired-bridge runtime forwards this to the
   // desktop's non-streaming /bridge/ai/chat. (On-device/browser runtimes reject
   // it via the dispatcher default — chat is paired-connector only.)
-  | 'chat';
+  | 'chat'
+  // On-device chat completion: one keyed model call per agentic-loop turn. The
+  // loop runs in JS; native runs the provider call so the key stays native. Added
+  // for the real on-device chat agent (native impl ships in a new APK/IPA).
+  | 'complete';
 
 export interface DeviceAgentStatus {
   available: boolean;
@@ -49,6 +53,17 @@ export interface DeviceAgentStatus {
   checkedAt?: string;
   updatedAt?: string;
   lastError?: DeviceAgentError | null;
+  // Optional runtime capability flags advertised by the native binary. `chatComplete`
+  // = the keyed `complete` method (on-device chat loop); `chatCompleteGeneric` = the
+  // generic url+headers fetch mode; `chatCompleteStream` = native token streaming.
+  // Absent fields are treated as unsupported (older binaries default false).
+  capabilities?: {
+    chatComplete?: boolean;
+    chatCompleteGeneric?: boolean;
+    chatCompleteStream?: boolean;
+    version?: string;
+    supportedTransports?: string[];
+  };
 }
 
 export function deviceAgentStatusReadyForDrafts(
@@ -656,8 +671,27 @@ export function parseDeviceAgentStatus(
     ...(stringField(parsed.message) && { message: stringField(parsed.message)! }),
     ...(timestampField(parsed.checkedAt) && { checkedAt: timestampField(parsed.checkedAt)! }),
     ...(updatedAt && { updatedAt }),
+    ...parseDeviceAgentCapabilities(parsed.capabilities),
     ...parseOptionalLastError(parsed.lastError),
   };
+}
+
+// Pass through the optional native capability flags so the JS chat loop can detect
+// what the binary supports (chatComplete / chatCompleteGeneric / chatCompleteStream /
+// version / supportedTransports) without guessing. Only emits a capabilities object
+// when at least one meaningful flag is present.
+function parseDeviceAgentCapabilities(value: unknown): { capabilities?: DeviceAgentStatus['capabilities'] } {
+  if (!isRecord(value)) return {};
+  const caps: NonNullable<DeviceAgentStatus['capabilities']> = {};
+  if (value.chatComplete === true) caps.chatComplete = true;
+  if (value.chatCompleteGeneric === true) caps.chatCompleteGeneric = true;
+  if (value.chatCompleteStream === true) caps.chatCompleteStream = true;
+  if (typeof value.version === 'string' && value.version.trim()) caps.version = value.version.trim();
+  if (Array.isArray(value.supportedTransports)) {
+    const transports = value.supportedTransports.filter((t): t is string => typeof t === 'string');
+    if (transports.length > 0) caps.supportedTransports = transports;
+  }
+  return Object.keys(caps).length > 0 ? { capabilities: caps } : {};
 }
 
 // === Diagnostic integration ============================================

@@ -56,6 +56,13 @@ describe('chat readiness copy', () => {
     })).toBeNull();
   });
 
+  it('does not gate browser Session mode on cloud relay sign-in (direct provider call)', () => {
+    // Session = direct browser fetch with the key in JS — no Cloud relay, so a key is
+    // enough and sign-in must NOT be required.
+    expect(chatHostedRelayReadinessError({ mode: 'session', apiKeyConfigured: true, hostedRelayAvailable: false })).toBeNull();
+    expect(chatHostedRelayReadinessError({ mode: 'session', apiKeyConfigured: false, hostedRelayAvailable: false })).toBe(CHAT_AI_CONNECTOR_REQUIRED);
+  });
+
   it('does not gate a configured STANDALONE Device Agent on cloud relay sign-in', () => {
     // The on-device API-key Device Agent (not paired) runs the planner locally — it
     // must never demand a Hosted BYOK / Agentic Cloud sign-in.

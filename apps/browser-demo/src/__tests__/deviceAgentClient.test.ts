@@ -512,6 +512,32 @@ describe('deviceAgentClient', () => {
       expect(status).toMatchObject({ configured: false, state: 'stopped', runtime: 'render-gated' });
     });
 
+    it('passes through the richer native chat capabilities', () => {
+      const status = parseDeviceAgentStatus({
+        available: true,
+        state: 'running',
+        runtime: 'android-native',
+        capabilities: {
+          chatComplete: true,
+          chatCompleteGeneric: true,
+          chatCompleteStream: false,
+          version: '1',
+          supportedTransports: ['openai-compatible', 'anthropic-messages', 'gemini-native'],
+        },
+      });
+      expect(status.capabilities).toEqual({
+        chatComplete: true,
+        chatCompleteGeneric: true,
+        version: '1',
+        supportedTransports: ['openai-compatible', 'anthropic-messages', 'gemini-native'],
+      });
+    });
+
+    it('omits the capabilities object entirely for an old binary that sends none', () => {
+      const status = parseDeviceAgentStatus({ available: true, state: 'running', runtime: 'android-native' });
+      expect(status.capabilities).toBeUndefined();
+    });
+
     it('preserves a well-formed lastError object on the status', () => {
       const status = parseDeviceAgentStatus({
         available: true,

@@ -53,7 +53,7 @@ import {
   type SimulationDigest,
   type TxGateContext,
 } from '@solana-agent-wallet-adapter/workflow';
-import { sanitizeUserTextOrEmpty } from '@solana-agent-wallet-adapter/workflow';
+import { sanitizeUserTextOrEmpty, streamAgentChat } from '@solana-agent-wallet-adapter/workflow';
 
 import { redactSecrets, trace } from './trace.js';
 import {
@@ -1035,6 +1035,27 @@ export class BridgeAiPlanner {
     }
     const transport = resolveAiTransport(config);
     try {
+      // D10 — web fallback for the transports whose streaming tool loop can't search
+      // the web: Gemini (can't mix function tools + google_search) and OpenAI
+      // /chat/completions (no web). When the turn needs the web, route to the
+      // single-shot chat() engine, which does per-provider native web research
+      // (generateGeminiChat / generateOpenAiResponsesChat) and may still propose an
+      // action. Anthropic keeps the streaming loop — it has native web_search inline.
+      if (chatNeedsWebResearch(normalizedRequest)
+        && transport !== 'anthropic-messages'
+        && transport !== 'cli-agent'
+        && supportsNativeWebResearch(config)) {
+        const result = await this.chat(request);
+        await streamTextAsTokens(result.answer, emit, signal);
+        if (result.proposedAction) await emit({ type: 'proposal', proposal: result.proposedAction });
+        await emit({ type: 'done', result });
+        return;
+      }
+      // D8 — pre-resolve API-first facts (token safety/age, market regime, wallet
+      // history) into context.resolvedFacts so the streaming tool loop's system prompt
+      // already carries them → fewer model→tool round-trips (cheaper, faster). The
+      // tool loop can still call tools for anything not pre-resolved.
+      await this.enrichSingleShotChatContext(normalizedRequest);
       if (transport === 'anthropic-messages') {
         await this.runAnthropicChatLoop(config, normalizedRequest, emit, signal);
         return;
@@ -1043,8 +1064,15 @@ export class BridgeAiPlanner {
         await this.runOpenAiChatLoop(config, normalizedRequest, emit, signal);
         return;
       }
-      // gemini-native / cli-agent: no streaming tool loop yet — fall back to the
-      // single-shot grounded chat and stream its answer so the surface still works.
+      if (transport === 'gemini-native') {
+        // Gemini now joins the agentic tool loop via the shared runner (Gemini
+        // function-calling on :streamGenerateContent), instead of the old
+        // single-shot fallback. Same tools + system prompt as every other path.
+        await this.runSharedChatLoop(config, normalizedRequest, emit, signal);
+        return;
+      }
+      // cli-agent (subscription connector): no streaming tool loop — fall back to
+      // the single-shot grounded chat and stream its answer so the surface works.
       const result = await this.chat(request);
       await streamTextAsTokens(result.answer, emit, signal);
       // The single-shot path can still prepare a wallet action (proposedAction in
@@ -1058,6 +1086,40 @@ export class BridgeAiPlanner {
       await emit({ type: 'error', message });
       await emit({ type: 'done', result: emptyChatResult() });
     }
+  }
+
+  // Run the shared, transport-agnostic chat loop (from @solana-agent-wallet-adapter/
+  // workflow) server-side: the keyed streaming completion uses this config's key;
+  // the read tools execute here via runChatReadToolSafe (operator keys / RPC). This
+  // is the same loop browser-demo runs for the on-device Device Agent — one source
+  // of truth. Used for Gemini today; OpenAI/Anthropic can migrate onto it next.
+  private async runSharedChatLoop(
+    config: AiRuntimeConfig,
+    request: Required<AiChatRequest>,
+    emit: (event: AgentChatStreamEvent) => void | Promise<void>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await streamAgentChat({
+      request: {
+        messages: request.messages
+          .filter((m) => m.role === 'user' || m.role === 'assistant')
+          .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+        ...(request.walletAddress ? { walletAddress: request.walletAddress } : {}),
+        ...(request.cluster ? { cluster: request.cluster } : {}),
+        ...(request.context ? { context: request.context } : {}),
+      },
+      profile: {
+        provider: config.provider,
+        apiFormat: config.apiFormat,
+        baseUrl: config.baseUrl,
+        model: config.model,
+        ...(config.engine ? { engine: config.engine } : {}),
+      },
+      apiKey: config.apiKey,
+      executeTool: (name, input, wallet) => this.runChatReadToolSafe(name, input, wallet),
+      emit,
+      ...(signal ? { signal } : {}),
+    });
   }
 
   private toolConfig(): AgentWalletConfig {
@@ -2866,11 +2928,13 @@ function effectiveChatWalletAddress(request: Required<AiChatRequest>): string {
 function chatReadOnlyWalletContext(request: Required<AiChatRequest>): string {
   const context = request.context ?? {};
   const out: Record<string, unknown> = {};
-  for (const key of ['browserWallet', 'wallet', 'walletBalance', 'walletBalanceStatus']) {
+  // `resolvedFacts` carries enrichSingleShotChatContext's pre-resolved API data so the
+  // model answers without re-calling those tools (D8).
+  for (const key of ['browserWallet', 'wallet', 'walletBalance', 'walletBalanceStatus', 'resolvedFacts']) {
     const value = context[key];
     if (value !== undefined) out[key] = value;
   }
-  return Object.keys(out).length > 0 ? JSON.stringify(out).slice(0, 2500) : '';
+  return Object.keys(out).length > 0 ? JSON.stringify(out).slice(0, 3500) : '';
 }
 
 function chatAgenticSystemPrompt(request: Required<AiChatRequest>): string {
@@ -2917,12 +2981,30 @@ function chatFearGreed(): AlternativeMeClient {
   return chatFearGreedClient;
 }
 
+// Short-TTL chat-tool cache (D6): repeated chats + pre-resolution don't re-hit the
+// network for stable facts. Only successful results (not unavailable/error) are cached.
+const chatToolCache = new Map<string, { at: number; data: Record<string, unknown> }>();
+const CHAT_SAFETY_TTL_MS = 5 * 60 * 1000;
+const CHAT_AGE_TTL_MS = 30 * 60 * 1000; // mint creation time never changes
+const CHAT_REGIME_TTL_MS = 60 * 1000;
+function chatToolCacheGet(key: string, ttlMs: number): Record<string, unknown> | undefined {
+  const hit = chatToolCache.get(key);
+  if (hit && Date.now() - hit.at < ttlMs) return hit.data;
+  return undefined;
+}
+function chatToolCachePut(key: string, data: Record<string, unknown>): Record<string, unknown> {
+  if (data.unavailable !== true && data.error === undefined) chatToolCache.set(key, { at: Date.now(), data });
+  return data;
+}
+
 async function resolveChatTokenSafety(config: AgentWalletConfig, mint: string): Promise<Record<string, unknown>> {
+  const cached = chatToolCacheGet(`safety:${mint}`, CHAT_SAFETY_TTL_MS);
+  if (cached) return cached;
   try {
     const ev = await getJupiterTokenRiskEvidence(config, { mint, includePrice: false });
     const audit = (ev.audit && typeof ev.audit === 'object') ? ev.audit as Record<string, unknown> : {};
     const boolOrNull = (v: unknown): boolean | null => (typeof v === 'boolean' ? v : null);
-    return {
+    const result: Record<string, unknown> = {
       mint,
       found: ev.tokenFound,
       ...(ev.symbol ? { symbol: ev.symbol } : {}),
@@ -2933,12 +3015,15 @@ async function resolveChatTokenSafety(config: AgentWalletConfig, mint: string): 
       freezeAuthorityDisabled: boolOrNull(audit.freezeAuthorityDisabled),
       source: 'jupiter',
     };
+    return chatToolCachePut(`safety:${mint}`, result);
   } catch (err) {
     return { mint, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
   }
 }
 
 async function resolveChatMarketRegime(): Promise<Record<string, unknown>> {
+  const cached = chatToolCacheGet('regime', CHAT_REGIME_TTL_MS);
+  if (cached) return cached;
   const out: Record<string, unknown> = { source: 'coingecko+alternative.me' };
   try {
     const g = await requestCoinGeckoGlobal();
@@ -2954,17 +3039,19 @@ async function resolveChatMarketRegime(): Promise<Record<string, unknown>> {
   if (out.btcDominancePct === undefined && out.totalMarketCapUsd === undefined && out.fearGreed === undefined) {
     return { unavailable: true, error: 'market data unavailable' };
   }
-  return out;
+  return chatToolCachePut('regime', out);
 }
 
 async function resolveChatTokenAge(mint: string): Promise<Record<string, unknown>> {
+  const cached = chatToolCacheGet(`age:${mint}`, CHAT_AGE_TTL_MS);
+  if (cached) return cached;
   try {
     const res = await getMintCreationTxForMint(mint);
     const tx = res.ok && res.tx && typeof res.tx === 'object' ? res.tx as Record<string, unknown> : null;
     const ts = tx && typeof tx.timestamp === 'number' ? tx.timestamp : undefined;
     if (!ts) return { mint, unavailable: true, reason: res.reason ?? 'no_creation_tx' };
     const ageSeconds = Math.max(0, Math.floor(Date.now() / 1000) - ts);
-    return { mint, createdAt: new Date(ts * 1000).toISOString(), ageSeconds, source: 'helius' };
+    return chatToolCachePut(`age:${mint}`, { mint, createdAt: new Date(ts * 1000).toISOString(), ageSeconds, source: 'helius' });
   } catch (err) {
     return { mint, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
   }

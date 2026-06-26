@@ -2262,6 +2262,14 @@ class MainActivity : FragmentActivity() {
                 "configure" -> DeviceAgentOutcome(activity.agentRuntimeController.configure(payload.toString()), null)
                 "start" -> DeviceAgentOutcome(activity.agentRuntimeController.start(activity, payload.toString()), null)
                 "stop" -> DeviceAgentOutcome(activity.agentRuntimeController.stop(activity), null)
+                // On-device chat-agent completion: a thin authenticated fetch. The JS loop
+                // built the full provider body; native injects the stored key and POSTs it,
+                // returning the raw { httpStatus, body } for JS to parse. Bypasses the
+                // plan-policy runtime queue (it is a stateless read-and-relay).
+                "complete" -> DeviceAgentOutcome(
+                    activity.agentRuntimeController.statusJson(),
+                    activity.agentRuntimeController.complete(payload),
+                )
                 "generatePlan", "reviewPlan", "ask", "localize", "chat" -> {
                     val runtimeMethod = RuntimeMethod.fromWire(method)
                         ?: throw DeviceAgentException(
@@ -2471,6 +2479,11 @@ class MainActivity : FragmentActivity() {
                 "reviewPlan",
                 "ask",
                 "localize",
+                // On-device chat-agent completion: one keyed model call per loop turn.
+                "complete",
+                // Paired Plan-Connector chat: forwarded to the desktop connector via
+                // BridgeRelayProvider (the runtime executor.chat handler).
+                "chat",
             )
             private val ALLOWED_STREAMING_METHODS = setOf(
                 "status",
