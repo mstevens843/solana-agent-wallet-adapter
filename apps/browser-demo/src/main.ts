@@ -23001,7 +23001,67 @@ function buildClientChatToolDeps(): ClientChatToolDeps {
       if (!raw) return { unavailable: true, reason: 'no_connector_source' };
       return raw;
     },
+    // Token market metrics + trending via the public Jupiter lite-api (CORS-OK, no key) —
+    // the same token object the server's get_token_market / get_trending_tokens read, so
+    // device-agent and hosted produce identical shapes. Graceful unavailable on failure.
+    tokenMarket: async (mint) => {
+      try {
+        const arr = await jupiterLiteJson(`/tokens/v2/search?query=${encodeURIComponent(mint)}`);
+        const t = asRecord(Array.isArray(arr) ? arr[0] : arr);
+        if (!t) return { mint, unavailable: true, reason: 'not_found' };
+        const s = asRecord(t.stats24h);
+        const vol = s ? (numberField(s.buyVolume) ?? 0) + (numberField(s.sellVolume) ?? 0) : undefined;
+        return {
+          mint,
+          found: true,
+          ...(typeof t.symbol === 'string' ? { symbol: t.symbol } : {}),
+          usdPrice: numberField(t.usdPrice) ?? null,
+          liquidity: numberField(t.liquidity) ?? null,
+          marketCap: numberField(t.mcap) ?? null,
+          fdv: numberField(t.fdv) ?? null,
+          volume24h: vol !== undefined && vol > 0 ? vol : null,
+          holderCount: numberField(t.holderCount) ?? null,
+          topHoldersPercentage: numberField(asRecord(t.audit)?.topHoldersPercentage) ?? null,
+          priceChange24h: s ? (numberField(s.priceChange) ?? null) : null,
+          organicScore: numberField(t.organicScore) ?? null,
+          ...(typeof t.organicScoreLabel === 'string' ? { organicScoreLabel: t.organicScoreLabel } : {}),
+          source: 'jupiter',
+        };
+      } catch (err) {
+        return { mint, unavailable: true, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    trendingTokens: async () => {
+      try {
+        const arr = await jupiterLiteJson('/tokens/v2/toptrending?interval=24h&limit=12');
+        const list = Array.isArray(arr) ? arr : [];
+        const tokens = list.slice(0, 12).map((raw) => {
+          const t = asRecord(raw) ?? {};
+          const s = asRecord(t.stats24h);
+          const vol = s ? (numberField(s.buyVolume) ?? 0) + (numberField(s.sellVolume) ?? 0) : undefined;
+          return {
+            symbol: typeof t.symbol === 'string' ? t.symbol : null,
+            mint: typeof t.id === 'string' ? t.id : null,
+            usdPrice: numberField(t.usdPrice) ?? null,
+            priceChange24h: s ? (numberField(s.priceChange) ?? null) : null,
+            marketCap: numberField(t.mcap) ?? null,
+            volume24h: vol !== undefined && vol > 0 ? vol : null,
+          };
+        });
+        return { interval: '24h', count: tokens.length, tokens, source: 'jupiter' };
+      } catch (err) {
+        return { unavailable: true, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
   };
+}
+
+// Fetch JSON from the public Jupiter lite-api (no key, CORS-friendly) for client-side
+// token market + trending reads. Throws on non-2xx so the caller degrades gracefully.
+async function jupiterLiteJson(path: string): Promise<unknown> {
+  const res = await fetch(`https://lite-api.jup.ag${path}`, { headers: { accept: 'application/json' } });
+  if (!res.ok) throw new Error(`Jupiter lite-api ${res.status}`);
+  return res.json();
 }
 
 // Map shared-loop stream events onto the existing ChatStreamHandlers.

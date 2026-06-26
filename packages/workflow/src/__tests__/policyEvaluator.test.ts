@@ -69,6 +69,41 @@ describe('evaluateAtom — price', () => {
   });
 });
 
+describe('evaluateAtom — token_metric', () => {
+  it('passes a liquidity gate and formats USD compact + source', () => {
+    const atom: AgentAtom = { id: 'atom.token_metric.liquidity.gt.100000', type: 'token_metric', rawText: 'liquidity > $100k', field: 'liquidity', op: 'gt', value: 100_000 };
+    const out = evaluateAtom(atom, { numeric: 250_000, source: 'jupiter' });
+    expect(out.pass).toBe(true);
+    expect(out.finding.tone).toBe('good');
+    expect(out.finding.label).toBe('Token liquidity');
+    expect(out.finding.value).toContain('jupiter');
+  });
+
+  it('fails a top-holder gate and formats a percentage', () => {
+    const atom: AgentAtom = { id: 'atom.token_metric.top_holder_pct.lt.20', type: 'token_metric', rawText: 'top holder < 20%', field: 'top_holder_pct', op: 'lt', value: 20 };
+    const out = evaluateAtom(atom, { numeric: 41.5, source: 'jupiter' });
+    expect(out.pass).toBe(false);
+    expect(out.finding.tone).toBe('fail');
+    expect(out.finding.value).toContain('41.50%');
+  });
+
+  it('surfaces the organic score label and uses the named subject in the label', () => {
+    const atom: AgentAtom = { id: 'atom.token_metric.organic_score.gte.70', type: 'token_metric', rawText: 'organic score high', field: 'organic_score', op: 'gte', value: 70, subject: 'bonk' };
+    const out = evaluateAtom(atom, { numeric: 82, text: 'high', source: 'jupiter' });
+    expect(out.pass).toBe(true);
+    expect(out.finding.label).toBe('BONK organic score');
+    expect(out.finding.value).toContain('82/100');
+    expect(out.finding.value).toContain('high');
+  });
+
+  it('reports unresolved when no fact', () => {
+    const atom: AgentAtom = { id: 'atom.token_metric.volume_24h.gt.50000', type: 'token_metric', rawText: '24h volume > $50k', field: 'volume_24h', op: 'gt', value: 50_000 };
+    const out = evaluateAtom(atom, undefined);
+    expect(out.unresolved).toBe(true);
+    expect(out.finding.tone).toBe('warn');
+  });
+});
+
 describe('evaluateAtom — market_regime', () => {
   it('passes Fear & Greed above threshold with classification surfaced', () => {
     const atom: AgentAtom = { id: 'atom.market_regime.fear_and_greed.gt.20', type: 'market_regime', rawText: 'F&G > 20', subject: 'fear_and_greed', op: 'gt', value: 20 };

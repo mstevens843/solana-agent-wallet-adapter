@@ -650,3 +650,43 @@ describe('extractAtoms — Tier C temporal policy', () => {
     expect(dow[0]?.allowedDays).toEqual([1, 3, 5]);
   });
 });
+
+describe('token_metric extraction', () => {
+  function metric(text: string) {
+    return byType(extractAtoms({ text }).atoms, 'token_metric');
+  }
+
+  it('extracts liquidity / market cap / fdv / volume USD gates with k/m/b suffixes', () => {
+    expect(metric('approve only if liquidity > $100k')[0]).toMatchObject({ field: 'liquidity', op: 'gt', value: 100_000 });
+    expect(metric('deny if market cap is below $1M')[0]).toMatchObject({ field: 'market_cap', op: 'lt', value: 1_000_000 });
+    expect(metric('only if fdv above $5m')[0]).toMatchObject({ field: 'fdv', op: 'gt', value: 5_000_000 });
+    expect(metric('require 24h volume over $50k')[0]).toMatchObject({ field: 'volume_24h', op: 'gt', value: 50_000 });
+  });
+
+  it('extracts holder count + top-holder concentration', () => {
+    expect(metric('approve only if holders > 1000')[0]).toMatchObject({ field: 'holder_count', op: 'gt', value: 1000 });
+    expect(metric('only if more than 2,500 holders')[0]).toMatchObject({ field: 'holder_count', value: 2500 });
+    expect(metric('deny if top holder owns more than 20%')[0]).toMatchObject({ field: 'top_holder_pct', op: 'gt', value: 20 });
+    expect(metric('top 10 holders below 50%')[0]).toMatchObject({ field: 'top_holder_pct', op: 'lt', value: 50 });
+  });
+
+  it('encodes 24h price change as the approve-safe threshold', () => {
+    expect(metric('approve only if not down more than 25% today')[0]).toMatchObject({ field: 'price_change_24h', op: 'gte', value: -25 });
+    expect(metric('only if up at least 5%')[0]).toMatchObject({ field: 'price_change_24h', op: 'gte', value: 5 });
+  });
+
+  it('maps organic score label to a numeric threshold', () => {
+    expect(metric('approve only if organic score is high')[0]).toMatchObject({ field: 'organic_score', op: 'gte', value: 70 });
+    expect(metric('require organic score above 60')[0]).toMatchObject({ field: 'organic_score', op: 'gt', value: 60 });
+  });
+
+  it('does NOT hijack "total market cap" (that stays a market_regime atom)', () => {
+    const { atoms } = extractAtoms({ text: 'approve only if total crypto market cap is above $2T' });
+    expect(byType(atoms, 'token_metric')).toHaveLength(0);
+    expect(byType(atoms, 'market_regime').some((a) => a.subject === 'total_market_cap')).toBe(true);
+  });
+
+  it('produces stable ids', () => {
+    expect(metric('liquidity > $100k')[0]?.id).toBe('atom.token_metric.liquidity.gt.100000');
+  });
+});

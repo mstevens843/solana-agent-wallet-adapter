@@ -37,6 +37,11 @@ export interface ClientChatToolDeps {
   // and returns the SAME raw envelope the server gets, so the shared atom format() runs
   // identically here. Undefined → connector facts come back as unavailable.
   connectorFacts?: (req: { connectorId: string; capability: string } & Record<string, unknown>) => Promise<Record<string, unknown>>;
+  // Token market-quality metrics (liquidity, mcap, fdv, volume, holders, price change) —
+  // optional; mirrors the server get_token_market shape. Undefined → unavailable.
+  tokenMarket?: (mint: string) => Promise<Record<string, unknown>>;
+  // Trending Solana tokens — optional; mirrors the server get_trending_tokens shape.
+  trendingTokens?: () => Promise<Record<string, unknown>>;
 }
 
 function isBase58Mint(value: string): boolean {
@@ -173,6 +178,26 @@ export function createClientChatToolExecutor(deps: ClientChatToolDeps): ChatTool
         return { summary: `${connectorId} ${atom.action} facts`, data: { connectorId, action: atom.action, ...formatted } };
       } catch (err) {
         return { summary: `${connectorId} ${atom.action} unavailable.`, data: { connectorId, action: atom.action, unavailable: true, error: err instanceof Error ? err.message : String(err) } };
+      }
+    }
+
+    if (name === 'get_token_market') {
+      const token = await resolveMint(mintArg || query);
+      if (!token) return { summary: 'No token resolved.', data: { error: 'a token symbol or mint is required' } };
+      if (!deps.tokenMarket) return { summary: 'Market data unavailable.', data: { mint: token.mint, unavailable: true, reason: 'no_market_source' } };
+      try {
+        return { summary: `Market data for ${shortMint(token.mint)}`, data: await deps.tokenMarket(token.mint) };
+      } catch (err) {
+        return { summary: 'Market data unavailable.', data: { mint: token.mint, unavailable: true, error: err instanceof Error ? err.message : String(err) } };
+      }
+    }
+
+    if (name === 'get_trending_tokens') {
+      if (!deps.trendingTokens) return { summary: 'Trending unavailable.', data: { unavailable: true, reason: 'no_trending_source' } };
+      try {
+        return { summary: 'Trending tokens', data: await deps.trendingTokens() };
+      } catch (err) {
+        return { summary: 'Trending unavailable.', data: { unavailable: true, error: err instanceof Error ? err.message : String(err) } };
       }
     }
 

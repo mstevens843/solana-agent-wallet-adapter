@@ -18,6 +18,7 @@ export type AgentAtomType =
   | 'market_regime'
   | 'token_audit'
   | 'token_age'
+  | 'token_metric'
   | 'tx_gate'
   | 'external_price'
   | 'protocol_health'
@@ -62,6 +63,20 @@ export type TokenAuditField =
   | 'mint_authority_disabled'
   | 'freeze_authority_disabled'
   | 'is_verified';
+
+// Token market-quality metrics (resolved from the Jupiter token-evidence bundle, BirdEye
+// fallback). All numeric thresholds. price_change_24h / top_holder_pct are percentages;
+// liquidity / market_cap / fdv / volume_24h are USD; holder_count is a count;
+// organic_score is 0-100 (the "is high/medium/low" phrasing maps to 70/40/0).
+export type TokenMetricField =
+  | 'liquidity'
+  | 'market_cap'
+  | 'fdv'
+  | 'volume_24h'
+  | 'holder_count'
+  | 'top_holder_pct'
+  | 'price_change_24h'
+  | 'organic_score';
 
 export type TxGateRule =
   | 'only_requested_swap'
@@ -121,6 +136,15 @@ export interface PriceAtom extends AgentAtomBase {
 export interface MarketRegimeAtom extends AgentAtomBase {
   type: 'market_regime';
   subject: MarketRegimeMetric;
+  op: AgentAtomOperator;
+  value: number;
+}
+
+export interface TokenMetricAtom extends AgentAtomBase {
+  type: 'token_metric';
+  field: TokenMetricField;
+  /** Mint or symbol when explicitly named; undefined means "the swap's output token". */
+  subject?: string;
   op: AgentAtomOperator;
   value: number;
 }
@@ -466,6 +490,7 @@ export type AgentAtom =
   | MarketRegimeAtom
   | TokenAuditAtom
   | TokenAgeAtom
+  | TokenMetricAtom
   | TxGateAtom
   | ExternalPriceAtom
   | ProtocolHealthAtom
@@ -682,6 +707,79 @@ function extractMarketRegimeAtoms(text: string): ExtractorResult {
     });
     spans.push({ start: match.index, end: match.index + match[0].length });
   }
+
+  return { atoms, spans };
+}
+
+/** Token market-quality atoms — "liquidity > $100k", "mcap above $1M", "24h volume > $50k",
+ *  "holders > 1000", "top holder < 20%", "not down more than 25% today", "organic score is high".
+ *  subject stays undefined (→ the swap's output token); the LLM fallback can name a token. */
+function extractTokenMetricAtoms(text: string): ExtractorResult {
+  const atoms: TokenMetricAtom[] = [];
+  const spans: Array<{ start: number; end: number }> = [];
+  const OP = '(above|over|greater than|more than|>=?|below|under|less than|fewer than|<=?|at least|at most|equal to|equals|=|is)';
+  const usd = (base: string, suffix: string | undefined): number => {
+    const n = Number((base ?? '').replace(/,/g, ''));
+    const s = (suffix ?? '').toLowerCase();
+    const mult = s === 't' ? 1e12 : s === 'b' ? 1e9 : s === 'm' ? 1e6 : s === 'k' ? 1e3 : 1;
+    return n * mult;
+  };
+  const num = (raw: string): number => Number((raw ?? '').replace(/,/g, ''));
+  const push = (field: TokenMetricField, op: AgentAtomOperator | undefined, value: number, m: RegExpExecArray): void => {
+    if (!op || !Number.isFinite(value)) return;
+    atoms.push({ id: atomId(['token_metric', field, op, value]), type: 'token_metric', rawText: m[0], field, op, value });
+    spans.push({ start: m.index, end: m.index + m[0].length });
+  };
+  let m: RegExpExecArray | null;
+
+  // liquidity / fdv / 24h volume (USD with k/m/b/t suffix)
+  const usdFieldRes: Array<[TokenMetricField, RegExp]> = [
+    ['liquidity', new RegExp(`\\bliquidity\\b[^.\\n]{0,40}?${OP}\\s*\\$?\\s*([\\d,]+(?:\\.\\d+)?)\\s*([kmbt])?`, 'gi')],
+    ['fdv', new RegExp(`\\b(?:fdv|fully[-\\s]*diluted(?:\\s*valuation)?)\\b[^.\\n]{0,40}?${OP}\\s*\\$?\\s*([\\d,]+(?:\\.\\d+)?)\\s*([kmbt])?`, 'gi')],
+    ['volume_24h', new RegExp(`\\b(?:24\\s*h(?:our)?\\s*)?(?:trading\\s*)?volume\\b[^.\\n]{0,40}?${OP}\\s*\\$?\\s*([\\d,]+(?:\\.\\d+)?)\\s*([kmbt])?`, 'gi')],
+  ];
+  for (const [field, re] of usdFieldRes) {
+    while ((m = re.exec(text)) !== null) push(field, operatorFromText(m[1] ?? ''), usd(m[2] ?? '', m[3]), m);
+  }
+
+  // market cap (USD) — but NOT "total (crypto) market cap" (that's a market_regime atom).
+  const mcapRe = new RegExp(`\\b(?:market\\s*cap|mcap|market\\s*capitali[sz]ation)\\b[^.\\n]{0,40}?${OP}\\s*\\$?\\s*([\\d,]+(?:\\.\\d+)?)\\s*([kmbt])?`, 'gi');
+  while ((m = mcapRe.exec(text)) !== null) {
+    if (/\btotal\s+(?:crypto\s+)?$/i.test(text.slice(Math.max(0, m.index - 16), m.index))) continue;
+    push('market_cap', operatorFromText(m[1] ?? ''), usd(m[2] ?? '', m[3]), m);
+  }
+
+  // holder count — "holders > 1000", "more than 1000 holders", "1000+ holders".
+  // The (?!\s*%) guard keeps "top holders below 50%" (a concentration %) out of holder_count.
+  const holdersARe = new RegExp(`\\bholders?\\b[^.\\n]{0,30}?${OP}\\s*([\\d,]+)\\b(?!\\s*%)`, 'gi');
+  while ((m = holdersARe.exec(text)) !== null) push('holder_count', operatorFromText(m[1] ?? ''), num(m[2] ?? ''), m);
+  const holdersBRe = /\b(at least|over|above|more than|>=?|under|below|fewer than|<=?)\s*([\d,]+)\s*\+?\s*holders\b/gi;
+  while ((m = holdersBRe.exec(text)) !== null) push('holder_count', operatorFromText(m[1] ?? ''), num(m[2] ?? ''), m);
+  const holdersPlusRe = /\b([\d,]+)\s*\+\s*holders\b/gi;
+  while ((m = holdersPlusRe.exec(text)) !== null) push('holder_count', 'gte', num(m[1] ?? ''), m);
+
+  // top-holder concentration (%) — "top holder < 20%", "top 10 holders below 50%", "concentration < 30%"
+  const topRe = new RegExp(`\\btop\\s*(?:\\d+\\s*)?holders?\\b[^.\\n]{0,30}?${OP}\\s*(\\d+(?:\\.\\d+)?)\\s*%`, 'gi');
+  while ((m = topRe.exec(text)) !== null) push('top_holder_pct', operatorFromText(m[1] ?? ''), Number(m[2]), m);
+  const concRe = new RegExp(`\\b(?:holder\\s*)?concentration\\b[^.\\n]{0,30}?${OP}\\s*(\\d+(?:\\.\\d+)?)\\s*%`, 'gi');
+  while ((m = concRe.exec(text)) !== null) push('top_holder_pct', operatorFromText(m[1] ?? ''), Number(m[2]), m);
+
+  // 24h price change (%) — encode the APPROVE/safe threshold so pass=true means OK.
+  const downRe = /\b(?:not\s+)?down\s+(?:more than|over|by|at least)?\s*(\d+(?:\.\d+)?)\s*%/gi;
+  while ((m = downRe.exec(text)) !== null) push('price_change_24h', 'gte', -Number(m[1]), m);
+  const upRe = /\bup\s+(?:at least|by|more than|over)?\s*(\d+(?:\.\d+)?)\s*%/gi;
+  while ((m = upRe.exec(text)) !== null) push('price_change_24h', 'gte', Number(m[1]), m);
+  const pcRe = new RegExp(`\\b(?:price\\s*change|24\\s*h(?:our)?\\s*change|daily\\s*change)\\b[^.\\n]{0,30}?${OP}\\s*(-?\\d+(?:\\.\\d+)?)\\s*%`, 'gi');
+  while ((m = pcRe.exec(text)) !== null) push('price_change_24h', operatorFromText(m[1] ?? ''), Number(m[2]), m);
+
+  // organic score — "organic score is high/medium/low" → 70/40/0, or "organic score above 70"
+  const osLabelRe = /\borganic\s*score\b[^.\n]{0,20}?\b(high|medium|low)\b/gi;
+  while ((m = osLabelRe.exec(text)) !== null) {
+    const label = (m[1] ?? '').toLowerCase();
+    push('organic_score', 'gte', label === 'high' ? 70 : label === 'medium' ? 40 : 0, m);
+  }
+  const osNumRe = new RegExp(`\\borganic\\s*score\\b[^.\\n]{0,30}?${OP}\\s*(\\d+(?:\\.\\d+)?)\\b(?!\\s*%)`, 'gi');
+  while ((m = osNumRe.exec(text)) !== null) push('organic_score', operatorFromText(m[1] ?? ''), Number(m[2]), m);
 
   return { atoms, spans };
 }
@@ -2175,6 +2273,9 @@ export function extractAtoms(input: ExtractAtomsInput): ExtractAtomsResult {
     () => extractTokenAuditAtoms(text),
     () => extractTokenAgeAtoms(text),
     () => extractMarketRegimeAtoms(text),
+    // Token market-quality gates run BEFORE crypto-price + external-price so "liquidity
+    // > $100k" / "mcap above $1M" don't fall through to a $-threshold price atom.
+    () => extractTokenMetricAtoms(text),
     // Tradfi-price runs BEFORE crypto-price so SPY/GLD/EUR-USD don't fall through to the
     // crypto symbol pattern. Each extractor records its consumed span so the next pass skips.
     () => extractTradfiPriceAtoms(text),

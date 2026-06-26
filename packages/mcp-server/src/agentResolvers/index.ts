@@ -43,6 +43,8 @@ import type {
   TokenAuditAtom,
   TokenBalanceAtom,
   TokenHeldDurationAtom,
+  TokenMetricAtom,
+  TokenMetricField,
   TokenSupplyAtom,
   TxFeeAtom,
   WalletAgeOnchainAtom,
@@ -55,6 +57,7 @@ import {
   getAlternativeMeClient,
 } from '../adapters/alternative_me/index.js';
 import { getJupiterPrice } from '../adapters/jupiter/prices.js';
+import { getJupiterTokenRiskEvidence, type JupiterTokenRiskEvidence } from '../adapters/jupiter/tokenEvidence.js';
 import { requestBirdeyeTokenSecurity } from '../birdeye.js';
 import {
   requestCoinGecko,
@@ -252,6 +255,13 @@ export function createMcpCapabilityResolver(deps: McpResolverDeps) {
     if (atom.type === 'token_age') {
       if (provider === 'helius') return heliusMintCreation(atom);
       if (provider === 'birdeye') return birdeyeTokenAge(atom);
+      if (provider === 'web') return missing('web', 'deferred_to_research_pass');
+    }
+    // -------- token_metric atoms (liquidity/mcap/fdv/volume/holders/...) ------
+    if (atom.type === 'token_metric') {
+      if (provider === 'jupiter') return jupiterTokenMetric(atom, config, requestContext);
+      // BirdEye token_overview fallback is not wired in the default resolver; fall through.
+      if (provider === 'birdeye') return missing('birdeye', 'BirdEye token_overview resolver not enabled in the default resolver; falling through.', 'token_overview');
       if (provider === 'web') return missing('web', 'deferred_to_research_pass');
     }
     // -------- external_price atoms (web-only) --------------------------------
@@ -484,6 +494,55 @@ async function coingeckoGlobal(atom: MarketRegimeAtom): Promise<CapabilityResolu
     return missing('coingecko', `metric ${atom.subject} not present in CoinGecko global snapshot`, 'global');
   } catch (err) {
     return error('coingecko', err, 'global');
+  }
+}
+
+// Resolve a token_metric gate against the Jupiter token-evidence bundle (which already
+// carries liquidity / mcap / fdv / holders / topHolders% / organicScore / priceChange24h /
+// 24h volume). The token is the atom's named subject, else the swap's output token from
+// the draft parameters. One fetch per (mint) is memoized upstream by the resolver.
+function tokenMetricValue(field: TokenMetricField, ev: JupiterTokenRiskEvidence): number | undefined {
+  switch (field) {
+    case 'liquidity': return ev.liquidity;
+    case 'market_cap': return ev.mcap;
+    case 'fdv': return ev.fdv;
+    case 'volume_24h': {
+      const s = ev.stats?.stats24h;
+      if (!s) return undefined;
+      const buy = typeof s.buyVolume === 'number' ? s.buyVolume : 0;
+      const sell = typeof s.sellVolume === 'number' ? s.sellVolume : 0;
+      const total = buy + sell;
+      return total > 0 ? total : undefined;
+    }
+    case 'holder_count': return ev.holderCount;
+    case 'top_holder_pct': return ev.topHoldersPercentage;
+    case 'price_change_24h': return ev.priceChange24h;
+    case 'organic_score': return ev.organicScore;
+  }
+}
+
+async function jupiterTokenMetric(
+  atom: TokenMetricAtom,
+  config: AgentWalletConfig,
+  requestContext: { draftParameters?: Record<string, string> } | undefined,
+): Promise<CapabilityResolutionAttempt<{ numeric: number; text?: string }>> {
+  const params = requestContext?.draftParameters ?? {};
+  const candidate = atom.subject
+    ?? params['outputMint'] ?? params['outputToken'] ?? params['mint'] ?? params['token'];
+  const mint = mintFromSubject(candidate);
+  if (!mint) {
+    return missing('jupiter', 'token_metric has no concrete token (no named subject and no swap output token in context).', 'token_evidence');
+  }
+  try {
+    const evidence = await getJupiterTokenRiskEvidence(config, { mint, includePrice: true });
+    const value = tokenMetricValue(atom.field, evidence);
+    if (value === undefined || !Number.isFinite(value)) {
+      return missing('jupiter', `Jupiter token evidence has no ${atom.field} for ${mint.slice(0, 8)}…`, 'token_evidence');
+    }
+    const text = atom.field === 'organic_score' ? evidence.organicScoreLabel : undefined;
+    return ok('jupiter', { numeric: value, ...(text ? { text } : {}) }, 'token_evidence');
+  } catch (err) {
+    return error('jupiter', err, 'token_evidence');
   }
 }
 

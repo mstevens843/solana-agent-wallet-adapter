@@ -76,6 +76,11 @@ export const CAPABILITY_REGISTRY: Readonly<Record<AgentAtomType, ReadonlyArray<C
     { provider: 'birdeye', endpoint: 'token_security', ttlMs: ONE_MINUTE_MS },
     { provider: 'web', ttlMs: 10 * ONE_MINUTE_MS },
   ],
+  token_metric: [
+    { provider: 'jupiter', endpoint: 'token_evidence', ttlMs: 5 * ONE_MINUTE_MS },
+    { provider: 'birdeye', endpoint: 'token_overview', ttlMs: 60 * ONE_SECOND_MS },
+    { provider: 'web', ttlMs: 10 * ONE_MINUTE_MS },
+  ],
   tx_gate: [
     { provider: 'rpc', endpoint: 'simulate_transaction', ttlMs: 15 * ONE_SECOND_MS, postProcessor: 'tx_gate_analyzer' },
   ],

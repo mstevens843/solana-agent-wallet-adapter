@@ -76,7 +76,7 @@ import { connectorRegistryPromptContext } from './connectorRegistry.js';
 import { BLINK_CLASSIFIER_REVIEW_PROMPT } from './blinkClassification.js';
 import { createMcpCapabilityResolver } from './agentResolvers/index.js';
 import { getJupiterPriceBatch } from './adapters/jupiter/prices.js';
-import { getJupiterTokenSearch } from './adapters/jupiter/tokens.js';
+import { getJupiterTokenCategory, getJupiterTokenSearch } from './adapters/jupiter/tokens.js';
 import { getJupiterTokenRiskEvidence } from './adapters/jupiter/tokenEvidence.js';
 import { requestCoinGeckoGlobal } from './coingecko.js';
 import { getMintCreationTxForMint, getHeliusTransactionHistory } from './helius.js';
@@ -1187,6 +1187,16 @@ export class BridgeAiPlanner {
       const data = await resolveChatMarketRegime();
       return { summary: 'Market regime', data };
     }
+    if (name === 'get_token_market') {
+      const mint = await this.chatResolveMint(config, typeof input.mint === 'string' ? input.mint : query);
+      if (!mint) return { summary: 'No token resolved.', data: { error: 'a token symbol or mint is required' } };
+      const data = await resolveChatTokenMarket(config, mint);
+      return { summary: `Market data for ${mint.slice(0, 8)}…`, data };
+    }
+    if (name === 'get_trending_tokens') {
+      const data = await resolveChatTrending(config, typeof input.interval === 'string' ? input.interval : '24h');
+      return { summary: 'Trending tokens', data };
+    }
     if (name === 'get_token_age') {
       const mint = await this.chatResolveMint(config, typeof input.mint === 'string' ? input.mint : query);
       if (!mint) return { summary: 'No token resolved.', data: { error: 'a token symbol or mint is required' } };
@@ -1292,20 +1302,24 @@ export class BridgeAiPlanner {
     const wantAge = /\b(how old|token age|days? old|fresh launch|newly? launched|just launched|when (?:was|did)\b.*\b(launch|created|mint))\b/.test(text);
     const wantRegime = /\b(fear (?:and|&|\/) ?greed|btc dominance|bitcoin dominance|market regime|total (?:crypto )?market cap|market sentiment)\b/.test(text);
     const wantHistory = /\b(my (?:recent )?(?:transactions?|txns?|history|activity)|recent (?:transactions?|activity)|what did i (?:do|send|swap|buy)|last (?:few )?(?:transactions?|txns?))\b/.test(text);
+    const wantMarket = /\b(liquidity|market cap|mcap|fdv|fully diluted|24h volume|trading volume|holder count|how many holders|top holders?|concentration|price change|24h change)\b/.test(text);
+    const wantTrending = /\b(trending|what'?s hot|hot tokens?|popular tokens?|top (?:gainers|movers|tokens))\b/.test(text);
     // Connector-action intent (Jupiter lend/borrow/limit/dca/perps/prediction). Requires
     // BOTH a connector token and an action alias (findConnectorAtomByIntent), so it never
     // hijacks generic questions. Only runs when a fact resolver is wired.
     const connectorAtom = this.connectorFactResolver ? findConnectorAtomByIntent(lastUser) : undefined;
     const wantConnector = Boolean(connectorAtom?.factSpec);
-    if (!wantSafety && !wantAge && !wantRegime && !wantHistory && !wantConnector) return;
+    if (!wantSafety && !wantAge && !wantRegime && !wantHistory && !wantConnector && !wantMarket && !wantTrending) return;
     const config = this.toolConfig();
     let mint = '';
-    if (wantSafety || wantAge) {
+    if (wantSafety || wantAge || wantMarket) {
       try { mint = await this.chatResolveMint(config, extractChatTokenRef(lastUser)); } catch { mint = ''; }
     }
     const specs: Array<{ key: string; run: () => Promise<Record<string, unknown>> }> = [];
     if (wantSafety && mint) specs.push({ key: 'tokenSafety', run: () => resolveChatTokenSafety(config, mint) });
     if (wantAge && mint) specs.push({ key: 'tokenAge', run: () => resolveChatTokenAge(mint) });
+    if (wantMarket && mint) specs.push({ key: 'tokenMarket', run: () => resolveChatTokenMarket(config, mint) });
+    if (wantTrending) specs.push({ key: 'trendingTokens', run: () => resolveChatTrending(config, '24h') });
     if (wantRegime) specs.push({ key: 'marketRegime', run: () => resolveChatMarketRegime() });
     if (wantHistory) {
       const wallet = effectiveChatWalletAddress(request);
@@ -2883,6 +2897,68 @@ async function resolveChatTokenSafety(config: AgentWalletConfig, mint: string): 
   }
 }
 
+// Token market-quality metrics for the get_token_market chat tool (the numeric counterpart
+// to get_token_safety). Reuses the Jupiter token-evidence bundle — same data the
+// token_metric policy gates resolve from.
+async function resolveChatTokenMarket(config: AgentWalletConfig, mint: string): Promise<Record<string, unknown>> {
+  const cached = chatToolCacheGet(`market:${mint}`, CHAT_SAFETY_TTL_MS);
+  if (cached) return cached;
+  try {
+    const ev = await getJupiterTokenRiskEvidence(config, { mint, includePrice: true });
+    const s = ev.stats?.stats24h;
+    const vol = s ? (typeof s.buyVolume === 'number' ? s.buyVolume : 0) + (typeof s.sellVolume === 'number' ? s.sellVolume : 0) : undefined;
+    const numOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    const result: Record<string, unknown> = {
+      mint,
+      found: ev.tokenFound,
+      ...(ev.symbol ? { symbol: ev.symbol } : {}),
+      usdPrice: numOrNull(ev.usdPrice),
+      liquidity: numOrNull(ev.liquidity),
+      marketCap: numOrNull(ev.mcap),
+      fdv: numOrNull(ev.fdv),
+      volume24h: typeof vol === 'number' && vol > 0 ? vol : null,
+      holderCount: numOrNull(ev.holderCount),
+      topHoldersPercentage: numOrNull(ev.topHoldersPercentage),
+      priceChange24h: numOrNull(ev.priceChange24h),
+      organicScore: numOrNull(ev.organicScore),
+      ...(ev.organicScoreLabel ? { organicScoreLabel: ev.organicScoreLabel } : {}),
+      source: 'jupiter',
+    };
+    return chatToolCachePut(`market:${mint}`, result);
+  } catch (err) {
+    return { mint, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+// Trending Solana tokens for the get_trending_tokens chat tool, via the Jupiter token
+// category endpoint (no extra key).
+async function resolveChatTrending(config: AgentWalletConfig, interval: string): Promise<Record<string, unknown>> {
+  const VALID_INTERVALS = ['5m', '1h', '6h', '24h'] as const;
+  const iv: (typeof VALID_INTERVALS)[number] = (VALID_INTERVALS as ReadonlyArray<string>).includes(interval)
+    ? (interval as (typeof VALID_INTERVALS)[number])
+    : '24h';
+  const cached = chatToolCacheGet(`trending:${iv}`, CHAT_REGIME_TTL_MS);
+  if (cached) return cached;
+  try {
+    const result = await getJupiterTokenCategory(config, { category: 'toptrending', interval: iv, limit: 12 });
+    const tokens = result.tokens.slice(0, 12).map((t) => {
+      const s = t.stats24h;
+      const vol = s ? (typeof s.buyVolume === 'number' ? s.buyVolume : 0) + (typeof s.sellVolume === 'number' ? s.sellVolume : 0) : undefined;
+      return {
+        symbol: t.symbol ?? null,
+        mint: t.id,
+        usdPrice: typeof t.usdPrice === 'number' ? t.usdPrice : null,
+        priceChange24h: s && typeof s.priceChange === 'number' ? s.priceChange : null,
+        marketCap: typeof t.mcap === 'number' ? t.mcap : null,
+        volume24h: typeof vol === 'number' && vol > 0 ? vol : null,
+      };
+    });
+    return chatToolCachePut(`trending:${iv}`, { interval: iv, count: tokens.length, tokens, source: 'jupiter' });
+  } catch (err) {
+    return { unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
 async function resolveChatMarketRegime(): Promise<Record<string, unknown>> {
   const cached = chatToolCacheGet('regime', CHAT_REGIME_TTL_MS);
   if (cached) return cached;
@@ -3160,6 +3236,7 @@ function atomExtractionMessages(text: string, knownTokenSymbols: ReadonlyArray<s
         '(market_regime) {"id":"atom.market_regime.<subject>.<op>.<value>","type":"market_regime","rawText":"<snippet>","subject":"fear_and_greed|btc_dominance|eth_dominance|total_market_cap","op":"gt|gte|lt|lte|eq","value":<number>}; ' +
         '(token_audit) {"id":"atom.token_audit.<field>.<expected>","type":"token_audit","rawText":"<snippet>","field":"mint_authority_disabled|freeze_authority_disabled|is_verified","expected":true}; ' +
         '(token_age) {"id":"atom.token_age.<op>.<seconds>","type":"token_age","rawText":"<snippet>","op":"gt|gte|lt|lte","value":<seconds_int>}; ' +
+        '(token_metric) {"id":"atom.token_metric.<field>.<op>.<value>","type":"token_metric","rawText":"<snippet>","field":"liquidity|market_cap|fdv|volume_24h|holder_count|top_holder_pct|price_change_24h|organic_score","subject":"<optional token symbol/mint; omit for the swap output token>","op":"gt|gte|lt|lte|eq","value":<number>}; use token_metric for token quality/market gates: liquidity/market_cap/fdv/volume_24h in raw USD; holder_count as a count; top_holder_pct/price_change_24h as percentages (down 25% → value -25); organic_score 0-100 (high=70, medium=40); encode the APPROVE-safe threshold so pass means OK (e.g. "not down more than 25%" → price_change_24h gte -25); ' +
         '(tx_gate) {"id":"atom.tx_gate.<rule>","type":"tx_gate","rawText":"<snippet>","rule":"only_requested_swap|no_extra_transfers|no_unknown_recipients|no_unrelated_instructions"}; ' +
         '(external_price) {"id":"atom.external_price.<subject_slug>.<op>.<value>","type":"external_price","rawText":"<snippet>","subject":"<short noun phrase>","op":"gt|gte|lt|lte","value":<number>,"unit":"USD"}. ' +
         'Use external_price for off-chain items (phone plans, subscriptions). Use price for crypto symbols (SOL, BTC, ETH, USDC, …). If the NOTE has no policy gates, return {"atoms":[]}. Ids must be stable, lowercase, snake/dot-cased. Never invent thresholds the user did not state.',

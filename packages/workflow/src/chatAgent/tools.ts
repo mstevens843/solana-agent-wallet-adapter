@@ -21,6 +21,8 @@ export const CHAT_TOOL_NAMES = new Set([
   'get_token_age',
   'get_wallet_history',
   'get_connector_facts',
+  'get_token_market',
+  'get_trending_tokens',
 ]);
 export const CHAT_PROPOSAL_KINDS = new Set(['transfer_sol', 'transfer_spl', 'swap', 'sign_proof']);
 export const CHAT_BASE58_MINT_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -97,6 +99,11 @@ export function chatToolStatusLabel(name: string, input: Record<string, unknown>
     const action = typeof input.action === 'string' ? input.action.trim() : '';
     return action ? `Reading ${connector} ${action}…` : `Reading ${connector}…`;
   }
+  if (name === 'get_token_market') {
+    const mint = typeof input.mint === 'string' ? input.mint : '';
+    return mint ? `Checking ${mint} market data…` : 'Checking market data…';
+  }
+  if (name === 'get_trending_tokens') return 'Checking trending tokens…';
   return `Running ${name}…`;
 }
 
@@ -187,6 +194,16 @@ export function chatToolsAnthropic(): Array<Record<string, unknown>> {
         },
         required: ['action'],
       },
+    },
+    {
+      name: 'get_token_market',
+      description: "Get a Solana token's market-quality metrics: liquidity (USD), market cap, FDV, 24h volume, holder count, top-holder concentration %, 24h price change %, and organic score. Call this for 'what's X's liquidity / market cap / volume / how many holders / is it concentrated / how's it doing today'. This is the numeric counterpart to get_token_safety (which only returns authority flags). Accepts a symbol or base58 mint.",
+      input_schema: { type: 'object', properties: { mint: { type: 'string', description: 'Token symbol or base58 mint address' } }, required: ['mint'] },
+    },
+    {
+      name: 'get_trending_tokens',
+      description: "Get the top trending Solana tokens right now (symbol, price, 24h change, market cap, volume). Call this for 'what's trending / hot / popular on Solana' questions.",
+      input_schema: { type: 'object', properties: { interval: { type: 'string', description: "Trending window: '5m' | '1h' | '6h' | '24h' (default 24h)" } }, required: [] },
     },
     {
       name: 'propose_wallet_action',

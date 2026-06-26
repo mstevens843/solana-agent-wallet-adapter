@@ -41,6 +41,8 @@ import type {
   TokenAuditAtom,
   TokenBalanceAtom,
   TokenHeldDurationAtom,
+  TokenMetricAtom,
+  TokenMetricField,
   TokenSupplyAtom,
   TradfiPriceAtom,
   TxFeeAtom,
@@ -180,6 +182,41 @@ function marketRegimeLabel(atom: MarketRegimeAtom): string {
     case 'eth_dominance':     return 'ETH dominance';
     case 'total_market_cap':  return 'Total crypto market cap';
   }
+}
+
+const TOKEN_METRIC_LABELS: Record<TokenMetricField, string> = {
+  liquidity: 'liquidity',
+  market_cap: 'market cap',
+  fdv: 'FDV',
+  volume_24h: '24h volume',
+  holder_count: 'holders',
+  top_holder_pct: 'top-holder %',
+  price_change_24h: '24h change',
+  organic_score: 'organic score',
+};
+
+function tokenMetricLabel(atom: TokenMetricAtom): string {
+  const token = atom.subject ? atom.subject.toUpperCase() : 'Token';
+  return `${token} ${TOKEN_METRIC_LABELS[atom.field]}`;
+}
+
+function evaluateTokenMetric(atom: TokenMetricAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = tokenMetricLabel(atom);
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  const display =
+    atom.field === 'liquidity' || atom.field === 'market_cap' || atom.field === 'fdv' || atom.field === 'volume_24h'
+      ? formatUsdCompact(fact.numeric)
+      : atom.field === 'top_holder_pct' || atom.field === 'price_change_24h'
+        ? `${fact.numeric.toFixed(2)}%`
+        : atom.field === 'organic_score'
+          ? `${Math.round(fact.numeric)}/100${fact.text ? ` (${fact.text})` : ''}`
+          : fact.numeric.toLocaleString('en-US');
+  return {
+    atomId: atom.id,
+    pass,
+    finding: { label, value: `${display} — ${fact.source}`, tone: toneFromPass(pass) },
+  };
 }
 
 function evaluateTokenAudit(atom: TokenAuditAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
@@ -785,6 +822,7 @@ export function evaluateAtom(atom: AgentAtom, fact: ResolvedFactValue | undefine
     case 'market_regime':              return evaluateMarketRegime(atom, fact);
     case 'token_audit':                return evaluateTokenAudit(atom, fact);
     case 'token_age':                  return evaluateTokenAge(atom, fact);
+    case 'token_metric':               return evaluateTokenMetric(atom, fact);
     case 'tx_gate':                    return evaluateTxGate(atom, fact);
     case 'external_price':             return evaluateExternalPrice(atom, fact);
     case 'external_state':             return evaluateExternalState(atom, fact);
