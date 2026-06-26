@@ -44,6 +44,8 @@ export function effectiveChatWalletAddress(request: ChatPromptContext): string {
   return (request.walletAddress || '').trim() || chatContextWalletAddress(request.context);
 }
 
+const CHAT_CONTEXT_MAX_CHARS = 3500;
+
 function chatReadOnlyWalletContext(request: ChatPromptContext): string {
   const context = request.context ?? {};
   const out: Record<string, unknown> = {};
@@ -54,7 +56,23 @@ function chatReadOnlyWalletContext(request: ChatPromptContext): string {
     const value = context[key];
     if (value !== undefined) out[key] = value;
   }
-  return Object.keys(out).length > 0 ? JSON.stringify(out).slice(0, 3500) : '';
+  if (Object.keys(out).length === 0) return '';
+  let json = JSON.stringify(out);
+  if (json.length <= CHAT_CONTEXT_MAX_CHARS) return json;
+  // Over budget — drop whole fields (least → most useful) so the result stays VALID
+  // JSON instead of being sliced mid-structure (which would hand the model malformed
+  // JSON). The "Connected wallet:" line already restates the address, so the wallet
+  // identity fields are the first to go; walletBalance + resolvedFacts are kept last.
+  for (const dropKey of ['walletBalanceStatus', 'browserWallet', 'wallet']) {
+    if (dropKey in out) {
+      delete out[dropKey];
+      json = JSON.stringify(out);
+      if (json.length <= CHAT_CONTEXT_MAX_CHARS) return json;
+    }
+  }
+  // Still over budget (huge holdings or resolvedFacts): note the omission rather than
+  // emit a truncated, unparseable blob.
+  return JSON.stringify({ note: 'wallet context too large; ask the user to narrow the question' });
 }
 
 export function chatAgenticSystemPrompt(request: ChatPromptContext): string {
@@ -63,8 +81,8 @@ export function chatAgenticSystemPrompt(request: ChatPromptContext): string {
   const uiLanguage = typeof request.context?.uiLanguage === 'string' ? request.context.uiLanguage : 'en';
   const languageName = CHAT_LANGUAGE_NAMES[uiLanguage] ?? '';
   return [
-    "You are the Agentic wallet assistant, a knowledgeable, concise Solana agent embedded in the user's wallet app.",
-    'You help the user understand their wallet, tokens, prices, and risk, and you can prepare wallet actions for their explicit approval.',
+    "You are Agentic, a knowledgeable, concise general-purpose assistant embedded in the user's Solana wallet app.",
+    'Answer ANY question the user asks - general knowledge, coding, writing, math, current events, or anything else - the same way a top assistant would. You ALSO have first-class wallet abilities: explain the wallet, tokens, prices, safety, and market data, and prepare wallet actions for the user\'s explicit approval. Use the wallet tools ONLY when the question is about Solana tokens/markets/this wallet; for everything else just answer directly (use web_search when available, otherwise your own knowledge with the honest caveat below).',
     `Connected wallet: ${wallet}. Network: mainnet-beta (this app is mainnet-only).`,
     ...(readOnlyWalletContext ? [`Read-only wallet context: ${readOnlyWalletContext}`] : []),
     ...(languageName && uiLanguage !== 'en'

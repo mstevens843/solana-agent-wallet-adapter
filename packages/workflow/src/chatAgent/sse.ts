@@ -25,16 +25,22 @@ export function parseSseFrame(frame: string): { event?: string; data: string } |
   return { event: eventName, data: dataLines.join('\n') };
 }
 
+// Hard ceiling on the unparsed SSE buffer. A well-behaved provider delimits frames
+// with a blank line; if we never see one, this stops an unbounded-frame stream from
+// growing memory without limit.
+const MAX_SSE_BUFFER_BYTES = 8 * 1024 * 1024;
+
 // Parse a provider SSE body into discrete events. Yields one event per
 // blank-line-delimited frame, then flushes any trailing frame the provider did not
-// terminate with a blank line.
-export async function* iterateProviderSse(response: Response): AsyncGenerator<{ event?: string; data: string }> {
+// terminate with a blank line. Stops early when `signal` aborts.
+export async function* iterateProviderSse(response: Response, signal?: AbortSignal): AsyncGenerator<{ event?: string; data: string }> {
   const reader = response.body?.getReader();
   if (!reader) return;
   const decoder = new TextDecoder();
   let buffer = '';
   try {
     for (;;) {
+      if (signal?.aborted) return;
       const { value, done } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
@@ -43,12 +49,22 @@ export async function* iterateProviderSse(response: Response): AsyncGenerator<{ 
         const parsed = parseSseFrame(buffer.slice(0, sepMatch.index));
         buffer = buffer.slice(sepMatch.index + sepMatch[0].length);
         if (parsed) yield parsed;
+        if (signal?.aborted) return;
         sepMatch = /\r?\n\r?\n/.exec(buffer);
       }
+      if (buffer.length > MAX_SSE_BUFFER_BYTES) throw new Error('AI provider stream exceeded the maximum frame size.');
     }
+    // Flush any bytes the decoder buffered for an incomplete multibyte sequence at
+    // the very end of the stream, then parse the trailing (unterminated) frame.
+    buffer += decoder.decode();
     const tail = parseSseFrame(buffer);
     if (tail) yield tail;
   } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      /* ignore */
+    }
     try {
       reader.releaseLock();
     } catch {

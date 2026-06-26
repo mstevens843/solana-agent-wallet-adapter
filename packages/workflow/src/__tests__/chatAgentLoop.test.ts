@@ -133,7 +133,7 @@ describe('provider stream parsing', () => {
     const tokens: string[] = [];
     const textTurn = await adapter.parseStream(
       sseResponse('data: {"choices":[{"delta":{"content":"SOL is $150"}}]}\n\ndata: [DONE]\n\n'),
-      (t) => tokens.push(t),
+      (t) => { tokens.push(t); },
     );
     expect(textTurn.text).toBe('SOL is $150');
     expect(tokens).toEqual(['SOL is $150']);
@@ -159,7 +159,7 @@ describe('provider stream parsing', () => {
         'data: {"candidates":[{"content":{"parts":[{"text":"Checking. "}]}}]}\n\n' +
           'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"get_token_price","args":{"query":"SOL"}}}]}}]}\n\n',
       ),
-      (t) => tokens.push(t),
+      (t) => { tokens.push(t); },
     );
     expect(tokens).toEqual(['Checking. ']);
     expect(turn.toolCalls).toEqual([{ id: 'gem_0', name: 'get_token_price', args: '{"query":"SOL"}' }]);
@@ -292,7 +292,10 @@ describe('createStreamingProviderTurn', () => {
     expect(url).toBe('https://api.anthropic.com/v1/messages');
     expect((init.headers as Record<string, string>)['x-api-key']).toBe('ak-test');
     const body = JSON.parse(init.body as string);
-    expect(body.system).toBe('SYS');
+    // System is sent as a cache_control array (prompt caching), not a bare string.
+    expect(body.system).toEqual([{ type: 'text', text: 'SYS', cache_control: { type: 'ephemeral' } }]);
     expect(body.tools).toBeTruthy();
+    // The last tool carries the cache breakpoint.
+    expect(body.tools[body.tools.length - 1].cache_control).toEqual({ type: 'ephemeral' });
   });
 });

@@ -105,6 +105,11 @@ import {
   chatAgenticSystemPrompt,
   chatTransportAdapter,
   createStreamingProviderTurn,
+  chatSleep,
+  chatRetryDelayMs,
+  chatAbortError,
+  isRetryableChatStatus,
+  CHAT_MAX_FETCH_ATTEMPTS,
   providerFailureMessage,
   resolveChatTransport,
   runAgentChatLoop,
@@ -489,6 +494,9 @@ import {
   type AgentChatResult,
   type AgentChatProposedAction,
   type ChatStreamHandlers,
+  type ChatCitation,
+  type ChatReasoningLevel,
+  type ChatUsage,
   type AgentPlan,
   type AgentPlanField,
   type AgentPlanAskRequest,
@@ -2630,6 +2638,10 @@ interface ChatMessage {
   // state.recurringPayments. The compact card is rendered live by id (regenerated on render),
   // so nothing heavy is persisted on the message — just the id.
   recurringCardId?: string;
+  // Token usage for this answer (summed across the loop's turns) + web sources the
+  // model cited (Anthropic native web_search). Rendered as a subtle footer.
+  usage?: ChatUsage;
+  citations?: ChatCitation[];
   // UI-only synthetic marker (e.g. the "earlier messages were trimmed" notice). Not
   // persisted, not synced to cloud, not counted toward the per-session message cap.
   ephemeral?: boolean;
@@ -20986,7 +20998,12 @@ function chatLoadErrorState(session: ChatSession): string {
 
 function chatMessageHtml(msg: ChatMessage, sessionId: string): string {
   if (msg.role === 'user') {
-    return `<div class="chat-msg user" dir="auto">${escapeHtml(msg.content)}</div>`;
+    // ✎ edit-and-resend: truncates the chat to before this message + loads it into the
+    // composer to re-ask an edited version. Hidden while a stream is in flight.
+    const editBtn = chatStreamMsgId
+      ? ''
+      : `<button type="button" class="chat-msg-edit" data-chat-edit="${escapeHtml(msg.id)}" title="${escapeHtml(t('Edit & resend'))}" aria-label="${escapeHtml(t('Edit & resend'))}">✎</button>`;
+    return `<div class="chat-msg user" dir="auto" data-chat-msg-id="${escapeHtml(msg.id)}"><span class="chat-user-text">${escapeHtml(msg.content)}</span>${editBtn}</div>`;
   }
   if (msg.role === 'system') {
     // Synthetic UI-only notices (e.g. the trim marker) store English text; translate
@@ -21014,9 +21031,48 @@ function chatMessageHtml(msg: ChatMessage, sessionId: string): string {
         ${msg.txReceipt ? `<div class="chat-card">${txBlock(msg.txReceipt.txid, msg.txReceipt.cluster)}</div>` : ''}
         ${msg.receiveCard ? `<div class="chat-card">${chatReceiveCardHtml(msg.receiveCard.address)}</div>` : ''}
         ${msg.recurringCardId ? chatRecurringCardLookupHtml(msg.recurringCardId) : ''}
+        ${chatMessageFooterHtml(msg)}
+        ${(!isStreaming && !chatStreamMsgId && isLastAssistantChatMessage(msg, sessionId))
+          ? `<div class="chat-msg-actions"><button type="button" class="chat-msg-regenerate" data-chat-regenerate title="${escapeHtml(t('Regenerate'))}" aria-label="${escapeHtml(t('Regenerate'))}">↻ ${escapeHtml(t('Regenerate'))}</button></div>`
+          : ''}
       </div>
     </div>
   `;
+}
+
+// The id of the newest assistant message in a session (regenerate re-runs that turn).
+function isLastAssistantChatMessage(msg: ChatMessage, sessionId: string): boolean {
+  const session = state.chat.sessions.find((s) => s.id === sessionId);
+  if (!session) return false;
+  for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+    const m = session.messages[i];
+    if (m && m.role === 'assistant') return m.id === msg.id;
+  }
+  return false;
+}
+
+// A subtle footer under a finished answer: web sources the model cited (Anthropic
+// web_search) + a token-usage line. Hidden while streaming and when absent.
+function chatMessageFooterHtml(msg: ChatMessage): string {
+  if (msg.status === 'streaming') return '';
+  const parts: string[] = [];
+  if (msg.citations && msg.citations.length > 0) {
+    const links = msg.citations.slice(0, 8).map((c) => {
+      let label = (c.title ?? '').trim();
+      if (!label) {
+        try { label = new URL(c.url).hostname.replace(/^www\./, ''); } catch { label = c.url; }
+      }
+      return `<a class="chat-citation" href="${escapeHtml(c.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
+    }).join('');
+    parts.push(`<div class="chat-citations"><span class="chat-meta-label">${escapeHtml(t('Sources'))}</span>${links}</div>`);
+  }
+  if (msg.usage) {
+    const total = (msg.usage.inputTokens + msg.usage.outputTokens).toLocaleString();
+    const cached = msg.usage.cacheReadTokens ? ` · ${msg.usage.cacheReadTokens.toLocaleString()} ${t('cached')}` : '';
+    const title = `${msg.usage.inputTokens.toLocaleString()} in / ${msg.usage.outputTokens.toLocaleString()} out`;
+    parts.push(`<div class="chat-usage" title="${escapeHtml(title)}">${escapeHtml(`${total} ${t('tokens')}${cached}`)}</div>`);
+  }
+  return parts.length > 0 ? `<div class="chat-meta">${parts.join('')}</div>` : '';
 }
 
 function chatToolChipsHtml(msg: ChatMessage): string {
@@ -22822,7 +22878,13 @@ function deviceAgentChatProfile(): ChatModelProfile {
     apiFormat: state.aiSettings.apiFormat,
     baseUrl: state.aiSettings.baseUrl,
     model: state.aiSettings.model,
+    reasoningEffort: chatReasoningEffort(),
   };
+}
+
+// The active reasoning/thinking depth (user setting; default 'medium').
+function chatReasoningEffort(): ChatReasoningLevel {
+  return state.aiSettings.reasoningEffort ?? 'medium';
 }
 
 function buildClientChatToolDeps(): ClientChatToolDeps {
@@ -22857,7 +22919,9 @@ function buildClientChatToolDeps(): ClientChatToolDeps {
       ]);
       const out: Record<string, unknown> = { source: 'coingecko+alternative.me' };
       if (global?.btcDominancePct !== undefined) out.btcDominancePct = global.btcDominancePct;
+      if (global?.ethDominancePct !== undefined) out.ethDominancePct = global.ethDominancePct;
       if (global?.totalMarketCapUsd !== undefined) out.totalMarketCapUsd = global.totalMarketCapUsd;
+      if (global?.marketCapChangePct24hUsd !== undefined) out.marketCapChangePct24hUsd = global.marketCapChangePct24hUsd;
       if (fearGreed) { out.fearGreed = fearGreed.value; out.fearGreedLabel = fearGreed.classification; }
       if (out.btcDominancePct === undefined && out.totalMarketCapUsd === undefined && out.fearGreed === undefined) {
         return { unavailable: true, error: 'market data unavailable' };
@@ -22882,6 +22946,8 @@ function chatLoopEmitter(handlers: ChatStreamHandlers): (event: AgentChatStreamE
     if (event.type === 'token') handlers.onToken?.(event.text);
     else if (event.type === 'tool_status') handlers.onToolStatus?.(event);
     else if (event.type === 'proposal') handlers.onProposal?.(event.proposal);
+    else if (event.type === 'usage') handlers.onUsage?.(event.usage);
+    else if (event.type === 'citations') handlers.onCitations?.(event.citations);
     else if (event.type === 'error') handlers.onError?.(event.message);
     else if (event.type === 'done') handlers.onDone?.(event.result);
   };
@@ -22908,18 +22974,42 @@ function deviceAgentChatLoopRequest(request: AgentChatRequest): {
 // the answer lands on the loop's `done` event (turn granularity).
 function nativeDeviceAgentRunProviderTurn(adapter: ChatTransportAdapter, transport: ChatAiTransport, system: string, model: string): RunProviderTurn {
   return async (messages, _onToken, signal) => {
-    const body = adapter.buildBody(system, messages, model, adapter.toolSpecs(), false);
-    const result = await invokeDeviceAgentNative<{ httpStatus?: number; body?: string }>(
-      'complete',
-      { transport, model, body },
-      { action: 'chat-complete', ...(signal ? { signal } : {}) },
-    );
-    const httpStatus = typeof result?.httpStatus === 'number' ? result.httpStatus : 0;
-    const text = typeof result?.body === 'string' ? result.body : '';
-    if (httpStatus < 200 || httpStatus >= 300) {
-      throw new Error(providerFailureMessage(safeParseJsonObject(text), httpStatus));
+    const body = adapter.buildBody(system, messages, model, adapter.toolSpecs(), { streaming: false, reasoningEffort: chatReasoningEffort() });
+    // H0.1 — match the browser/Tauri streaming path's resilience: bounded retry with
+    // backoff on transient native failures (429/5xx, or a thrown network error). The
+    // native layer returns {httpStatus, body}; it carries no Retry-After, so we use
+    // exponential backoff + jitter. 4xx + final attempts surface immediately.
+    for (let attempt = 0; ; attempt += 1) {
+      if (signal?.aborted) throw chatAbortError();
+      let result: { httpStatus?: number; body?: string } | undefined;
+      try {
+        result = await invokeDeviceAgentNative<{ httpStatus?: number; body?: string }>(
+          'complete',
+          { transport, model, body },
+          { action: 'chat-complete', ...(signal ? { signal } : {}) },
+        );
+      } catch (err) {
+        if (signal?.aborted || attempt >= CHAT_MAX_FETCH_ATTEMPTS - 1) throw err;
+        await chatSleep(chatRetryDelayMs(attempt, null), signal);
+        continue;
+      }
+      const httpStatus = typeof result?.httpStatus === 'number' ? result.httpStatus : 0;
+      const text = typeof result?.body === 'string' ? result.body : '';
+      if (httpStatus >= 200 && httpStatus < 300) {
+        return adapter.parseResponse(safeParseJsonObject(text));
+      }
+      if (isRetryableChatStatus(httpStatus) && attempt < CHAT_MAX_FETCH_ATTEMPTS - 1) {
+        await chatSleep(chatRetryDelayMs(attempt, null), signal);
+        continue;
+      }
+      // Provider error bodies are usually JSON, but a gateway/proxy can return HTML or
+      // plain text — fall back to a raw snippet so the user sees the real reason.
+      const parsed = safeParseJsonObject(text);
+      const message = Object.keys(parsed).length > 0
+        ? providerFailureMessage(parsed, httpStatus)
+        : `AI provider error (${httpStatus}). ${text.trim().slice(0, 200) || 'no response body'}`;
+      throw new Error(message);
     }
-    return adapter.parseResponse(safeParseJsonObject(text));
   };
 }
 
@@ -22940,6 +23030,12 @@ async function runDirectBrowserChatLoop(
   handlers: ChatStreamHandlers,
   options: { signal?: AbortSignal } = {},
 ): Promise<void> {
+  // OpenAI's API has no browser CORS, so a direct browser/Tauri call (Device Agent OR
+  // Session) always fails with a bare "Failed to fetch". Reject early with a clear,
+  // actionable message instead. (OpenRouter + Gemini + custom gateways are CORS-OK.)
+  if (profile.provider.trim().toLowerCase() === 'openai') {
+    throw new Error(t('OpenAI cannot be called directly from the browser. Use Hosted BYOK, Local Bridge, or the Android/iOS app.'));
+  }
   const transport = resolveChatTransport(profile);
   const adapter = chatTransportAdapter(transport);
   const loopRequest = deviceAgentChatLoopRequest(request);
@@ -23007,6 +23103,7 @@ async function runDeviceAgentChatLoop(
       apiFormat: live.apiFormat || profile.apiFormat,
       baseUrl: live.baseUrl || profile.baseUrl,
       model: live.model || profile.model,
+      reasoningEffort: chatReasoningEffort(),
     });
     await runDirectBrowserChatLoop(liveProfile, live.apiKey, request, handlers, options);
     return;
@@ -23076,11 +23173,26 @@ function chatScrollToBottom(force = false): void {
   }
 }
 
-function chatMaybeAutoScroll(): void {
+function chatAutoScrollNow(): void {
   const scroller = chatScroller();
   if (scroller && chatIsPinnedToBottom(scroller)) {
     scroller.scrollTop = scroller.scrollHeight;
   }
+}
+
+// Coalesce autoscroll to one write per animation frame. Streaming fires this on
+// EVERY token; scrolling synchronously each time thrashes layout and janks mobile.
+let chatAutoScrollRaf = 0;
+function chatMaybeAutoScroll(): void {
+  if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
+    chatAutoScrollNow();
+    return;
+  }
+  if (chatAutoScrollRaf) return; // a scroll is already scheduled for this frame
+  chatAutoScrollRaf = window.requestAnimationFrame(() => {
+    chatAutoScrollRaf = 0;
+    chatAutoScrollNow();
+  });
 }
 
 function chatAutoGrow(input: HTMLTextAreaElement): void {
@@ -23216,6 +23328,7 @@ function buildChatRequest(session: ChatSession): AgentChatRequest {
     // The agent should reply in the user's selected UI language (Android picker;
     // 'en' on web). The static chrome is localized via the demo-i18n catalogs.
     uiLanguage: activeUiLanguage(),
+    reasoningEffort: chatReasoningEffort(),
   });
 }
 
@@ -23249,6 +23362,80 @@ function findLatestPendingChatActionId(): string | null {
 // Pre-send size guard: keep a single turn well under the ~1.5MB history budget so a
 // huge paste can't blow it and trigger the asymmetric eviction in writeChatHistoryWithEviction.
 const CHAT_MAX_INPUT_CHARS = 100_000;
+
+// Re-run the agent for the current session state (the last message must be a user
+// turn). Mirrors submitChatMessage's preflight + assistant-placeholder + runChatStream,
+// without appending a new user message. Used by regenerate + edit-and-resend.
+async function rerunChatTurn(session: ChatSession): Promise<void> {
+  if (chatSubmitBlocked()) return;
+  const last = session.messages[session.messages.length - 1];
+  if (!last || last.role !== 'user') return;
+  chatSubmitPending = true;
+  chatForceFocus = false;
+  try {
+    chatStreamSessionId = session.id;
+    chatStreamMsgId = null;
+    chatScrollPinned = true;
+    chatForceScrollBottom = true;
+    chatActiveTool = null;
+    const preflightAbort = new AbortController();
+    chatStreamAbort = preflightAbort;
+    chatSubmitPending = false;
+    render();
+    await refreshLocalBridgeChatStatusIfNeeded();
+    if (preflightAbort.signal.aborted || chatStreamAbort !== preflightAbort) return;
+    const notReady = chatReadinessError();
+    if (notReady) {
+      chatStreamAbort = null;
+      chatStreamMsgId = null;
+      chatStreamSessionId = null;
+      appendChatMessage(session.id, { id: newId('chat-msg'), role: 'assistant', content: '', createdAt: new Date().toISOString(), status: 'error', error: notReady });
+      render();
+      return;
+    }
+    const assistantId = newId('chat-msg');
+    appendChatMessage(session.id, { id: assistantId, role: 'assistant', content: '', createdAt: new Date().toISOString(), status: 'streaming' });
+    chatStreamMsgId = assistantId;
+    render();
+    void runChatStream(session.id, assistantId);
+  } finally {
+    if (chatSubmitPending) chatSubmitPending = false;
+  }
+}
+
+// Regenerate: drop the trailing assistant message(s) and re-run the last user turn.
+function regenerateLastChatTurn(): void {
+  if (chatSubmitBlocked()) return;
+  const session = activeChatSession();
+  if (!session) return;
+  while (session.messages.length > 0 && session.messages[session.messages.length - 1]?.role === 'assistant') {
+    session.messages.pop();
+  }
+  if ((session.messages[session.messages.length - 1]?.role) !== 'user') return;
+  saveChatHistoryState();
+  void rerunChatTurn(session);
+}
+
+// Edit-and-resend: truncate the conversation BEFORE the chosen user message and load
+// its text into the composer, so the normal send flow re-asks an edited version.
+function editChatMessageIntoComposer(messageId: string): void {
+  if (chatSubmitBlocked()) return;
+  const session = activeChatSession();
+  if (!session) return;
+  const idx = session.messages.findIndex((m) => m.id === messageId && m.role === 'user');
+  if (idx === -1) return;
+  const original = session.messages[idx]?.content ?? '';
+  session.messages = session.messages.slice(0, idx);
+  chatDraft = original;
+  saveChatHistoryState();
+  render();
+  const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
+  if (input) {
+    input.value = original;
+    chatAutoGrow(input);
+    if (!isMobileAppViewport()) { input.focus(); input.setSelectionRange(original.length, original.length); }
+  }
+}
 
 async function submitChatMessage(text: string): Promise<void> {
   const content = text.trim();
@@ -23443,6 +23630,12 @@ async function runChatStream(sessionId: string, assistantId: string): Promise<vo
       }
       paintChatToolChips(assistantId, message);
     },
+    onUsage: (usage) => {
+      message.usage = usage;
+    },
+    onCitations: (citations) => {
+      message.citations = citations.slice(0, 12);
+    },
     onProposal: (proposal) => {
       const mapped = mapProposedActionToChatProposal(proposal);
       if (!mapped) return;
@@ -23479,9 +23672,12 @@ async function runChatStream(sessionId: string, assistantId: string): Promise<vo
       // internally to the planner when the runtime can't do a tool-calling completion.
       if (CHAT_AGENT_ENABLED) await runDeviceAgentChatLoop(request, handlers, { signal: abort.signal });
       else await runDeviceAgentPlannerChat(request, handlers, { signal: abort.signal });
-    } else if (shouldUseSessionChat() && CHAT_AGENT_ENABLED) {
+    } else if (shouldUseSessionChat()) {
       // Browser Session → direct browser provider call (key in JS), no cloud relay.
-      // Only when CHAT_AGENT is on; otherwise it falls through to the prior behavior.
+      // NOT gated by CHAT_AGENT: Session is a direct-provider call with the user's own
+      // key, not the on-device device-agent the flag governs. Its readiness gate
+      // (chatReadiness) already matches this path (a key is enough; no cloud sign-in),
+      // so routing it through the shared loop unconditionally keeps the two consistent.
       await runSessionChatLoop(request, handlers, { signal: abort.signal });
     } else {
       // Ensure the native cloud Bearer token is hydrated before the first request
@@ -23507,12 +23703,16 @@ async function runChatStream(sessionId: string, assistantId: string): Promise<vo
     }
   } finally {
     if (message.status === 'streaming') message.status = 'done';
-    chatStreamAbort = null;
+    // Only tear down the shared stream state if THIS run still owns it. If a newer
+    // submit already replaced the controller, clearing it here would break the new
+    // stream's Stop button + abort wiring (stale-stream race).
+    const stillActive = chatStreamAbort === abort;
+    if (stillActive) chatStreamAbort = null;
     cancelChatSrProgress();
     // Final SR announcement: the settled answer (or the error) so a screen reader
     // hears the complete reply once, even if the debounced progress was mid-cycle.
     chatSrAnnounce(message.status === 'error' ? (message.error ?? '') : message.content);
-    chatStreamMsgId = null;
+    if (stillActive) chatStreamMsgId = null;
     chatStreamSessionId = null;
     chatActiveTool = null;
     cancelChatCheckpoint();
@@ -24660,6 +24860,10 @@ function bindChat(): void {
   });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-suggest]')) {
     button.addEventListener('click', () => void submitChatMessage(button.dataset.chatSuggest ?? ''));
+  }
+  document.querySelector<HTMLButtonElement>('[data-chat-regenerate]')?.addEventListener('click', () => regenerateLastChatTurn());
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-edit]')) {
+    button.addEventListener('click', () => editChatMessageIntoComposer(button.dataset.chatEdit ?? ''));
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-promote]')) {
     button.addEventListener('click', () => {
@@ -29892,6 +30096,23 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
           attrs: { 'data-ai-control': 'model-select' },
           disabled: routeConfigDisabled,
           title: routeConfigLockedTitle,
+          menuPlacement: aiSheetMenuPlacement,
+        })}
+      </label>
+      <label class="field compact ai-setting-field ai-setting-reasoning">
+        <span>${escapeHtml(t('Reasoning depth'))}</span>
+        ${selectPicker({
+          id: `aiReasoningSelect-${scope}`,
+          value: chatReasoningEffort(),
+          options: [
+            { value: 'minimal', label: t('Minimal'), meta: t('Fastest, cheapest') },
+            { value: 'low', label: t('Low'), meta: t('Fast') },
+            { value: 'medium', label: t('Medium'), meta: t('Balanced (default)') },
+            { value: 'high', label: t('High'), meta: t('Deepest reasoning') },
+          ],
+          className: 'ai-reasoning-picker',
+          attrs: { 'data-ai-control': 'reasoning-select' },
+          title: t('How much the model thinks before answering. Higher is smarter on hard questions but slower + costlier every turn.'),
           menuPlacement: aiSheetMenuPlacement,
         })}
       </label>
@@ -35223,6 +35444,18 @@ function bind(): void {
       void syncCloudPreference('ai-settings');
       void syncConfiguredBridgeAiSettings();
       render();
+    });
+  }
+
+  for (const control of document.querySelectorAll<HTMLSelectElement>('[data-ai-control="reasoning-select"]')) {
+    control.addEventListener('change', (event) => {
+      const value = (event.currentTarget as HTMLSelectElement).value;
+      if (value === 'minimal' || value === 'low' || value === 'medium' || value === 'high') {
+        state.aiSettings.reasoningEffort = value;
+        savePersistedState();
+        void syncCloudPreference('ai-settings');
+        void syncConfiguredBridgeAiSettings();
+      }
     });
   }
 

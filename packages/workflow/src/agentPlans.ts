@@ -206,10 +206,27 @@ export interface AgentChatResult {
 // Server-sent events streamed from POST /api/ai/chat/stream. Shared by the
 // server (emitter) and the browser transport (parser) so the contract stays
 // in lock-step.
+// Normalized token usage for one chat answer (summed across the tool-loop turns).
+// cache* fields are present only for providers that report prompt-cache hits (Anthropic).
+export interface ChatUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+}
+
+// A web source the model cited (Anthropic native web_search).
+export interface ChatCitation {
+  url: string;
+  title?: string;
+}
+
 export type AgentChatStreamEvent =
   | { type: 'token'; text: string }
   | { type: 'tool_status'; tool: string; phase: 'start' | 'done'; label?: string; callId?: string }
   | { type: 'proposal'; proposal: AgentChatProposedAction }
+  | { type: 'usage'; usage: ChatUsage }
+  | { type: 'citations'; citations: ChatCitation[] }
   | { type: 'error'; message: string }
   | { type: 'done'; result: AgentChatResult };
 

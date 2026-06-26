@@ -7,4 +7,5 @@ export * from './systemPrompt.js';
 export * from './transport.js';
 export { chatTransportAdapter } from './providerTurn.js';
 export { runAgentChatLoop, createStreamingProviderTurn, streamAgentChat } from './loop.js';
+export { chatSleep, chatRetryDelayMs, chatAbortError, isRetryableChatStatus, CHAT_MAX_FETCH_ATTEMPTS } from './loop.js';
 export type { ChatLoopRequest } from './loop.js';

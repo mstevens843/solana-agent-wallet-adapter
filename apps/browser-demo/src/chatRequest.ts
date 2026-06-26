@@ -16,6 +16,9 @@ export interface ChatRequestWalletState {
   uiLanguage: string;
   walletBalance?: WalletBalanceSnapshot | null;
   walletBalanceError?: string;
+  // Reasoning depth carried into the request context so the SERVER paths (Hosted BYOK
+  // + Local Bridge) can apply it (client paths read it from the profile directly).
+  reasoningEffort?: string;
 }
 
 export interface ChatBrowserWalletContext {
@@ -92,6 +95,7 @@ export function buildChatRequestContext(input: ChatRequestWalletState): Record<s
     browserWallet,
     cluster: input.cluster,
     uiLanguage: input.uiLanguage,
+    ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
     ...(walletBalanceMatches(input.walletBalance, address, input.cluster)
       ? { walletBalance: chatWalletBalanceContext(input.walletBalance) }
       : {}),

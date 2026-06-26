@@ -1051,23 +1051,20 @@ export class BridgeAiPlanner {
         await emit({ type: 'done', result });
         return;
       }
-      // D8 — pre-resolve API-first facts (token safety/age, market regime, wallet
-      // history) into context.resolvedFacts so the streaming tool loop's system prompt
-      // already carries them → fewer model→tool round-trips (cheaper, faster). The
-      // tool loop can still call tools for anything not pre-resolved.
-      await this.enrichSingleShotChatContext(normalizedRequest);
-      if (transport === 'anthropic-messages') {
-        await this.runAnthropicChatLoop(config, normalizedRequest, emit, signal);
-        return;
-      }
-      if (transport === 'openai-responses' || transport === 'openai-compatible') {
-        await this.runOpenAiChatLoop(config, normalizedRequest, emit, signal);
-        return;
-      }
-      if (transport === 'gemini-native') {
-        // Gemini now joins the agentic tool loop via the shared runner (Gemini
-        // function-calling on :streamGenerateContent), instead of the old
-        // single-shot fallback. Same tools + system prompt as every other path.
+      // F0 — ALL tool-loop transports (Anthropic, OpenAI, Gemini) run the SAME shared
+      // agentic loop (the one browser-demo runs on-device). One source of truth: this
+      // gives hosted/bridge Anthropic the native web_search tool, OpenAI a max_tokens
+      // cap, and every path the hardened SSE parsers + proposal validation — and ends
+      // the per-provider server-loop drift.
+      if (transport === 'anthropic-messages'
+        || transport === 'openai-responses'
+        || transport === 'openai-compatible'
+        || transport === 'gemini-native') {
+        // D8 — pre-resolve API-first facts (token safety/age, market regime, wallet
+        // history) into context.resolvedFacts so the tool loop's system prompt already
+        // carries them → fewer model→tool round-trips. Only here: the cli-agent path
+        // below runs this.chat(), which enriches internally (no double-enrich).
+        await this.enrichSingleShotChatContext(normalizedRequest);
         await this.runSharedChatLoop(config, normalizedRequest, emit, signal);
         return;
       }
@@ -1114,6 +1111,12 @@ export class BridgeAiPlanner {
         baseUrl: config.baseUrl,
         model: config.model,
         ...(config.engine ? { engine: config.engine } : {}),
+        // Server-side OpenRouter attribution (no browser origin); keeps the cloud relay
+        // in the user's OpenRouter analytics + fairer rate-limits.
+        openRouterTitle: 'Agentic Cloud',
+        // User-pickable reasoning depth rides in the request context (Hosted BYOK +
+        // Local Bridge); validated against the enum before use.
+        ...(((re) => (re === 'minimal' || re === 'low' || re === 'medium' || re === 'high' ? { reasoningEffort: re as 'minimal' | 'low' | 'medium' | 'high' } : {}))(request.context?.reasoningEffort)),
       },
       apiKey: config.apiKey,
       executeTool: (name, input, wallet) => this.runChatReadToolSafe(name, input, wallet),
@@ -1133,216 +1136,9 @@ export class BridgeAiPlanner {
     try {
       return await this.runChatReadTool(name, input, walletAddress);
     } catch (err) {
-      return { summary: 'Tool failed.', data: { error: redactText(err instanceof Error ? err.message : String(err)) } };
+      const detail = redactText(err instanceof Error ? err.message : String(err));
+      return { summary: `${name} failed: ${detail.slice(0, 120)}`, data: { error: detail } };
     }
-  }
-
-  private async runAnthropicChatLoop(
-    config: AiRuntimeConfig,
-    request: Required<AiChatRequest>,
-    emit: (event: AgentChatStreamEvent) => void | Promise<void>,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    const system = chatAgenticSystemPrompt(request);
-    const messages: Array<{ role: 'user' | 'assistant'; content: unknown }> = request.messages
-      .filter((m) => m.role === 'user' || m.role === 'assistant')
-      .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
-    let proposalEmitted = false;
-    for (let iteration = 0; iteration < CHAT_TOOL_MAX_ITERATIONS; iteration += 1) {
-      if (signal?.aborted) return;
-      const response = await fetch(anthropicMessagesUrl(config), {
-        method: 'POST',
-        headers: anthropicHeaders(config),
-        ...(signal ? { signal } : {}),
-        body: JSON.stringify({
-          model: config.model,
-          max_tokens: CHAT_TOOL_MAX_TOKENS,
-          system,
-          messages,
-          temperature: 0.3,
-          tools: chatToolsAnthropic(),
-          tool_choice: { type: 'auto' },
-          stream: true,
-        }),
-      }).catch((err) => {
-        if (isAbortError(err)) throw err;
-        throw new ProtocolError('wallet_unreachable', `AI provider chat request failed. ${redactText(err instanceof Error ? err.message : String(err))}`);
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
-        throw new ProtocolError('wallet_unreachable', providerFailureMessage(payload, response.status));
-      }
-
-      // Assemble content blocks from the SSE stream, forwarding text deltas live.
-      const blocks: Array<AnthropicStreamBlock | undefined> = [];
-      let turnText = '';
-      for await (const frame of iterateProviderSse(response)) {
-        if (signal?.aborted) return;
-        const evt = safeParseJsonObject(frame.data);
-        const type = frame.event || String(evt.type ?? '');
-        if (type === 'error') {
-          const err = (evt.error && typeof evt.error === 'object') ? evt.error as Record<string, unknown> : {};
-          throw new ProtocolError('wallet_unreachable', `AI provider error. ${redactText(String(err.message ?? 'stream error'))}`);
-        }
-        if (type === 'content_block_start') {
-          const cb = (evt.content_block && typeof evt.content_block === 'object') ? evt.content_block as Record<string, unknown> : {};
-          const index = Number(evt.index ?? 0);
-          if (cb.type === 'text') blocks[index] = { type: 'text', text: '' };
-          else if (cb.type === 'tool_use') blocks[index] = { type: 'tool_use', id: String(cb.id ?? ''), name: String(cb.name ?? ''), inputJson: '' };
-        } else if (type === 'content_block_delta') {
-          const delta = (evt.delta && typeof evt.delta === 'object') ? evt.delta as Record<string, unknown> : {};
-          const block = blocks[Number(evt.index ?? 0)];
-          if (delta.type === 'text_delta' && block?.type === 'text') {
-            const piece = String(delta.text ?? '');
-            block.text += piece;
-            turnText += piece;
-            if (piece) await emit({ type: 'token', text: piece });
-          } else if (delta.type === 'input_json_delta' && block?.type === 'tool_use') {
-            block.inputJson += String(delta.partial_json ?? '');
-          }
-        }
-      }
-
-      const toolUses = blocks.filter((b): b is AnthropicStreamBlock & { type: 'tool_use' } =>
-        Boolean(b) && b!.type === 'tool_use' && (CHAT_TOOL_NAMES.has(b!.name) || b!.name === 'propose_wallet_action'));
-      if (toolUses.length === 0) {
-        const finalText = turnText.trim();
-        if (!finalText) await streamTextAsTokens(chatNoTextFallback(proposalEmitted), emit, signal);
-        await emit({ type: 'done', result: chatResult(finalText || chatNoTextFallback(proposalEmitted)) });
-        return;
-      }
-
-      // Echo the assistant turn (text + tool_use blocks) then answer each tool.
-      // Drop empty text blocks — Anthropic rejects empty text content on the echo.
-      const assistantContent = blocks
-        .filter((b): b is AnthropicStreamBlock => Boolean(b) && !(b!.type === 'text' && b!.text.trim() === ''))
-        .map((b) =>
-          b.type === 'text'
-            ? { type: 'text', text: b.text }
-            : { type: 'tool_use', id: b.id, name: b.name, input: safeParseJsonObject(b.inputJson) });
-      messages.push({ role: 'assistant', content: assistantContent });
-      const toolResults: Array<Record<string, unknown>> = [];
-      for (const use of toolUses) {
-        const input = safeParseJsonObject(use.inputJson);
-        if (use.name === 'propose_wallet_action') {
-          const { proposal, error } = validateChatProposedAction(input);
-          if (proposal) {
-            await emit({ type: 'proposal', proposal });
-            proposalEmitted = true;
-            toolResults.push({ type: 'tool_result', tool_use_id: use.id, content: 'Action prepared. Tell the user to review the card below and approve it in their wallet.' });
-          } else {
-            toolResults.push({ type: 'tool_result', tool_use_id: use.id, content: `Could not prepare action: ${error}`, is_error: true });
-          }
-          continue;
-        }
-        await emit({ type: 'tool_status', tool: use.name, phase: 'start', label: chatToolStatusLabel(use.name, input) });
-        const result = await this.runChatReadToolSafe(use.name, input, effectiveChatWalletAddress(request));
-        await emit({ type: 'tool_status', tool: use.name, phase: 'done', label: result.summary });
-        toolResults.push({ type: 'tool_result', tool_use_id: use.id, content: JSON.stringify(result.data).slice(0, 6000) });
-      }
-      messages.push({ role: 'user', content: toolResults });
-    }
-    await emit({ type: 'done', result: chatResult(chatLoopExhaustedMessage()) });
-  }
-
-  private async runOpenAiChatLoop(
-    config: AiRuntimeConfig,
-    request: Required<AiChatRequest>,
-    emit: (event: AgentChatStreamEvent) => void | Promise<void>,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    const messages: Array<Record<string, unknown>> = [
-      { role: 'system', content: chatAgenticSystemPrompt(request) },
-      ...request.messages
-        .filter((m) => m.role === 'user' || m.role === 'assistant')
-        .map((m) => ({ role: m.role, content: m.content })),
-    ];
-    let proposalEmitted = false;
-    for (let iteration = 0; iteration < CHAT_TOOL_MAX_ITERATIONS; iteration += 1) {
-      if (signal?.aborted) return;
-      const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'openai-compatible')}/chat/completions`, {
-        method: 'POST',
-        headers: bearerJsonHeaders(config),
-        ...(signal ? { signal } : {}),
-        body: JSON.stringify({
-          model: config.model,
-          messages,
-          tools: chatToolsOpenAi(),
-          tool_choice: 'auto',
-          stream: true,
-          ...(!isDefaultTemperatureOnlyModel(config.model) && { temperature: 0.3 }),
-        }),
-      }).catch((err) => {
-        if (isAbortError(err)) throw err;
-        throw new ProtocolError('wallet_unreachable', `AI provider chat request failed. ${redactText(err instanceof Error ? err.message : String(err))}`);
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
-        throw new ProtocolError('wallet_unreachable', providerFailureMessage(payload, response.status));
-      }
-
-      let turnText = '';
-      const toolAcc: Array<{ id: string; name: string; args: string } | undefined> = [];
-      for await (const frame of iterateProviderSse(response)) {
-        if (signal?.aborted) return;
-        if (frame.data === '[DONE]') break;
-        const evt = safeParseJsonObject(frame.data);
-        const choices = Array.isArray(evt.choices) ? evt.choices as Array<Record<string, unknown>> : [];
-        const delta = (choices[0]?.delta && typeof choices[0].delta === 'object') ? choices[0].delta as Record<string, unknown> : {};
-        if (typeof delta.content === 'string' && delta.content) {
-          turnText += delta.content;
-          await emit({ type: 'token', text: delta.content });
-        }
-        if (Array.isArray(delta.tool_calls)) {
-          for (const raw of delta.tool_calls as Array<Record<string, unknown>>) {
-            const index = Number(raw.index ?? 0);
-            const slot = toolAcc[index] ?? { id: '', name: '', args: '' };
-            if (typeof raw.id === 'string' && raw.id) slot.id = raw.id;
-            const fn = (raw.function && typeof raw.function === 'object') ? raw.function as Record<string, unknown> : {};
-            if (typeof fn.name === 'string') slot.name += fn.name;
-            if (typeof fn.arguments === 'string') slot.args += fn.arguments;
-            toolAcc[index] = slot;
-          }
-        }
-      }
-
-      const toolCalls = toolAcc.filter((t): t is { id: string; name: string; args: string } => Boolean(t && t.name));
-      if (toolCalls.length === 0) {
-        const finalText = turnText.trim();
-        if (!finalText) await streamTextAsTokens(chatNoTextFallback(proposalEmitted), emit, signal);
-        await emit({ type: 'done', result: chatResult(finalText || chatNoTextFallback(proposalEmitted)) });
-        return;
-      }
-
-      messages.push({
-        role: 'assistant',
-        content: turnText || null,
-        tool_calls: toolCalls.map((t) => ({ id: t.id, type: 'function', function: { name: t.name, arguments: t.args } })),
-      });
-      for (const call of toolCalls) {
-        const input = safeParseJsonObject(call.args);
-        if (call.name === 'propose_wallet_action') {
-          const { proposal, error } = validateChatProposedAction(input);
-          if (proposal) {
-            await emit({ type: 'proposal', proposal });
-            proposalEmitted = true;
-            messages.push({ role: 'tool', tool_call_id: call.id, content: 'Action prepared. Tell the user to review the card below and approve it in their wallet.' });
-          } else {
-            messages.push({ role: 'tool', tool_call_id: call.id, content: `Could not prepare action: ${error}` });
-          }
-          continue;
-        }
-        if (!CHAT_TOOL_NAMES.has(call.name)) {
-          messages.push({ role: 'tool', tool_call_id: call.id, content: `Unknown tool: ${call.name}` });
-          continue;
-        }
-        await emit({ type: 'tool_status', tool: call.name, phase: 'start', label: chatToolStatusLabel(call.name, input) });
-        const result = await this.runChatReadToolSafe(call.name, input, effectiveChatWalletAddress(request));
-        await emit({ type: 'tool_status', tool: call.name, phase: 'done', label: result.summary });
-        messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result.data).slice(0, 6000) });
-      }
-    }
-    await emit({ type: 'done', result: chatResult(chatLoopExhaustedMessage()) });
   }
 
   // Executes one curated read tool server-side, grounding the agent in live data.
@@ -2802,10 +2598,6 @@ function isResolvedTokenRef(value: string): boolean {
   return CHAT_MAJOR_SYMBOLS.has(v.toUpperCase()) || BASE58_MINT_PATTERN.test(v);
 }
 
-type AnthropicStreamBlock =
-  | { type: 'text'; text: string }
-  | { type: 'tool_use'; id: string; name: string; inputJson: string };
-
 function isAbortError(err: unknown): boolean {
   return err instanceof Error && (err.name === 'AbortError' || /abort/i.test(err.message));
 }
@@ -2925,51 +2717,6 @@ function effectiveChatWalletAddress(request: Required<AiChatRequest>): string {
   return request.walletAddress || chatContextWalletAddress(request.context);
 }
 
-function chatReadOnlyWalletContext(request: Required<AiChatRequest>): string {
-  const context = request.context ?? {};
-  const out: Record<string, unknown> = {};
-  // `resolvedFacts` carries enrichSingleShotChatContext's pre-resolved API data so the
-  // model answers without re-calling those tools (D8).
-  for (const key of ['browserWallet', 'wallet', 'walletBalance', 'walletBalanceStatus', 'resolvedFacts']) {
-    const value = context[key];
-    if (value !== undefined) out[key] = value;
-  }
-  return Object.keys(out).length > 0 ? JSON.stringify(out).slice(0, 3500) : '';
-}
-
-function chatAgenticSystemPrompt(request: Required<AiChatRequest>): string {
-  const wallet = effectiveChatWalletAddress(request) || 'not connected';
-  const readOnlyWalletContext = chatReadOnlyWalletContext(request);
-  const uiLanguage = typeof request.context?.uiLanguage === 'string' ? request.context.uiLanguage : 'en';
-  const languageName = CHAT_LANGUAGE_NAMES[uiLanguage] ?? '';
-  return [
-    'You are the Agentic wallet assistant, a knowledgeable, concise Solana agent embedded in the user\'s wallet app.',
-    'You help the user understand their wallet, tokens, prices, and risk, and you can prepare wallet actions for their explicit approval.',
-    // This app is mainnet-only, always. Never tell the user it is on devnet/testnet.
-    `Connected wallet: ${wallet}. Network: mainnet-beta (this app is mainnet-only).`,
-    ...(readOnlyWalletContext ? [`Read-only wallet context: ${readOnlyWalletContext}`] : []),
-    ...(languageName && uiLanguage !== 'en'
-      ? [`LANGUAGE: Always reply in ${languageName}, regardless of the language the user writes in. Keep token symbols, mint/wallet addresses, numbers, and URLs verbatim.`]
-      : []),
-    '',
-    'GROUNDING (API-first): For any token price or token information, you MUST call the provided tools (get_token_price, search_tokens) and base your answer on the returned data. Never invent prices, balances, token mints, or addresses. If a tool returns no data, say what is missing; do not guess.',
-    'WALLET HOLDINGS: For the user\'s own balances, holdings, biggest position, or portfolio value, use the provided walletBalance context (sol, usdc, and holdings[] sorted by USD value, plus totalUsd) - it is their current on-chain wallet. Do not call tools for it. If no walletBalance is present, say balances are still loading.',
-    'DATA TOOLS: For token safety (mint/freeze authority, verified, organic score) call get_token_safety; for token age call get_token_age; for market regime (BTC dominance, total market cap, fear & greed) call get_market_regime; for this wallet\'s recent transactions call get_wallet_history. You MUST call the matching tool first for these; only if a tool result has "unavailable":true or an "error" may you fall back to web search. Never invent authority status, token age, market figures, or transactions.',
-    '',
-    'ACTIONS: When the user clearly wants to act (send, transfer, swap, or sign a proof), you MUST call the propose_wallet_action tool to PREPARE it. Preparing is always safe: it only renders a review card. The human reviews the card and signs in their own wallet. You never sign, submit, broadcast, or approve.',
-    '- ALWAYS PREPARE, NEVER REFUSE: do not decline to prepare a transfer or swap on safety grounds. Self-transfers (recipient equals the connected wallet) are explicitly allowed - prepare them normally; the wallet still asks the human to sign. The ONLY valid reasons not to prepare are a missing/invalid recipient address, a missing amount, or an unresolved non-SOL/USDC token mint. In those cases ask one concise follow-up for the missing field instead of refusing.',
-    '- You NEVER sign, submit, approve, or send. You only prepare a proposal; the human reviews a card and approves in their wallet.',
-    '- kind must be one of: transfer_sol, transfer_spl, swap, sign_proof.',
-    '- sign_proof: to create a signed proof or attestation of a statement (this signs a MESSAGE, not a transaction; no recipient or amount), call propose_wallet_action with kind "sign_proof", params.statement set to the exact claim the user wants to attest, and a short title in summary.',
-    '- For transfers, the recipient MUST be a real base58 address that the user typed explicitly. If you do not have an exact recipient address, DO NOT propose — ask the user for the exact address.',
-    '- Token params: SOL and USDC may be passed by symbol. For ANY other token you MUST first call search_tokens and put the returned base58 mint (NOT the symbol) into params (params.token for transfer_spl; params.inputToken / params.outputToken for swap). Never propose an unresolved or guessed token.',
-    '- Set resolution.recipientSource to "user_input" only when the user typed the address; never fabricate it.',
-    '',
-    'STYLE: Be direct and brief. Lead with the answer (no "I will check..." preamble). Use plain hyphens, never em-dashes. You may use simple markdown: **bold**, `inline code`, and "- " bullet or "1. " numbered lists. No headings, tables, images, or raw HTML. After proposing an action, tell the user to review the card and approve it.',
-    'SAFETY: Never request private keys, seed phrases, or wallet auth tokens. Never claim anything is signed, sent, or guaranteed safe.',
-  ].join('\n');
-}
-
 // --- Shared API-first read wrappers (used by both the tool loop and the
 // single-shot context-injection path). Each reuses an existing adapter, returns
 // COMPACT JSON, and never throws — on a missing key / failure it returns
@@ -2987,13 +2734,23 @@ const chatToolCache = new Map<string, { at: number; data: Record<string, unknown
 const CHAT_SAFETY_TTL_MS = 5 * 60 * 1000;
 const CHAT_AGE_TTL_MS = 30 * 60 * 1000; // mint creation time never changes
 const CHAT_REGIME_TTL_MS = 60 * 1000;
+const CHAT_TOOL_CACHE_MAX_ENTRIES = 500; // bound memory; evict oldest when exceeded
 function chatToolCacheGet(key: string, ttlMs: number): Record<string, unknown> | undefined {
   const hit = chatToolCache.get(key);
-  if (hit && Date.now() - hit.at < ttlMs) return hit.data;
+  if (!hit) return undefined;
+  if (Date.now() - hit.at < ttlMs) return hit.data;
+  chatToolCache.delete(key); // expired — actively evict so the map can't accumulate stale keys
   return undefined;
 }
 function chatToolCachePut(key: string, data: Record<string, unknown>): Record<string, unknown> {
-  if (data.unavailable !== true && data.error === undefined) chatToolCache.set(key, { at: Date.now(), data });
+  if (data.unavailable === true || data.error !== undefined) return data; // never cache failures
+  // Bound size: drop the oldest insertion (Map preserves insertion order) before adding.
+  if (chatToolCache.size >= CHAT_TOOL_CACHE_MAX_ENTRIES && !chatToolCache.has(key)) {
+    const oldest = chatToolCache.keys().next().value;
+    if (oldest !== undefined) chatToolCache.delete(oldest);
+  }
+  chatToolCache.delete(key); // re-insert so a refreshed entry counts as newest
+  chatToolCache.set(key, { at: Date.now(), data });
   return data;
 }
 

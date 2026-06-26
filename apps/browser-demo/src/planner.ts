@@ -16,6 +16,9 @@ import type {
   AgentChatResult,
   AgentChatProposedAction,
   AgentChatStreamEvent,
+  ChatCitation,
+  ChatReasoningLevel,
+  ChatUsage,
   AgentPlan,
   AgentPlanAskRequest,
   AgentPlanAskResult,
@@ -61,6 +64,9 @@ export type {
   AgentReviewQuestion,
   AgentReviewerEntry,
   AiPlanRequest,
+  ChatCitation,
+  ChatReasoningLevel,
+  ChatUsage,
   TemplateRisk,
 } from '@solana-agent-wallet-adapter/workflow';
 
@@ -98,6 +104,10 @@ export interface AiSettings {
   apiKey: string;
   multiReviewer?: boolean;
   autoBackgroundWatch?: boolean;
+  // User-pickable reasoning/thinking depth for the chat agent, mapped per provider
+  // (OpenAI reasoning_effort / Anthropic extended thinking / Gemini thinkingConfig).
+  // Default 'medium' when unset.
+  reasoningEffort?: ChatReasoningLevel;
   // Local-Bridge engine choice + selected connector (only meaningful when mode === 'bridge').
   agentEngine?: 'api-key' | 'connector';
   connector?: AiConnector;
@@ -1231,6 +1241,8 @@ export interface ChatStreamHandlers {
   onToken?: (text: string) => void;
   onToolStatus?: (info: { tool: string; phase: 'start' | 'done'; label?: string; callId?: string }) => void;
   onProposal?: (proposal: AgentChatProposedAction) => void;
+  onUsage?: (usage: ChatUsage) => void;
+  onCitations?: (citations: ChatCitation[]) => void;
   onError?: (message: string) => void;
   onDone?: (result: AgentChatResult) => void;
 }
@@ -1356,6 +1368,12 @@ export function dispatchChatStreamFrame(frame: string, handlers: ChatStreamHandl
       break;
     case 'proposal':
       handlers.onProposal?.(event.proposal);
+      break;
+    case 'usage':
+      handlers.onUsage?.(event.usage);
+      break;
+    case 'citations':
+      handlers.onCitations?.(event.citations);
       break;
     case 'error':
       handlers.onError?.(event.message);

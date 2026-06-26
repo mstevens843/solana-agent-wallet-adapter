@@ -35344,6 +35344,24 @@ button.danger:hover:not(:disabled) {
 }
 .chat-tool-chip.done { opacity: 0.7; }
 
+/* Subtle per-answer footer: cited web sources + token usage. */
+.chat-meta { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; font-size: 11px; color: var(--muted); }
+.chat-meta:empty { display: none; }
+.chat-citations { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.chat-meta-label { opacity: 0.8; }
+.chat-citation { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-citation:hover { color: var(--text); }
+.chat-usage { opacity: 0.7; font-variant-numeric: tabular-nums; }
+
+/* Regenerate (assistant) + edit-and-resend (user) controls. */
+.chat-msg-actions { margin-top: 6px; }
+.chat-msg-regenerate { font-size: 11px; color: var(--muted); background: transparent; border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; cursor: pointer; }
+.chat-msg-regenerate:hover { color: var(--text); border-color: var(--text); }
+.chat-msg.user { position: relative; }
+.chat-msg-edit { opacity: 0; margin-left: 6px; font-size: 12px; color: var(--muted); background: transparent; border: none; cursor: pointer; vertical-align: middle; transition: opacity 0.12s; }
+.chat-msg.user:hover .chat-msg-edit, .chat-msg-edit:focus-visible { opacity: 0.8; }
+.chat-msg-edit:hover { opacity: 1; color: var(--text); }
+
 .chat-empty { margin: auto; text-align: center; color: var(--muted); max-width: 540px; padding: 24px 8px; }
 .chat-empty .chat-empty-mark {
   width: 40px; height: 40px; border-radius: 50%;

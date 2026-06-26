@@ -21,6 +21,12 @@ export function isOpenRouterProfile(profile: ChatModelProfile): boolean {
   return profile.provider.trim().toLowerCase() === 'openrouter' || /(^|\.)openrouter\.ai$/i.test(safeHost(profile.baseUrl));
 }
 
+// Genuine OpenAI / OpenRouter support the `stream_options` field; arbitrary
+// OpenAI-compatible gateways (Ollama, some LiteLLM) 400 on it. Used to gate it.
+export function supportsStreamOptions(profile: ChatModelProfile): boolean {
+  return profile.provider.trim().toLowerCase() === 'openai' || isOpenRouterProfile(profile);
+}
+
 // Pick the tool-calling transport. Note: for the CHAT loop, OpenAI's "responses"
 // preset and any OpenAI-compatible gateway both use /chat/completions, so they
 // collapse to 'openai-compatible'. Gemini keeps its native transport but DOES get a
@@ -74,17 +80,41 @@ export function geminiStreamGenerateContentUrl(profile: ChatModelProfile): strin
   return `${path.replace(/:streamGenerateContent$|:generateContent$/i, '')}:streamGenerateContent?alt=sse`;
 }
 
+const ANTHROPIC_VERSION = '2023-06-01';
+
+// True in a browser/Tauri WebView (where CORS applies), false on the Node server. The
+// native Android/iOS runtimes build their request headers in Kotlin/Swift and never
+// reach this code, so this only ever distinguishes "browser" from "server".
+function isBrowserRuntime(): boolean {
+  const g = globalThis as { window?: { document?: unknown } };
+  return typeof g.window !== 'undefined' && typeof g.window.document !== 'undefined';
+}
+
 export function bearerJsonHeaders(apiKey: string, openRouter: boolean): Record<string, string> {
   return {
     authorization: `Bearer ${apiKey}`,
     'content-type': 'application/json',
-    ...(openRouter ? { 'X-OpenRouter-Metadata': 'enabled' } : {}),
+    // `X-OpenRouter-Metadata` is undocumented and NOT on OpenRouter's browser CORS
+    // allowlist, so a browser preflight rejects it (surfacing as a bare "Failed to
+    // fetch"). Send it only off the browser (server) where there is no preflight.
+    ...(openRouter && !isBrowserRuntime() ? { 'X-OpenRouter-Metadata': 'enabled' } : {}),
   };
 }
 
 export function anthropicHeaders(apiKey: string, openRouter: boolean): Record<string, string> {
-  if (openRouter) return bearerJsonHeaders(apiKey, true);
-  return { 'anthropic-version': '2023-06-01', 'content-type': 'application/json', 'x-api-key': apiKey };
+  if (openRouter) {
+    // OpenRouter's Anthropic skin speaks the native Messages API, so it still requires
+    // the `anthropic-version` header even though auth is the OpenRouter bearer key.
+    return { ...bearerJsonHeaders(apiKey, true), 'anthropic-version': ANTHROPIC_VERSION };
+  }
+  return {
+    'anthropic-version': ANTHROPIC_VERSION,
+    'content-type': 'application/json',
+    'x-api-key': apiKey,
+    // A direct browser→api.anthropic.com call is CORS-gated behind this opt-in header
+    // (Session + browser/Tauri Device Agent). Harmless on the server; native sets its own.
+    ...(isBrowserRuntime() ? { 'anthropic-dangerous-direct-browser-access': 'true' } : {}),
+  };
 }
 
 export function geminiHeaders(apiKey: string): Record<string, string> {
@@ -106,12 +136,18 @@ function extractProviderError(payload: unknown): string {
   const record = payload as Record<string, unknown>;
   const err = record.error;
   if (typeof err === 'string') return err;
+  if (Array.isArray(err) && typeof err[0] === 'string') return err[0];
   if (err && typeof err === 'object') {
-    const m = (err as Record<string, unknown>).message;
-    if (typeof m === 'string') return m;
+    const e = err as Record<string, unknown>;
+    // OpenAI/Anthropic { error: { message } }; some gateways nest { error: { error: { message } } }.
+    if (typeof e.message === 'string') return e.message;
+    const nested = e.error && typeof e.error === 'object' ? (e.error as Record<string, unknown>).message : undefined;
+    if (typeof nested === 'string') return nested;
+    if (typeof e.code === 'string') return e.code;
   }
   if (typeof record.message === 'string') return record.message;
   if (typeof record.detail === 'string') return record.detail;
+  if (typeof record.error_description === 'string') return record.error_description; // OAuth-style gateways
   return '';
 }
 

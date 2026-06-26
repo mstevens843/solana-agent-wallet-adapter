@@ -4,8 +4,15 @@
 
 import type { AgentChatProposedAction } from '../agentPlans.js';
 
-export const CHAT_TOOL_MAX_ITERATIONS = 5;
-export const CHAT_TOOL_MAX_TOKENS = 1500;
+// Multi-tool chains (search → price → safety → age → propose) can exceed 5 turns.
+export const CHAT_TOOL_MAX_ITERATIONS = 8;
+// Output cap per turn. 1500 truncated longer answers; 2048 is a safer floor. Anthropic
+// gets more headroom because native web_search + citations consume output budget.
+export const CHAT_TOOL_MAX_TOKENS = 2048;
+export const CHAT_ANTHROPIC_MAX_TOKENS = 4096;
+// Cap the prior conversation resent each turn (prevents quadratic token cost + eventual
+// context-length errors on long chats). Keeps the most recent user+assistant turns.
+export const CHAT_MAX_HISTORY_MESSAGES = 16;
 export const CHAT_TOOL_NAMES = new Set([
   'get_token_price',
   'search_tokens',
@@ -16,13 +23,56 @@ export const CHAT_TOOL_NAMES = new Set([
 ]);
 export const CHAT_PROPOSAL_KINDS = new Set(['transfer_sol', 'transfer_spl', 'swap', 'sign_proof']);
 export const CHAT_BASE58_MINT_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+export const CHAT_RESOLUTION_SOURCES = new Set(['evidence', 'user_input']);
+const CHAT_STATEMENT_MAX_CHARS = 280;
 // Tokens that may be referenced by symbol in a chat proposal. Every other token
 // (the long tail of SPLs) MUST be a base58 mint - never a guessed symbol.
 export const CHAT_MAJOR_SYMBOLS = new Set(['SOL', 'USDC', 'USDT', 'PYUSD']);
 
+const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+// Decode base58 and return the byte length, or -1 if not valid base58. A Solana
+// address/mint is EXACTLY 32 bytes — the regex alone admits charset-valid strings of
+// the wrong size, so we verify the real decoded length (defense-in-depth; the wallet
+// still does the final human-approved signing). Pure JS, no deps (browser-safe).
+function base58ByteLength(str: string): number {
+  if (!str) return -1;
+  const bytes: number[] = [];
+  for (let i = 0; i < str.length; i += 1) {
+    const value = BASE58_ALPHABET.indexOf(str[i] as string);
+    if (value === -1) return -1;
+    let carry = value;
+    for (let j = 0; j < bytes.length; j += 1) {
+      carry += (bytes[j] as number) * 58;
+      bytes[j] = carry & 0xff;
+      carry >>= 8;
+    }
+    while (carry > 0) {
+      bytes.push(carry & 0xff);
+      carry >>= 8;
+    }
+  }
+  let leadingZeros = 0;
+  for (let i = 0; i < str.length && str[i] === '1'; i += 1) leadingZeros += 1;
+  return leadingZeros + bytes.length;
+}
+
+// A valid Solana public key / mint: 32 bytes once base58-decoded.
+export function isSolanaAddress(value: string): boolean {
+  const v = value.trim();
+  return CHAT_BASE58_MINT_PATTERN.test(v) && base58ByteLength(v) === 32;
+}
+
 function isResolvedTokenRef(value: string): boolean {
   const v = value.trim();
-  return CHAT_MAJOR_SYMBOLS.has(v.toUpperCase()) || CHAT_BASE58_MINT_PATTERN.test(v);
+  return CHAT_MAJOR_SYMBOLS.has(v.toUpperCase()) || isSolanaAddress(v);
+}
+
+// Amount must be a finite number > 0 (rejects "abc", "0", "-1", Infinity, NaN).
+function isPositiveAmount(value: unknown): boolean {
+  if (value === undefined || value === null || String(value).trim() === '') return false;
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0;
 }
 
 export function chatToolStatusLabel(name: string, input: Record<string, unknown>): string {
@@ -145,14 +195,22 @@ export function validateChatProposedAction(input: Record<string, unknown>): { pr
   if (resolution.recipientSource === 'chat_text_alone') {
     return { error: 'recipient must come from explicit user input, not chat text.' };
   }
+  // If a resolution source is present it must be one of the declared enum values
+  // (never a fabricated provenance the audit trail would record verbatim).
+  for (const field of ['recipientSource', 'tokenMintSource'] as const) {
+    const v = resolution[field];
+    if (v !== undefined && (typeof v !== 'string' || !CHAT_RESOLUTION_SOURCES.has(v))) {
+      return { error: `resolution.${field} must be "evidence" or "user_input".` };
+    }
+  }
   if (kind === 'transfer_sol' || kind === 'transfer_spl') {
     const recipient = typeof params.recipient === 'string' ? params.recipient.trim() : '';
-    if (!CHAT_BASE58_MINT_PATTERN.test(recipient)) {
+    if (!isSolanaAddress(recipient)) {
       return { error: 'recipient must be a valid base58 address. Ask the user for the exact address.' };
     }
     const amount = params.amount ?? params.amountSol;
-    if (amount === undefined || amount === null || String(amount).trim() === '') {
-      return { error: 'an amount is required.' };
+    if (!isPositiveAmount(amount)) {
+      return { error: 'a positive amount is required.' };
     }
   }
   if (kind === 'transfer_spl') {
@@ -163,8 +221,8 @@ export function validateChatProposedAction(input: Record<string, unknown>): { pr
     }
   }
   if (kind === 'swap') {
-    if (params.amount === undefined || String(params.amount).trim() === '') {
-      return { error: 'a swap amount is required.' };
+    if (!isPositiveAmount(params.amount)) {
+      return { error: 'a positive swap amount is required.' };
     }
     const inputToken = typeof params.inputToken === 'string' ? params.inputToken.trim() : '';
     const outputToken = typeof params.outputToken === 'string' ? params.outputToken.trim() : '';
@@ -180,6 +238,11 @@ export function validateChatProposedAction(input: Record<string, unknown>): { pr
   if (kind === 'sign_proof') {
     const statement = typeof params.statement === 'string' ? params.statement.trim() : typeof params.message === 'string' ? params.message.trim() : '';
     if (!statement) return { error: 'sign_proof requires params.statement (the exact claim to sign).' };
+    // Cap an over-long statement so the signed message stays a concise attestation.
+    if (statement.length > CHAT_STATEMENT_MAX_CHARS) {
+      params.statement = statement.slice(0, CHAT_STATEMENT_MAX_CHARS);
+      if ('message' in params) delete params.message;
+    }
   }
   return {
     proposal: {
