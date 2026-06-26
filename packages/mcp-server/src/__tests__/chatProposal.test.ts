@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { validateChatProposedAction } from '../aiPlanner.js';
 
-// A valid base58 Solana address shape (the wrapped-SOL mint) — used only to
-// satisfy the recipient base58 check; the validator only checks format.
+// A real 32-byte base58 Solana address (the wrapped-SOL mint). The server now uses the
+// shared STRICT validator (full base58→32-byte decode), not a charset regex.
 const VALID_ADDRESS = 'So11111111111111111111111111111111111111112';
 
 describe('validateChatProposedAction', () => {
@@ -61,6 +61,29 @@ describe('validateChatProposedAction', () => {
     });
     expect(proposal).toBeUndefined();
     expect(error).toMatch(/base58|exact address/i);
+  });
+
+  it('rejects a charset-valid but wrong-byte-length recipient (H6.2 strict decode)', () => {
+    // 44 base58 chars that decode to 44 zero-bytes (not 32) — the OLD regex-only
+    // validator accepted this; the strict shared validator must reject it.
+    const { proposal, error } = validateChatProposedAction({
+      kind: 'transfer_sol',
+      summary: 'Send to a malformed address',
+      params: { recipient: '1'.repeat(44), amountSol: '1' },
+    });
+    expect(proposal).toBeUndefined();
+    expect(error).toMatch(/base58|exact address/i);
+  });
+
+  it('rejects a zero / non-positive amount (H6.2 strict amount)', () => {
+    for (const amountSol of ['0', '-1', 'abc']) {
+      const { proposal } = validateChatProposedAction({
+        kind: 'transfer_sol',
+        summary: 'Send zero',
+        params: { recipient: VALID_ADDRESS, amountSol },
+      });
+      expect(proposal, `amountSol=${amountSol}`).toBeUndefined();
+    }
   });
 
   it('rejects a recipient resolved from chat text alone', () => {

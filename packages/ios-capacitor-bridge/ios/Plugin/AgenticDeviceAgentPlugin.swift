@@ -17,6 +17,10 @@ enum AgenticDeviceAgentBridgeEnvelope {
         "localize",
         // On-device chat-agent completion: one keyed model call per loop turn.
         "complete",
+        // Streaming variant: native relays provider SSE chunks via plugin events.
+        "completeStream",
+        // Cancel the in-flight streaming request (JS Stop mid-stream).
+        "cancelStream",
     ]
 
     static func isSupportedMethod(_ method: String) -> Bool {
@@ -252,6 +256,36 @@ public class AgenticDeviceAgentPlugin: CAPPlugin, CAPBridgedPlugin {
             dispatchEnvelope(call, method: method, requestId: requestId, payload: payload, debugBaseUrl: payloadDebugBaseUrl) { payload, completion in
                 AgenticAgentRuntime.shared.complete(payload, completion: completion)
             }
+        case "completeStream":
+            // Native relays provider SSE chunks via the 'agenticDeviceAgentChunk' plugin
+            // event ({requestId, chunk} | {requestId, end:true} | {requestId, error}); JS
+            // rebuilds a Response + reuses its SSE parser. dispatchEnvelope resolves the
+            // call with {httpStatus, body?} when the stream completes.
+            dispatchEnvelope(call, method: method, requestId: requestId, payload: payload, debugBaseUrl: payloadDebugBaseUrl) { payload, completion in
+                AgenticAgentRuntime.shared.completeStream(
+                    payload,
+                    onChunk: { [weak self] chunk in
+                        DispatchQueue.main.async { self?.notifyListeners("agenticDeviceAgentChunk", data: ["requestId": requestId, "chunk": chunk]) }
+                    },
+                    onEnd: { [weak self] in
+                        DispatchQueue.main.async { self?.notifyListeners("agenticDeviceAgentChunk", data: ["requestId": requestId, "end": true]) }
+                    },
+                    onError: { [weak self] message in
+                        DispatchQueue.main.async { self?.notifyListeners("agenticDeviceAgentChunk", data: ["requestId": requestId, "error": message]) }
+                    },
+                    completion: completion
+                )
+            }
+        case "cancelStream":
+            // Best-effort: cancel the in-flight streaming URLSessionTask (JS Stop).
+            AgenticAgentRuntime.shared.cancelActiveStream()
+            resolveEnvelopeSuccess(
+                call,
+                method: method,
+                requestId: requestId,
+                debugBaseUrl: payloadDebugBaseUrl,
+                status: AgenticAgentRuntime.shared.status()
+            )
         default:
             resolveEnvelopeError(
                 call,

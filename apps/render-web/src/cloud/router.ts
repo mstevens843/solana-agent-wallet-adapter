@@ -2176,6 +2176,25 @@ function configureManagedHostedAiPlanner(planner: BridgeAiPlanner): void {
   });
 }
 
+// Wire the connector-action fact resolver (the get_connector_facts chat tool) for the
+// hosted BYOK chat paths, bound to the signed-in wallet. Uses a read-only action service
+// over the operator RPC + Jupiter config (same construction as the balance-summary
+// handler). Reads are infrequent (only when the model calls the tool), so a per-call
+// service is fine. Without this, get_connector_facts still returns capability knowledge.
+function configureHostedConnectorFactResolver(planner: BridgeAiPlanner, walletAddress: string): void {
+  if (!walletAddress) return;
+  planner.connectorFactResolver = (capability, factInput, connectorId) => {
+    const cluster = 'mainnet-beta';
+    const rpcUrl = solanaRpcUrl(cluster);
+    const service = new AgentWalletActionService({
+      backend: readOnlyWalletBalanceBackend(walletAddress, cluster),
+      config: { ...DEFAULT_CONFIG, cluster, rpcUrl },
+      connection: new Connection(rpcUrl, 'confirmed'),
+    });
+    return service.connectorReadFacts({ connectorId, capability, ...factInput });
+  };
+}
+
 function managedPolicyTextCanonicalizer(): PolicyTextCanonicalizer {
   return async (input) => {
     const planner = new BridgeAiPlanner();
@@ -3309,6 +3328,7 @@ async function handleHostedAiChatRequest(
   const settings = hostedSettings(body.settings);
   const request = hostedChatRequestForSession(body.request, session.walletAddress);
   const planner = new BridgeAiPlanner();
+  configureHostedConnectorFactResolver(planner, session.walletAddress);
 
   try {
     planner.setSessionKey({
@@ -3349,6 +3369,7 @@ async function handleHostedAiChatStreamRequest(
   const settings = hostedSettings(body.settings);
   const request = hostedChatRequestForSession(body.request, session.walletAddress);
   const planner = new BridgeAiPlanner();
+  configureHostedConnectorFactResolver(planner, session.walletAddress);
   planner.setSessionKey({
     apiKey: settings.apiKey,
     provider: settings.provider,

@@ -53,7 +53,14 @@ import {
   type SimulationDigest,
   type TxGateContext,
 } from '@solana-agent-wallet-adapter/workflow';
-import { sanitizeUserTextOrEmpty, streamAgentChat } from '@solana-agent-wallet-adapter/workflow';
+import { sanitizeUserTextOrEmpty, streamAgentChat, validateChatProposedAction } from '@solana-agent-wallet-adapter/workflow';
+import {
+  buildConnectorContext,
+  clampConnectorFacts,
+  findConnectorAtomByIntent,
+  getConnectorAtom,
+  type ConnectorFactCapability,
+} from '@solana-agent-wallet-adapter/workflow';
 
 import { redactSecrets, trace } from './trace.js';
 import {
@@ -789,6 +796,20 @@ export class BridgeAiPlanner {
   connection?: import('@solana/web3.js').Connection;
 
   /**
+   * Optional resolver for connector action facts (the `get_connector_facts` chat tool
+   * and the single-shot connector-fact enrichment). Wired by the bridge layer to
+   * `actionService.connectorReadFacts`, which holds the operator keys + RPC. When unset
+   * (e.g. tests, no action config), the tool returns capability knowledge only — never
+   * crashes. Returns the raw connectorReadFacts envelope; the workflow atom `format()`
+   * projects it to a compact block.
+   */
+  connectorFactResolver?: (
+    capability: ConnectorFactCapability,
+    input: Record<string, unknown>,
+    connectorId: string,
+  ) => Promise<Record<string, unknown>>;
+
+  /**
    * Build the LLM atom-extraction fallback function used by the orchestrator. Returns
    * undefined when no AI provider is configured OR the opt-out env flag is set.
    *
@@ -978,11 +999,17 @@ export class BridgeAiPlanner {
     return this.generateOpenAiCompatibleAsk(config, normalizedRequest);
   }
 
-  async chat(request: AiChatRequest): Promise<AiChatResult> {
+  async chat(request: AiChatRequest, signal?: AbortSignal): Promise<AiChatResult> {
     const config = this.config();
     if (!config) {
       throw new ProtocolError('unsupported_method', 'Bridge AI is not configured. Set AGENTIC_AI_API_KEY or provide a bridge session key.');
     }
+    // H7-D (scoped): the single-shot generators fan out across ~20 shared
+    // plan/review/ask/research helpers, so per-fetch signal threading is deferred. We at
+    // least short-circuit if the client has ALREADY disconnected before the (often
+    // multi-round-trip, costly) web-research work begins. The streaming loop — the common
+    // path — already aborts mid-stream.
+    if (signal?.aborted) throw new ProtocolError('invalid_request', 'Chat request was aborted.');
     const normalizedRequest = normalizeChatRequest(request);
     assertAiChatRequestAllowed(normalizedRequest);
     // Single-shot path (no tool loop): resolve any detected data intents via the
@@ -992,6 +1019,7 @@ export class BridgeAiPlanner {
     if (chatNeedsWebResearch(normalizedRequest) && !supportsNativeWebResearch(config)) {
       return unsupportedResearchChat(normalizedRequest, config);
     }
+    if (signal?.aborted) throw new ProtocolError('invalid_request', 'Chat request was aborted.');
     if (transport === 'cli-agent') {
       return this.generateConnectorChat(config, normalizedRequest);
     }
@@ -1045,7 +1073,7 @@ export class BridgeAiPlanner {
         && transport !== 'anthropic-messages'
         && transport !== 'cli-agent'
         && supportsNativeWebResearch(config)) {
-        const result = await this.chat(request);
+        const result = await this.chat(request, signal);
         await streamTextAsTokens(result.answer, emit, signal);
         if (result.proposedAction) await emit({ type: 'proposal', proposal: result.proposedAction });
         await emit({ type: 'done', result });
@@ -1070,7 +1098,7 @@ export class BridgeAiPlanner {
       }
       // cli-agent (subscription connector): no streaming tool loop — fall back to
       // the single-shot grounded chat and stream its answer so the surface works.
-      const result = await this.chat(request);
+      const result = await this.chat(request, signal);
       await streamTextAsTokens(result.answer, emit, signal);
       // The single-shot path can still prepare a wallet action (proposedAction in
       // its JSON). Surface it as the same `proposal` event the streaming tool loop
@@ -1200,6 +1228,26 @@ export class BridgeAiPlanner {
         return { summary: 'Price lookup unavailable.', data: { error: redactText(err instanceof Error ? err.message : String(err)) } };
       }
     }
+    if (name === 'get_connector_facts') {
+      const connectorId = typeof input.connectorId === 'string' && input.connectorId.trim() ? input.connectorId.trim() : 'jupiter';
+      const action = typeof input.action === 'string' ? input.action.trim() : '';
+      const atom = getConnectorAtom(connectorId, action);
+      if (!atom) return { summary: `No connector action for "${action}".`, data: { error: `unknown action ${action} for ${connectorId}` } };
+      // Knowledge-only atom (e.g. swap/portfolio) or no resolver wired (tests): return
+      // the capability card so the model still answers from grounded knowledge.
+      if (!atom.factSpec || !this.connectorFactResolver) {
+        return { summary: `${connectorId} ${atom.action} info`, data: { knowledge: atom.knowledge } };
+      }
+      const factSpec = atom.factSpec;
+      const args = {
+        ...(walletAddress ? { walletAddress } : {}),
+        ...(typeof input.mint === 'string' && input.mint.trim() ? { mint: input.mint.trim() } : {}),
+        ...(query ? { query } : {}),
+      };
+      const raw = await this.connectorFactResolver(factSpec.capability, factSpec.buildInput(args), connectorId);
+      const formatted = clampConnectorFacts(factSpec.format(raw), factSpec.maxChars);
+      return { summary: `${connectorId} ${atom.action} facts`, data: { connectorId, action: atom.action, ...formatted } };
+    }
     throw new ProtocolError('invalid_request', `Unknown chat tool: ${name}`);
   }
 
@@ -1238,7 +1286,12 @@ export class BridgeAiPlanner {
     const wantAge = /\b(how old|token age|days? old|fresh launch|newly? launched|just launched|when (?:was|did)\b.*\b(launch|created|mint))\b/.test(text);
     const wantRegime = /\b(fear (?:and|&|\/) ?greed|btc dominance|bitcoin dominance|market regime|total (?:crypto )?market cap|market sentiment)\b/.test(text);
     const wantHistory = /\b(my (?:recent )?(?:transactions?|txns?|history|activity)|recent (?:transactions?|activity)|what did i (?:do|send|swap|buy)|last (?:few )?(?:transactions?|txns?))\b/.test(text);
-    if (!wantSafety && !wantAge && !wantRegime && !wantHistory) return;
+    // Connector-action intent (Jupiter lend/borrow/limit/dca/perps/prediction). Requires
+    // BOTH a connector token and an action alias (findConnectorAtomByIntent), so it never
+    // hijacks generic questions. Only runs when a fact resolver is wired.
+    const connectorAtom = this.connectorFactResolver ? findConnectorAtomByIntent(lastUser) : undefined;
+    const wantConnector = Boolean(connectorAtom?.factSpec);
+    if (!wantSafety && !wantAge && !wantRegime && !wantHistory && !wantConnector) return;
     const config = this.toolConfig();
     let mint = '';
     if (wantSafety || wantAge) {
@@ -1251,6 +1304,23 @@ export class BridgeAiPlanner {
     if (wantHistory) {
       const wallet = effectiveChatWalletAddress(request);
       if (wallet) specs.push({ key: 'walletHistory', run: () => resolveChatWalletHistory(wallet) });
+    }
+    if (wantConnector && connectorAtom?.factSpec && this.connectorFactResolver) {
+      const factSpec = connectorAtom.factSpec;
+      const atom = connectorAtom;
+      const resolver = this.connectorFactResolver;
+      const wallet = effectiveChatWalletAddress(request);
+      specs.push({
+        key: 'connectorFacts',
+        run: async () => {
+          try {
+            const raw = await resolver(factSpec.capability, factSpec.buildInput(wallet ? { walletAddress: wallet } : {}), atom.connectorId);
+            return { connectorId: atom.connectorId, action: atom.action, ...clampConnectorFacts(factSpec.format(raw), factSpec.maxChars) };
+          } catch (err) {
+            return { connectorId: atom.connectorId, action: atom.action, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+          }
+        },
+      });
     }
     if (specs.length === 0) return;
     const results = await Promise.all(specs.map(async (spec) => {
@@ -2307,8 +2377,19 @@ function normalizeChatRequest(request: AiChatRequest): Required<AiChatRequest> {
     messages,
     walletAddress: request.walletAddress?.trim() || '',
     cluster: request.cluster?.trim() || '',
-    context: withDefaultConnectorContext(request.context),
+    context: withChatConnectorContext(withDefaultConnectorContext(request.context)),
   };
+}
+
+// Ensure the compact connectorContext (capability index + optional selected card) is
+// present for chat. The browser sets it from the dropdown selection; Hosted/relay
+// requests that omit it get the index-only block built here (cheap + static). This is
+// the grounding the chat agent uses to know the connector surface without a discovery
+// round-trip; for single-shot transports aiChatMessages serializes it in place of the
+// full protocolConnectors dump (a net token reduction).
+function withChatConnectorContext(base: Record<string, unknown>): Record<string, unknown> {
+  if (base.connectorContext && typeof base.connectorContext === 'object' && !Array.isArray(base.connectorContext)) return base;
+  return { ...base, connectorContext: buildConnectorContext() };
 }
 
 function normalizeConnectorContext(
@@ -2350,7 +2431,13 @@ function askNeedsWebResearch(request: Required<AiAskRequest>): boolean {
 }
 
 function chatNeedsWebResearch(request: Required<AiChatRequest>): boolean {
-  return textNeedsWebResearch(request.messages.map((message) => message.content).join('\n'));
+  // Evaluate the CURRENT question (last user message), not the whole joined history (an
+  // old "latest" upthread shouldn't pin every turn to web). And never route an own-wallet
+  // question to web — the tools + local walletBalance context answer it (H6.1).
+  const lastUser = [...request.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
+  if (!lastUser.trim()) return false;
+  if (chatMentionsOwnWalletText(lastUser)) return false;
+  return textNeedsWebResearch(lastUser);
 }
 
 function reviewNeedsWebResearch(request: Required<AiReviewRequest>): boolean {
@@ -2430,10 +2517,28 @@ function textNeedsWebResearch(text: string): boolean {
   const normalized = text.toLowerCase();
   if (!normalized.trim()) return false;
   return (
-    /\b(current|currently|latest|today|tonight|tomorrow|yesterday|now|real[-\s]?time|up[-\s]?to[-\s]?date|as of)\b/.test(normalized) ||
+    // H6.1 — bare generic time-words (`current`/`currently`/`now`) were dropped: they
+    // collide with everyday wallet/market phrasing ("my CURRENT balance", "price NOW")
+    // and wrongly routed tool-answerable questions to the single-shot web path. Keep the
+    // stronger fresh-fact signals.
+    /\b(latest|today|tonight|tomorrow|yesterday|real[-\s]?time|up[-\s]?to[-\s]?date|as of)\b/.test(normalized) ||
     /\b(price|cost|fee|rate|plan|subscription|monthly|per\s+month|market\s+cap|liquidity|apr|apy|weather|news|status|available|availability|outage|exploit|hack|incident|upgrade|governance|vote|sec|sanctions|ofac|kyc|issuer|jailed|tps|slot|withdrawals?|paused|offline)\b/.test(normalized) && /\b(check|find|look\s+up|search|verify|how\s+much|whether|if|less\s+than|more\s+than|under|over|above|below|approve|deny|reject)\b/.test(normalized) ||
     /\$\s*\d+/.test(normalized) && /\b(less\s+than|more\s+than|under|over|approve|deny|per\s+month|monthly)\b/.test(normalized)
   );
+}
+
+// Whether the user's message is about their OWN wallet (balances / holdings / address /
+// activity / positions). The wallet TOOLS + local `context.walletBalance` answer these,
+// so they must NEVER detour to the single-shot web path. Ported from the client's
+// `chatMentionsOwnWallet` (apps/browser-demo/src/chatRequest.ts).
+function chatMentionsOwnWalletText(text: string): boolean {
+  const t = text.toLowerCase();
+  if (!t.trim()) return false;
+  const balance = /\b(balance|balances|portfolio|holdings?|worth|value)\b/.test(t) &&
+    /\b(my|wallet|current|sol|usdc|token|tokens|portfolio)\b/.test(t);
+  if (balance) return true;
+  return /\b(my|wallet)\b/.test(t) &&
+    /\b(address|account|history|activity|transactions?|positions?|nfts?)\b/.test(t);
 }
 
 function openAiWebSearchTool(): Record<string, unknown> {
@@ -2587,16 +2692,9 @@ function aiAskMessages(request: Required<AiAskRequest>): Array<{ role: 'system' 
 const CHAT_TOOL_MAX_ITERATIONS = 5;
 const CHAT_TOOL_MAX_TOKENS = 1500;
 const CHAT_TOOL_NAMES = new Set(['get_token_price', 'search_tokens', 'get_token_safety', 'get_market_regime', 'get_token_age', 'get_wallet_history']);
-const CHAT_PROPOSAL_KINDS = new Set(['transfer_sol', 'transfer_spl', 'swap', 'sign_proof']);
+// Used for token-query resolution (resolveChatTokenRef); proposal validation now lives
+// in the shared strict validateChatProposedAction (imported from the workflow package).
 const BASE58_MINT_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
-// Tokens that may be referenced by symbol in a chat proposal. Every other token
-// (the long tail of SPLs/"shitcoins") MUST be a base58 mint - never a guessed
-// symbol. Mirrors the client-side resolver so both validators agree.
-const CHAT_MAJOR_SYMBOLS = new Set(['SOL', 'USDC', 'USDT', 'PYUSD']);
-function isResolvedTokenRef(value: string): boolean {
-  const v = value.trim();
-  return CHAT_MAJOR_SYMBOLS.has(v.toUpperCase()) || BASE58_MINT_PATTERN.test(v);
-}
 
 function isAbortError(err: unknown): boolean {
   return err instanceof Error && (err.name === 'AbortError' || /abort/i.test(err.message));
@@ -2662,15 +2760,6 @@ function chatResult(answer: string): AiChatResult {
   return { answer: answer.slice(0, 4000), checkedAt: new Date().toISOString(), source: 'ai' };
 }
 
-function chatNoTextFallback(proposalEmitted: boolean): string {
-  return proposalEmitted
-    ? 'I prepared the action below. Review the details and approve it in your wallet when you are ready.'
-    : 'I could not produce a response. Please rephrase and try again.';
-}
-
-function chatLoopExhaustedMessage(): string {
-  return 'I gathered some data but could not finish. Please narrow the question and try again.';
-}
 
 function chatToolStatusLabel(name: string, input: Record<string, unknown>): string {
   const query = typeof input.query === 'string' ? input.query : '';
@@ -2934,82 +3023,12 @@ function chatProposalSchema(): Record<string, unknown> {
   };
 }
 
-// Server-side validation before a proposal is sent to the UI. The recipient must
-// be a real base58 address (never fabricated from prose); the wallet still does
-// the final human approval. Returns either a clean proposal or an error string.
-export function validateChatProposedAction(input: Record<string, unknown>): { proposal?: AgentChatProposedAction; error?: string } {
-  const kind = typeof input.kind === 'string' ? input.kind : '';
-  if (!CHAT_PROPOSAL_KINDS.has(kind)) {
-    return { error: 'kind must be transfer_sol, transfer_spl, swap, or sign_proof.' };
-  }
-  const summary = typeof input.summary === 'string' && input.summary.trim() ? input.summary.trim().slice(0, 140) : '';
-  if (!summary) return { error: 'summary is required.' };
-  const params = (input.params && typeof input.params === 'object') ? input.params as Record<string, unknown> : null;
-  if (!params) return { error: 'params is required.' };
-  const resolution = (input.resolution && typeof input.resolution === 'object') ? input.resolution as Record<string, unknown> : {};
-  if (resolution.recipientSource === 'chat_text_alone') {
-    return { error: 'recipient must come from explicit user input, not chat text.' };
-  }
-  if (kind === 'transfer_sol' || kind === 'transfer_spl') {
-    const recipient = typeof params.recipient === 'string' ? params.recipient.trim() : '';
-    if (!BASE58_MINT_PATTERN.test(recipient)) {
-      return { error: 'recipient must be a valid base58 address. Ask the user for the exact address.' };
-    }
-    const amount = params.amount ?? params.amountSol;
-    if (amount === undefined || amount === null || String(amount).trim() === '') {
-      return { error: 'an amount is required.' };
-    }
-  }
-  if (kind === 'transfer_spl') {
-    const token = typeof params.token === 'string' ? params.token.trim() : '';
-    if (!token) {
-      return { error: 'transfer_spl requires the token mint (or SOL/USDC symbol) in params.token.' };
-    }
-    if (!isResolvedTokenRef(token)) {
-      return { error: `${token} needs a mint address. Pick the token from your balances or paste its base58 mint.` };
-    }
-  }
-  if (kind === 'swap') {
-    if (params.amount === undefined || String(params.amount).trim() === '') {
-      return { error: 'a swap amount is required.' };
-    }
-    const inputToken = typeof params.inputToken === 'string' ? params.inputToken.trim() : '';
-    const outputToken = typeof params.outputToken === 'string' ? params.outputToken.trim() : '';
-    if (!inputToken || !outputToken) {
-      return { error: 'swap requires both params.inputToken and params.outputToken.' };
-    }
-    if (!isResolvedTokenRef(inputToken)) {
-      return { error: `${inputToken} needs a mint address. Pick the input token from your balances or paste its base58 mint.` };
-    }
-    if (!isResolvedTokenRef(outputToken)) {
-      return { error: `${outputToken} needs a mint address. Pick the output token from your balances or paste its base58 mint.` };
-    }
-    if (inputToken === outputToken) {
-      return { error: 'input and output tokens must be different.' };
-    }
-  }
-  if (kind === 'sign_proof') {
-    const statement = typeof params.statement === 'string' ? params.statement.trim()
-      : (typeof params.message === 'string' ? params.message.trim() : '');
-    if (!statement) {
-      return { error: 'sign_proof requires params.statement (the exact claim to sign).' };
-    }
-  }
-  return {
-    proposal: {
-      kind,
-      summary,
-      params,
-      ...(typeof input.note === 'string' ? { note: input.note.slice(0, 280) } : {}),
-      ...(typeof input.cluster === 'string' ? { cluster: input.cluster } : {}),
-      resolution: {
-        ...(typeof resolution.recipientSource === 'string' ? { recipientSource: resolution.recipientSource as 'evidence' | 'user_input' } : {}),
-        ...(typeof resolution.tokenMintSource === 'string' ? { tokenMintSource: resolution.tokenMintSource as 'evidence' | 'user_input' } : {}),
-      },
-      requiresApproval: true,
-    },
-  };
-}
+// H6.2 — server-side proposal validation is now the SINGLE shared strict validator
+// (re-exported from the workflow package): full base58→32-byte recipient decode,
+// positive-amount check, resolution-source enum, and statement cap. Re-exported here so
+// existing importers (chatProposal.test.ts) keep working. The wallet still does the
+// final human approval.
+export { validateChatProposedAction };
 
 async function streamTextAsTokens(
   text: string,
@@ -3027,6 +3046,18 @@ async function streamTextAsTokens(
   }
 }
 
+// The chat single-shot prompt drops the heavy protocolConnectors / connectorRegistry
+// dumps: the compact context.connectorContext (capability index + selected card) now
+// carries connector grounding far more cheaply. Plan/ask/review paths keep the full
+// dump (they consume it directly). Everything else in context is preserved verbatim.
+function chatContextForPrompt(context: Record<string, unknown>): Record<string, unknown> {
+  if (!context || typeof context !== 'object') return {};
+  const { protocolConnectors: _pc, connectorRegistry: _cr, ...rest } = context as Record<string, unknown>;
+  void _pc;
+  void _cr;
+  return rest;
+}
+
 function aiChatMessages(request: Required<AiChatRequest>): Array<{ role: 'system' | 'user'; content: string }> {
   const needsResearch = chatNeedsWebResearch(request);
   const walletAddress = effectiveChatWalletAddress(request);
@@ -3034,7 +3065,7 @@ function aiChatMessages(request: Required<AiChatRequest>): Array<{ role: 'system
     {
       role: 'system',
       content:
-        'You are the Solana Agent Wallet assistant. Help the wallet user reason about Solana, wallet actions, tokens, protocols, connector capabilities, and risk. This app is mainnet-only - never say it is on devnet or testnet. Return ONLY compact JSON with shape {"answer":"direct 1-2 sentence answer","sections":[{"title":"Key Facts","bullets":["short fact"]}],"next":"optional next step","proposedAction":{"kind":"transfer_sol|transfer_spl|swap|sign_proof","summary":"one-line summary","params":{...},"resolution":{"recipientSource":"user_input"}}}. Use 0-4 sections and 1-5 bullets per section. Put the direct answer first; do not start with process narration like "I will check". ACTIONS: when the user clearly wants to send, transfer, swap, or sign a proof, INCLUDE proposedAction to PREPARE it. Preparing is always safe: it only renders a review card that the human reviews and signs in their own wallet. Self-transfers (recipient equals the connected wallet) are allowed. You never sign, submit, broadcast, or approve. Only omit proposedAction (and ask one short follow-up) when the recipient address, the amount, or a non-SOL/USDC token mint is missing. params by kind: transfer_sol {recipient, amountSol}; transfer_spl {token, recipient, amount}; swap {inputToken, outputToken, amount, slippageBps}; sign_proof {statement}. For any token other than SOL/USDC you MUST put its base58 mint (not the symbol) in params; never guess a mint. The recipient MUST be a real base58 address the user typed explicitly. For the user\'s own balances/holdings/biggest position/portfolio value, use the provided context.walletBalance (sol, usdc, holdings[] sorted by USD value, totalUsd) - it is their live wallet; never invent balances. When context.resolvedFacts is present, it holds authoritative API data for this turn (tokenSafety = mint/freeze authority + verified + organic score; tokenAge; marketRegime = BTC dominance / total market cap / fear & greed; walletHistory = recent transactions) - use it and do not web-search those; if a fact is absent or has "unavailable":true, web-search instead. Never invent authority status, token age, market figures, or transactions. If the user asks for current or outside facts and web search is available, search reliable sources and cite source URLs. Prefer section titles such as Key Facts, Watchouts, Wallet Angle, Comparison, or Missing Info. Never request private keys, seed phrases, session keys, wallet auth tokens, or unrestricted approvals.',
+        'You are the Solana Agent Wallet assistant. Help the wallet user reason about Solana, wallet actions, tokens, protocols, connector capabilities, and risk. This app is mainnet-only - never say it is on devnet or testnet. Return ONLY compact JSON with shape {"answer":"direct 1-2 sentence answer","sections":[{"title":"Key Facts","bullets":["short fact"]}],"next":"optional next step","proposedAction":{"kind":"transfer_sol|transfer_spl|swap|sign_proof","summary":"one-line summary","params":{...},"resolution":{"recipientSource":"user_input"}}}. Use 0-4 sections and 1-5 bullets per section. Put the direct answer first; do not start with process narration like "I will check". ACTIONS: when the user clearly wants to send, transfer, swap, or sign a proof, INCLUDE proposedAction to PREPARE it. Preparing is always safe: it only renders a review card that the human reviews and signs in their own wallet. Self-transfers (recipient equals the connected wallet) are allowed. You never sign, submit, broadcast, or approve. Only omit proposedAction (and ask one short follow-up) when the recipient address, the amount, or a non-SOL/USDC token mint is missing. params by kind: transfer_sol {recipient, amountSol}; transfer_spl {token, recipient, amount}; swap {inputToken, outputToken, amount, slippageBps}; sign_proof {statement}. For any token other than SOL/USDC you MUST put its base58 mint (not the symbol) in params; never guess a mint. The recipient MUST be a real base58 address the user typed explicitly. For the user\'s own balances/holdings/biggest position/portfolio value, use the provided context.walletBalance (sol, usdc, holdings[] sorted by USD value, totalUsd) - it is their live wallet; never invent balances. When context.resolvedFacts is present, it holds authoritative API data for this turn (tokenSafety = mint/freeze authority + verified + organic score; tokenAge; marketRegime = BTC dominance / total market cap / fear & greed; walletHistory = recent transactions; connectorFacts = live data for a DeFi connector action) - use it and do not web-search those; if a fact is absent or has "unavailable":true, web-search instead. Never invent authority status, token age, market figures, transactions, or connector positions/orders/health. context.connectorContext lists the available DeFi connector actions (Jupiter lend/borrow/limit/dca/perps/prediction) with capability cards - use it to explain what a connector can do; for live positions/orders/health rely on context.resolvedFacts.connectorFacts and say what is missing if it is absent. If the user asks for current or outside facts and web search is available, search reliable sources and cite source URLs. Prefer section titles such as Key Facts, Watchouts, Wallet Angle, Comparison, or Missing Info. Never request private keys, seed phrases, session keys, wallet auth tokens, or unrestricted approvals.',
     },
     {
       role: 'user',
@@ -3043,7 +3074,7 @@ function aiChatMessages(request: Required<AiChatRequest>): Array<{ role: 'system
         walletAddress: walletAddress || 'not_connected',
         // Mainnet-only app: never surface devnet/testnet to the user.
         network: 'mainnet-beta',
-        context: request.context,
+        context: chatContextForPrompt(request.context),
         research: {
           needed: needsResearch,
           mode: needsResearch ? 'auto_current_facts' : 'not_required',

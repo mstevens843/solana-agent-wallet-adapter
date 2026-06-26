@@ -142,7 +142,10 @@ describe('emptyConnectedDapps + persistence round-trip', () => {
     const loaded = loadConnectedDapps();
     expect(loaded.schemaVersion).toBe(2);
     expect(loaded.entries.kamino?.enabled).toBe(true);
-    expect(loaded.entries.jupiter?.enabled).toBe(false);
+    // Jupiter is the built-in, default-on connector, so it stays enabled through migration.
+    expect(loaded.entries.jupiter?.enabled).toBe(true);
+    // Migration must not spuriously enable other non-default connectors.
+    expect(loaded.entries.meteora?.enabled).toBe(false);
   });
 });
 
@@ -203,19 +206,26 @@ describe('cluster gating', () => {
 });
 
 describe('summary copy', () => {
-  it('reads "Kamino connected" when only Kamino is on', () => {
+  it('reads single-connector copy for the built-in Jupiter default', () => {
+    // Jupiter is enabled by default (built-in), so the empty state already has exactly
+    // one connector on and uses the single-connector copy.
+    expect(connectedDappsSummary(emptyConnectedDapps(), 'mainnet-beta')).toBe('Jupiter connector enabled');
+  });
+
+  it('reads the N-of-catalog count when another connector is enabled alongside Jupiter', () => {
     const state = setConnectedDappEnabled(emptyConnectedDapps(), 'kamino', true);
-    expect(connectedDappsSummary(state, 'mainnet-beta')).toBe('Kamino Finance connector enabled');
+    expect(connectedDappsSummary(state, 'mainnet-beta')).toMatch(/^2 of \d+ protocol connectors enabled$/);
   });
 
-  it('reads "No protocol connectors enabled" with catalog count when nothing is on', () => {
-    const state = emptyConnectedDapps();
-    expect(connectedDappsSummary(state, 'mainnet-beta')).toMatch(/No protocol connectors enabled/);
+  it('reads "No protocol connectors enabled" when no connector is active on the cluster', () => {
+    // Jupiter is force-enabled only on supported (mainnet) clusters; on an unsupported
+    // cluster every connector gates off, so the zero-state copy is reachable there.
+    expect(connectedDappsSummary(emptyConnectedDapps(), 'devnet')).toMatch(/No protocol connectors enabled/);
   });
 
-  it('lists enabled connectors for planner context', () => {
+  it('lists enabled connectors for planner context (built-in Jupiter first)', () => {
     const state = setConnectedDappEnabled(emptyConnectedDapps(), 'meteora', true);
-    expect(enabledProtocolConnectors(state, 'mainnet-beta').map((connector) => connector.id)).toEqual(['meteora']);
+    expect(enabledProtocolConnectors(state, 'mainnet-beta').map((connector) => connector.id)).toEqual(['jupiter', 'meteora']);
   });
 
   it('can include disabled connector readiness for planner missing-connector answers', () => {

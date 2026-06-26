@@ -56,6 +56,7 @@ import com.agentic.wallet.mwa.WalletRegistry
 import com.agentic.wallet.streaming.StreamingSessionException
 import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONException
@@ -897,6 +898,21 @@ class MainActivity : FragmentActivity() {
         }
     }
 
+    // Streaming chat: push one raw provider SSE chunk to JS (the bridge routes it into
+    // the active chat-stream sink). MUST run on the UI thread (WebView access).
+    fun pushDeviceAgentChatChunk(requestId: String, chunk: String) {
+        if (isDestroyed) return
+        val js = "(function(){var b=window.__agenticAndroidDeviceAgentBridge;if(b&&b.onChunk){b.onChunk(${JSONObject.quote(requestId)},${JSONObject.quote(chunk)});}})();"
+        webView.evaluateJavascript(js, null)
+    }
+
+    // Streaming chat: signal end-of-stream so JS closes the synthetic Response stream.
+    fun pushDeviceAgentChatStreamEnd(requestId: String) {
+        if (isDestroyed) return
+        val js = "(function(){var b=window.__agenticAndroidDeviceAgentBridge;if(b&&b.onStreamEnd){b.onStreamEnd(${JSONObject.quote(requestId)});}})();"
+        webView.evaluateJavascript(js, null)
+    }
+
     private fun dispatchDeviceAgentResolve(requestId: String, envelope: JSONObject) {
         if (isDestroyed) {
             AgentMwaLog.warn(
@@ -1208,6 +1224,10 @@ class MainActivity : FragmentActivity() {
     }
 
     private class AndroidBridge(private val activity: MainActivity) {
+        // The in-flight streaming-chat coroutine, tracked so a JS 'cancelStream' (Stop
+        // mid-stream) can cancel it → the streaming HttpURLConnection disconnects.
+        @Volatile private var activeStreamJob: Job? = null
+
         // Top-frame origin guard. addJavascriptInterface exposes this bridge to whatever URL
         // the WebView is showing; we gate every callable here so a navigation hijack to a
         // foreign host (or future build that loads an extra URL) can't reach native APIs.
@@ -1724,7 +1744,7 @@ class MainActivity : FragmentActivity() {
                 return
             }
             if (!originOk) return
-            activity.lifecycleScope.launch {
+            val job = activity.lifecycleScope.launch {
                 AgentMwaLog.info(
                     "MainActivity",
                     "deviceAgentRequest",
@@ -1753,6 +1773,11 @@ class MainActivity : FragmentActivity() {
                     return@launch
                 }
                 activity.dispatchDeviceAgentResolve(requestId, envelope)
+            }
+            // Track the streaming job so 'cancelStream' can cancel it (→ disconnect).
+            if (method == "completeStream") {
+                activeStreamJob = job
+                job.invokeOnCompletion { if (activeStreamJob === job) activeStreamJob = null }
             }
         }
 
@@ -2270,6 +2295,24 @@ class MainActivity : FragmentActivity() {
                     activity.agentRuntimeController.statusJson(),
                     activity.agentRuntimeController.complete(payload),
                 )
+                // Streaming chat completion: native relays raw provider SSE chunks to JS
+                // via the bridge's onChunk (marshaled to the UI thread for the WebView),
+                // emits onStreamEnd, then resolves with {httpStatus, body?}. JS rebuilds a
+                // Response from the chunks + reuses its SSE parser.
+                "completeStream" -> {
+                    val result = activity.agentRuntimeController.completeStream(payload) { chunk ->
+                        activity.runOnUiThread { activity.pushDeviceAgentChatChunk(requestId, chunk) }
+                    }
+                    activity.runOnUiThread { activity.pushDeviceAgentChatStreamEnd(requestId) }
+                    DeviceAgentOutcome(activity.agentRuntimeController.statusJson(), result)
+                }
+                // Cancel the in-flight streaming coroutine (JS Stop mid-stream). The
+                // cancellation disconnects the streaming HttpURLConnection. Best-effort.
+                "cancelStream" -> {
+                    activeStreamJob?.cancel()
+                    activeStreamJob = null
+                    DeviceAgentOutcome(activity.agentRuntimeController.statusJson(), JSONObject().put("cancelled", true))
+                }
                 "generatePlan", "reviewPlan", "ask", "localize", "chat" -> {
                     val runtimeMethod = RuntimeMethod.fromWire(method)
                         ?: throw DeviceAgentException(
@@ -2481,6 +2524,10 @@ class MainActivity : FragmentActivity() {
                 "localize",
                 // On-device chat-agent completion: one keyed model call per loop turn.
                 "complete",
+                // Streaming variant: native relays provider SSE chunks to JS.
+                "completeStream",
+                // Cancel the in-flight streaming request (JS Stop mid-stream).
+                "cancelStream",
                 // Paired Plan-Connector chat: forwarded to the desktop connector via
                 // BridgeRelayProvider (the runtime executor.chat handler).
                 "chat",

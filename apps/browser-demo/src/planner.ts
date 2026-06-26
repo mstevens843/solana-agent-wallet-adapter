@@ -4,9 +4,11 @@ import {
 import {
   appendReviewFinding,
   assertPlanGuardrails,
+  connectorActionCard,
   evaluatePlanGuardrails,
   extractAtoms,
   formatDollar,
+  getConnectorAtom,
   isWebOnly,
   normalizeAgentReviewLocalizedCopy,
   reconcileThresholdReviewDecision,
@@ -2238,8 +2240,30 @@ async function generateAnthropicResearchEvidence(
   return normalizeResearchEvidence(payload, aiReviewProviderLabel(settings), request.instruction ?? '');
 }
 
+// Resolve the compact connector action card for the selected connector + action, so the
+// planner gets capability-level grounding (what the action does, params, constraints) for
+// exactly the chosen action — on top of the full protocolConnectors context. Returns ''
+// when nothing resolves (knowledge-only or unmapped action) so it's a safe no-op.
+const PLAN_ACTION_ATOM_KEYWORDS: Array<[RegExp, string]> = [
+  [/(lend|earn|supply)/i, 'lend'],
+  [/(borrow|collateral|repay)/i, 'borrow'],
+  [/(trigger|limit|tp_sl|take_profit|stop_loss)/i, 'limit'],
+  [/(recurring|dca)/i, 'dca'],
+  [/perp/i, 'perps'],
+  [/prediction/i, 'prediction'],
+];
+function planConnectorActionCard(request: AiPlanRequest, selected: Record<string, unknown> | undefined): string {
+  const connectorId = selected && typeof selected.id === 'string' ? selected.id : '';
+  if (!connectorId) return '';
+  const haystack = `${request.template?.actionType ?? ''} ${request.template?.category ?? ''}`;
+  const match = PLAN_ACTION_ATOM_KEYWORDS.find(([re]) => re.test(haystack));
+  if (!match) return '';
+  return connectorActionCard(getConnectorAtom(connectorId, match[1]));
+}
+
 export function aiMessages(request: AiPlanRequest): Array<{ role: 'system' | 'user'; content: string }> {
   const selectedConnector = selectedConnectorContext(request.connectorContext);
+  const connectorActionCardText = planConnectorActionCard(request, selectedConnector);
   const connectorRule = selectedConnector
     ? [
       `Use the selected protocol connector only: ${selectedConnector.name || selectedConnector.id || 'selected connector'}.`,
@@ -2264,6 +2288,7 @@ export function aiMessages(request: AiPlanRequest): Array<{ role: 'system' | 'us
         parameters: request.parameters,
         protocolConnectors: request.connectorContext ?? [],
         connectorRule,
+        ...(connectorActionCardText ? { connectorActionCard: connectorActionCardText } : {}),
         requiredBoundary: DEVICE_AGENT_PLAN_REQUIRED_BOUNDARY,
       }),
     },

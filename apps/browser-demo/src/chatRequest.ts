@@ -19,6 +19,10 @@ export interface ChatRequestWalletState {
   // Reasoning depth carried into the request context so the SERVER paths (Hosted BYOK
   // + Local Bridge) can apply it (client paths read it from the profile directly).
   reasoningEffort?: string;
+  // Compact connector capability index (+ selected card) so the chat agent knows the
+  // DeFi connector surface without a discovery round-trip. Built via buildConnectorContext
+  // (workflow). Flows to every path's system prompt via chatReadOnlyWalletContext.
+  connectorContext?: Record<string, unknown>;
 }
 
 export interface ChatBrowserWalletContext {
@@ -45,6 +49,12 @@ function walletBalanceMatches(
   );
 }
 
+// Round a USD value to 6 dp so float noise (0.1*3 = 0.30000000000000004) doesn't leak
+// into the model context (H8-F). Token AMOUNTS keep full precision (they need it).
+function roundUsd(v: number | undefined): number | undefined {
+  return v === undefined ? undefined : Math.round(v * 1e6) / 1e6;
+}
+
 function chatWalletBalanceContext(snapshot: WalletBalanceSnapshot): Record<string, unknown> {
   // Top holdings by USD value (incl. SOL/USDC) so the agent can answer
   // "what's my biggest holding / portfolio" from the user's live wallet.
@@ -56,8 +66,8 @@ function chatWalletBalanceContext(snapshot: WalletBalanceSnapshot): Record<strin
       symbol: asset.symbol,
       mint: asset.mint,
       amount: asset.amount,
-      ...(asset.priceUsd !== undefined ? { priceUsd: asset.priceUsd } : {}),
-      ...(asset.valueUsd !== undefined ? { valueUsd: asset.valueUsd } : {}),
+      ...(asset.priceUsd !== undefined ? { priceUsd: roundUsd(asset.priceUsd) } : {}),
+      ...(asset.valueUsd !== undefined ? { valueUsd: roundUsd(asset.valueUsd) } : {}),
     }));
   return {
     walletAddress: snapshot.walletAddress,
@@ -65,18 +75,18 @@ function chatWalletBalanceContext(snapshot: WalletBalanceSnapshot): Record<strin
     loadedAt: snapshot.loadedAt,
     coverage: snapshot.coverage,
     priceStatus: snapshot.priceStatus,
-    totalUsd: snapshot.totalUsd,
+    totalUsd: roundUsd(snapshot.totalUsd),
     hasMissingPrices: snapshot.hasMissingPrices,
     holdings,
     sol: {
       amount: snapshot.sol.amount,
-      ...(snapshot.sol.priceUsd !== undefined ? { priceUsd: snapshot.sol.priceUsd } : {}),
-      ...(snapshot.sol.valueUsd !== undefined ? { valueUsd: snapshot.sol.valueUsd } : {}),
+      ...(snapshot.sol.priceUsd !== undefined ? { priceUsd: roundUsd(snapshot.sol.priceUsd) } : {}),
+      ...(snapshot.sol.valueUsd !== undefined ? { valueUsd: roundUsd(snapshot.sol.valueUsd) } : {}),
     },
     usdc: {
       amount: snapshot.usdc.amount,
-      ...(snapshot.usdc.priceUsd !== undefined ? { priceUsd: snapshot.usdc.priceUsd } : {}),
-      ...(snapshot.usdc.valueUsd !== undefined ? { valueUsd: snapshot.usdc.valueUsd } : {}),
+      ...(snapshot.usdc.priceUsd !== undefined ? { priceUsd: roundUsd(snapshot.usdc.priceUsd) } : {}),
+      ...(snapshot.usdc.valueUsd !== undefined ? { valueUsd: roundUsd(snapshot.usdc.valueUsd) } : {}),
     },
     otherAssetCount: snapshot.others.length,
   };
@@ -96,6 +106,9 @@ export function buildChatRequestContext(input: ChatRequestWalletState): Record<s
     cluster: input.cluster,
     uiLanguage: input.uiLanguage,
     ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
+    ...(input.connectorContext && Object.keys(input.connectorContext).length > 0
+      ? { connectorContext: input.connectorContext }
+      : {}),
     ...(walletBalanceMatches(input.walletBalance, address, input.cluster)
       ? { walletBalance: chatWalletBalanceContext(input.walletBalance) }
       : {}),

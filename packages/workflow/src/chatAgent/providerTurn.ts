@@ -129,16 +129,22 @@ function openAiReasoningEffort(model: string, level?: ChatReasoningLevel): strin
 }
 // Anthropic extended-thinking budget for medium/high; undefined = no thinking.
 function anthropicThinkingBudget(level?: ChatReasoningLevel): number | undefined {
-  if (level === 'medium') return 2048;
+  // Only 'high' enables Anthropic extended thinking. The default ('medium') stays FAST
+  // (no thinking tax) so simple wallet lookups don't pay the per-turn latency/cost — the
+  // user opts up to 'high' for deep reasoning. (Gemini 'medium' keeps its own dynamic
+  // default; OpenAI o-series 'medium' still maps to reasoning_effort.)
   if (level === 'high') return 6144;
   return undefined;
 }
-// Gemini 2.5 thinkingBudget; only for 2.5 (thinking) models. 128 floor is safe for
-// Flash + Pro; -1 = dynamic (medium). undefined = leave the model default.
+// Gemini 2.5 thinkingBudget; only for 2.5 (thinking) models. -1 = dynamic (medium).
+// undefined = leave the model default. Verified ranges: Pro 128–32768, Flash 0–24576,
+// Flash-Lite 512–24576 — so 'minimal' must floor at 512 on Flash-Lite or the API 400s.
+// (H7-A2: require the decimal so 'gemini-25-flash' / '25' don't match.)
 function geminiThinkingBudget(model: string, level?: ChatReasoningLevel): number | undefined {
-  if (!level || !/(gemini-)?2\.?5|2\.0-flash-thinking/i.test(model)) return undefined;
+  if (!level || !/(gemini-)?2\.5|2\.0-flash-thinking/i.test(model)) return undefined;
+  const flashLite = /flash-lite/i.test(model);
   switch (level) {
-    case 'minimal': return 128;
+    case 'minimal': return flashLite ? 512 : 128;
     case 'low': return 1024;
     case 'high': return 8192;
     default: return -1; // medium → dynamic
@@ -290,10 +296,11 @@ const openAiAdapter: ChatTransportAdapter = {
   buildBody: (system, messages, model, toolSpecs, opts) => {
     const o = normalizeBuildOpts(opts);
     // Reasoning models (o-series/gpt-5) reject the legacy `max_tokens` + `temperature`
-    // (need `max_completion_tokens`); standard models use `max_tokens`. reasoning_effort
-    // maps the user's chosen depth onto o-series/gpt-5.
-    const reasoning = isDefaultTemperatureOnlyModel(model);
-    const effort = openAiReasoningEffort(model, o.reasoningEffort);
+    // (need `max_completion_tokens`) and accept `reasoning_effort`. H7-A1: gate ALL of
+    // these on `openAiNative` — a CUSTOM gateway (Ollama/LiteLLM) with a model merely
+    // NAMED like an o-series (`o1-local`) would otherwise 400 on the OpenAI-only fields.
+    const reasoning = isDefaultTemperatureOnlyModel(model) && o.openAiNative === true;
+    const effort = o.openAiNative === true ? openAiReasoningEffort(model, o.reasoningEffort) : undefined;
     return {
       model,
       messages: [{ role: 'system', content: system }, ...messages],
@@ -332,7 +339,9 @@ const openAiAdapter: ChatTransportAdapter = {
     const acc: Array<{ id: string; name: string; args: string } | undefined> = [];
     for await (const frame of iterateProviderSse(res, signal)) {
       if (signal?.aborted) break;
-      if (frame.data === '[DONE]') break;
+      // H7-F1: trim so a `data: [DONE] ` with trailing whitespace still terminates the
+      // loop (some gateways emit it); JSON.parse already tolerates surrounding space.
+      if (frame.data.trim() === '[DONE]') break;
       const evt = safeParseJsonObject(frame.data);
       // Some OpenAI-compatible gateways stream an error object mid-stream.
       if (evt.error) {
@@ -418,6 +427,7 @@ const geminiAdapter: ChatTransportAdapter = {
     let text = '';
     const toolCalls: ChatToolCall[] = [];
     for (const part of parts) {
+      if (part.thought === true) continue; // reasoning part — never the answer (defense-in-depth; includeThoughts:false already suppresses it)
       if (typeof part.text === 'string') text += part.text;
       const fc = part.functionCall && typeof part.functionCall === 'object' ? (part.functionCall as Record<string, unknown>) : null;
       if (fc && typeof fc.name === 'string' && isKnownChatTool(fc.name)) {
@@ -445,6 +455,7 @@ const geminiAdapter: ChatTransportAdapter = {
       const content = candidates[0]?.content && typeof candidates[0].content === 'object' ? (candidates[0].content as Record<string, unknown>) : {};
       const parts = Array.isArray(content.parts) ? (content.parts as Array<Record<string, unknown>>) : [];
       for (const part of parts) {
+        if (part.thought === true) continue; // reasoning part — never streamed as the answer
         if (typeof part.text === 'string' && part.text) {
           text += part.text;
           await onToken(part.text);

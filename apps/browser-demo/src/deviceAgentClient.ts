@@ -36,7 +36,14 @@ export type DeviceAgentMethod =
   // On-device chat completion: one keyed model call per agentic-loop turn. The
   // loop runs in JS; native runs the provider call so the key stays native. Added
   // for the real on-device chat agent (native impl ships in a new APK/IPA).
-  | 'complete';
+  | 'complete'
+  // Streaming variant of 'complete': native relays raw provider SSE chunks to JS via
+  // the chunk channel; resolves with {httpStatus, body?} at the end. Gated on
+  // capabilities.chatCompleteStream (native impl ships in a new APK/IPA).
+  | 'completeStream'
+  // Cancel the in-flight streaming request (JS Stop mid-stream) so the native request
+  // doesn't run to completion/timeout. Best-effort; ships with completeStream.
+  | 'cancelStream';
 
 export interface DeviceAgentStatus {
   available: boolean;
@@ -168,6 +175,25 @@ interface IosDeviceAgentPlugin {
 interface DeviceAgentCallbackBridge {
   resolve(requestId: string, payload: unknown): void;
   reject(requestId: string, payload: unknown): void;
+  // Streaming chat (Android 'completeStream'): native pushes raw provider SSE chunks
+  // here, then onStreamEnd; onStreamError on a mid-stream failure. Routed to the single
+  // active chat-stream sink (chat is single-flight, so requestId matching is unneeded).
+  onChunk?(requestId: string, chunk: unknown): void;
+  onStreamEnd?(requestId: string): void;
+  onStreamError?(requestId: string, message: unknown): void;
+}
+
+// The single active native chat-stream consumer (set by main.ts before a streaming
+// turn). Decouples the native push channel (Android global / iOS Capacitor event)
+// from the consumer so both platforms feed one sink.
+export interface NativeChatStreamSink {
+  onChunk(text: string): void;
+  onEnd(): void;
+  onError(message: string): void;
+}
+let activeNativeChatStreamSink: NativeChatStreamSink | null = null;
+export function setNativeChatStreamSink(sink: NativeChatStreamSink | null): void {
+  activeNativeChatStreamSink = sink;
 }
 
 interface PendingRequest {
@@ -879,7 +905,32 @@ function installCallbackBridge(): void {
       const { code, message, status, subcode } = extractRejectFields(payload);
       entry.reject(new DeviceAgentClientError(code, message, status, subcode));
     },
+    onChunk(_requestId, chunk) {
+      activeNativeChatStreamSink?.onChunk(typeof chunk === 'string' ? chunk : String(chunk ?? ''));
+    },
+    onStreamEnd() {
+      activeNativeChatStreamSink?.onEnd();
+    },
+    onStreamError(_requestId, message) {
+      activeNativeChatStreamSink?.onError(typeof message === 'string' ? message : String(message ?? 'stream error'));
+    },
   };
+}
+
+// iOS pushes streaming chunks as a Capacitor plugin event ('agenticDeviceAgentChunk')
+// rather than via a JS global. Register the listener once; it routes to the same sink.
+let iosChatStreamListenerInstalled = false;
+export function installIosChatStreamListener(): void {
+  if (iosChatStreamListenerInstalled) return;
+  const bridge = getIosBridge() as (IosDeviceAgentPlugin & { addListener?: (event: string, cb: (ev: Record<string, unknown>) => void) => unknown }) | undefined;
+  if (!bridge || typeof bridge.addListener !== 'function') return;
+  iosChatStreamListenerInstalled = true;
+  bridge.addListener('agenticDeviceAgentChunk', (ev) => {
+    if (!activeNativeChatStreamSink) return;
+    if (ev.error !== undefined) activeNativeChatStreamSink.onError(String(ev.error ?? 'stream error'));
+    else if (ev.end === true) activeNativeChatStreamSink.onEnd();
+    else if (typeof ev.chunk === 'string') activeNativeChatStreamSink.onChunk(ev.chunk);
+  });
 }
 
 function extractRejectFields(payload: unknown): {

@@ -114,10 +114,13 @@ import {
   resolveChatTransport,
   runAgentChatLoop,
   safeParseJsonObject,
+  supportsStreamOptions,
+  buildConnectorContext,
   type AgentChatStreamEvent,
   type ChatAiTransport,
   type ChatModelProfile,
   type ChatTransportAdapter,
+  type ChatTurnOutcome,
   type RunProviderTurn,
 } from '@solana-agent-wallet-adapter/workflow';
 import { createClientChatToolExecutor, type ClientChatToolDeps, type ClientResolvedToken } from './chatAgent/clientTools.js';
@@ -754,9 +757,12 @@ import {
   isIosDeviceAgentBridgeAvailable,
   mobileDeviceAgentDebugBreadcrumb,
   parseDeviceAgentStatus as parseDeviceAgentStatusBase,
+  setNativeChatStreamSink,
+  installIosChatStreamListener,
   type DeviceAgentRuntimeKind,
   type DeviceAgentRuntimeState,
   type DeviceAgentStatus,
+  type NativeChatStreamSink,
 } from './deviceAgentClient.js';
 import { renderAgentProtocolsPanel } from './devTabs/agentProtocols.js';
 import { renderSkillsPanel } from './devTabs/skills.js';
@@ -2546,6 +2552,11 @@ interface TokenSearchResult {
   decimals?: number;
   liquidity?: number;
   marketCap?: number;
+  // Safety signals (H6.4 — parity with the server `search_tokens` tool). isVerified is
+  // populated from the BirdEye search record where present; organicScoreLabel is a
+  // Jupiter-only field (Hosted), left undefined on the BirdEye client path.
+  isVerified?: boolean;
+  organicScoreLabel?: string;
   source: string;
 }
 
@@ -21121,7 +21132,12 @@ function chatInlineActionHtml(msg: ChatMessage, sessionId: string): string {
       const txPart = receipt.txid ? txBlock(receipt.txid, receipt.cluster as Cluster) : '';
       return `<div class="chat-card"><p class="ticket-meta-line">${escapeHtml(t('Completed - receipt in the Done tab.'))}</p>${txPart}</div>`;
     }
-    // Otherwise fall back to the proposal snapshot below.
+    // Action gone + no receipt. Prefer the proposal snapshot below (still re-preparable);
+    // but if there is none, render a graceful note instead of a BLANK card (H9-3 — e.g.
+    // the action was pruned after a failed pre-flight + regenerate, or a crash-reload).
+    if (!msg.proposal) {
+      return `<div class="chat-card"><p class="ticket-meta-line">${escapeHtml(t('This prepared action is no longer available.'))}</p></div>`;
+    }
   }
   if (msg.proposal) {
     const canPrepare = Boolean(state.address);
@@ -22895,12 +22911,38 @@ function buildClientChatToolDeps(): ClientChatToolDeps {
         symbol: r.symbol,
         name: r.name,
         priceUsd: r.priceUsd ?? null,
+        isVerified: r.isVerified ?? null,
+        organicScoreLabel: r.organicScoreLabel ?? null,
       })),
     priceForMints: async (mints) => {
       const map = await fetchWalletBalancePriceInfoMap(mints, state.cluster);
       return mints.map((mint) => ({ mint, usdPrice: map.get(mint)?.priceUsd ?? null }));
     },
-    tokenSafety: async (mint) => tokenMarketRequest('/token-security', { address: mint }),
+    tokenSafety: async (mint) => {
+      // H7-E1: normalize BirdEye /token-security to the SAME shape the server's
+      // get_token_safety returns (Jupiter risk evidence): { mint, found, verified,
+      // organicScore, mintAuthorityDisabled, freezeAuthorityDisabled, source }. BirdEye
+      // gives the authority addresses (null/empty = renounced/disabled) but not the
+      // Jupiter verified/organicScore signals → those stay null on the client path.
+      const payload = await tokenMarketRequest('/token-security', { address: mint });
+      const row = (asRecord(payload?.data) ?? asRecord(payload)) ?? {};
+      const authorityDisabled = (key: string): boolean | null => {
+        if (!(key in row)) return null; // field absent → unknown
+        const v = row[key];
+        if (v === null) return true; // null authority = renounced/disabled
+        if (typeof v === 'string') return v.trim() === ''; // an address present = still enabled
+        return null;
+      };
+      return {
+        mint,
+        found: Object.keys(row).length > 0,
+        verified: null,
+        organicScore: null,
+        mintAuthorityDisabled: authorityDisabled('mintAuthority'),
+        freezeAuthorityDisabled: authorityDisabled('freezeAuthority'),
+        source: 'birdeye',
+      };
+    },
     tokenAge: async (mint) => {
       // BirdEye token metadata carries a creation timestamp for most tokens; surface
       // it (the executor + model read createdAt/age). bridge→cloud handled inside.
@@ -22937,6 +22979,16 @@ function buildClientChatToolDeps(): ClientChatToolDeps {
         ...(typeof row.description === 'string' ? { description: (row.description as string).slice(0, 160) } : {}),
       }));
     },
+    // Live connector action facts via the existing cloud/bridge connector-read-facts
+    // route (connectorRead). Returns the SAME raw envelope the server's connectorReadFacts
+    // returns, so the shared atom format() in clientTools projects it identically. Null
+    // (not signed in / no bridge) → surfaced as unavailable by the executor.
+    connectorFacts: async (req) => {
+      const { connectorId, capability, ...params } = req;
+      const raw = await connectorRead(connectorId, capability, params);
+      if (!raw) return { unavailable: true, reason: 'no_connector_source' };
+      return raw;
+    },
   };
 }
 
@@ -22972,9 +23024,12 @@ function deviceAgentChatLoopRequest(request: AgentChatRequest): {
 // 'complete' method is a thin authenticated fetch (key stays native) that returns
 // the raw provider response { httpStatus, body }; JS parses it. Non-streaming, so
 // the answer lands on the loop's `done` event (turn granularity).
-function nativeDeviceAgentRunProviderTurn(adapter: ChatTransportAdapter, transport: ChatAiTransport, system: string, model: string): RunProviderTurn {
+function nativeDeviceAgentRunProviderTurn(adapter: ChatTransportAdapter, transport: ChatAiTransport, system: string, model: string, openAiNative: boolean): RunProviderTurn {
   return async (messages, _onToken, signal) => {
-    const body = adapter.buildBody(system, messages, model, adapter.toolSpecs(), { streaming: false, reasoningEffort: chatReasoningEffort() });
+    // openAiNative gates the OpenAI-only reasoning fields (max_completion_tokens /
+    // reasoning_effort) so a genuine OpenAI o-series gets them while a custom gateway
+    // with a lookalike model name does not (H7-A1).
+    const body = adapter.buildBody(system, messages, model, adapter.toolSpecs(), { streaming: false, reasoningEffort: chatReasoningEffort(), openAiNative });
     // H0.1 — match the browser/Tauri streaming path's resilience: bounded retry with
     // backoff on transient native failures (429/5xx, or a thrown network error). The
     // native layer returns {httpStatus, body}; it carries no Retry-After, so we use
@@ -23017,6 +23072,100 @@ function nativeDeviceAgentRunProviderTurn(adapter: ChatTransportAdapter, transpo
 // APK/IPA in its status payload). Until then native Device Agent uses the planner.
 function deviceAgentRuntimeSupportsChatComplete(): boolean {
   return Boolean(state.deviceAgentStatus?.capabilities?.chatComplete);
+}
+
+// Whether the native binary advertises token-by-token STREAMING (`completeStream`).
+// False on all currently-shipped binaries → the non-streaming `complete` path is used.
+function deviceAgentRuntimeSupportsChatStream(): boolean {
+  return Boolean(state.deviceAgentStatus?.capabilities?.chatCompleteStream);
+}
+
+// Native STREAMING completion (Android/iOS, new binaries): native relays the raw
+// provider SSE chunks; we rebuild a Response from them and reuse the hardened
+// adapter.parseStream (same code path as web/desktop). SELF-HEALING: if streaming
+// fails before any token is emitted, fall back to the non-streaming `complete` — so a
+// native bug degrades to "works, not streaming" instead of breaking chat.
+function nativeStreamingRunProviderTurn(adapter: ChatTransportAdapter, transport: ChatAiTransport, system: string, model: string, openAiNative: boolean): RunProviderTurn {
+  return async (messages, onToken, signal) => {
+    let tokensEmitted = 0;
+    const countingOnToken = (text: string): void | Promise<void> => { tokensEmitted += 1; return onToken(text); };
+    const fallback = (): Promise<ChatTurnOutcome> => nativeDeviceAgentRunProviderTurn(adapter, transport, system, model, openAiNative)(messages, onToken, signal);
+    try {
+      const outcome = await runNativeStreamingTurn(adapter, transport, system, model, openAiNative, messages, countingOnToken, signal);
+      // Graceful degrade: if streaming produced NOTHING (e.g. the native event channel
+      // is unavailable on this binary), re-run via the proven non-streaming path so the
+      // user still gets an answer. Safe because no token/tool was surfaced yet.
+      if (tokensEmitted === 0 && !outcome.text.trim() && outcome.toolCalls.length === 0 && !signal?.aborted) {
+        return await fallback();
+      }
+      return outcome;
+    } catch (err) {
+      // Graceful degrade on an early streaming FAILURE (before any token).
+      if (tokensEmitted === 0 && !signal?.aborted) return fallback();
+      throw err;
+    }
+  };
+}
+
+async function runNativeStreamingTurn(
+  adapter: ChatTransportAdapter,
+  transport: ChatAiTransport,
+  system: string,
+  model: string,
+  openAiNative: boolean,
+  messages: unknown[],
+  onToken: (text: string) => void | Promise<void>,
+  signal: AbortSignal | undefined,
+): Promise<ChatTurnOutcome> {
+  installIosChatStreamListener();
+  // openAiNative → request stream_options.include_usage (usage on native OpenAI streaming).
+  const body = adapter.buildBody(system, messages, model, adapter.toolSpecs(), { streaming: true, reasoningEffort: chatReasoningEffort(), openAiNative });
+  const encoder = new TextEncoder();
+  let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
+  let closed = false;
+  const closeStream = (): void => { if (!closed && controllerRef) { closed = true; try { controllerRef.close(); } catch { /* already closed */ } } };
+  const stream = new ReadableStream<Uint8Array>({ start(controller) { controllerRef = controller; } });
+  const sink: NativeChatStreamSink = {
+    onChunk(text) { if (!closed && controllerRef && text) { try { controllerRef.enqueue(encoder.encode(text)); } catch { /* closed */ } } },
+    onEnd() { closeStream(); },
+    onError(message) { if (!closed && controllerRef) { closed = true; try { controllerRef.error(new Error(message)); } catch { /* closed */ } } },
+  };
+  setNativeChatStreamSink(sink);
+  // Stop mid-stream → cancel the in-flight NATIVE request (else it runs to completion/
+  // timeout, wasting tokens). Best-effort; the JS stream is abandoned regardless.
+  const onAbort = (): void => { void invokeDeviceAgentNative('cancelStream', {}, { action: 'chat-cancel-stream' }).catch(() => {}); };
+  if (signal) signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    // Start consuming the synthetic SSE Response (hardened parser) WITHOUT awaiting.
+    const parsePromise = adapter.parseStream(new Response(stream), onToken, signal);
+    const result = await invokeDeviceAgentNative<{ httpStatus?: number; body?: string }>(
+      'completeStream',
+      { transport, model, body },
+      { action: 'chat-complete-stream', ...(signal ? { signal } : {}) },
+    );
+    const httpStatus = typeof result?.httpStatus === 'number' ? result.httpStatus : 0;
+    if (httpStatus < 200 || httpStatus >= 300) {
+      closeStream();
+      const text = typeof result?.body === 'string' ? result.body : '';
+      const parsed = safeParseJsonObject(text);
+      throw new Error(Object.keys(parsed).length > 0
+        ? providerFailureMessage(parsed, httpStatus)
+        : `AI provider error (${httpStatus}). ${text.trim().slice(0, 200) || 'no response body'}`);
+    }
+    // 2xx: chunks were streamed; onEnd (channel event) closes the controller. Safety
+    // net so a lost onEnd can't hang the turn — force-close shortly after the resolve.
+    const safety = setTimeout(closeStream, 4000);
+    try {
+      return await parsePromise;
+    } finally {
+      clearTimeout(safety);
+    }
+  } finally {
+    if (signal) signal.removeEventListener('abort', onAbort);
+    // Settle any abandoned parseStream promise on an early throw (no leaked reader).
+    closeStream();
+    setNativeChatStreamSink(null);
+  }
 }
 
 // The shared "direct browser" chat loop: stream the provider straight from JS with
@@ -23114,7 +23263,16 @@ async function runDeviceAgentChatLoop(
   if ((route === 'android-native' || route === 'ios-native') && deviceAgentRuntimeSupportsChatComplete()) {
     const adapter = chatTransportAdapter(transport);
     const system = chatAgenticSystemPrompt({ ...(loopRequest.walletAddress ? { walletAddress: loopRequest.walletAddress } : {}), ...(loopRequest.context ? { context: loopRequest.context } : {}) });
-    const runProviderTurn = nativeDeviceAgentRunProviderTurn(adapter, transport, system, profile.model);
+    // New binaries that advertise chatCompleteStream stream token-by-token; others use
+    // the proven non-streaming complete. The streaming path self-heals to non-streaming.
+    // stream_options.include_usage + reasoning_effort are only valid on genuine OpenAI /
+    // OpenRouter (strict gateways 400 on the unknown fields). H8-C: use the SAME
+    // supportsStreamOptions the browser path uses (strict hostname check) instead of a
+    // loose `.includes('openrouter.ai')` substring that a custom-gateway path can spoof.
+    const openAiNative = supportsStreamOptions(profile);
+    const runProviderTurn = deviceAgentRuntimeSupportsChatStream()
+      ? nativeStreamingRunProviderTurn(adapter, transport, system, profile.model, openAiNative)
+      : nativeDeviceAgentRunProviderTurn(adapter, transport, system, profile.model, openAiNative);
     await runAgentChatLoop({ request: loopRequest, adapter, runProviderTurn, executeTool, emit, ...(options.signal ? { signal: options.signal } : {}) });
     return;
   }
@@ -23329,6 +23487,11 @@ function buildChatRequest(session: ChatSession): AgentChatRequest {
     // 'en' on web). The static chrome is localized via the demo-i18n catalogs.
     uiLanguage: activeUiLanguage(),
     reasoningEffort: chatReasoningEffort(),
+    // Compact connector capability index so the chat agent knows the DeFi connector
+    // surface (Jupiter lend/borrow/limit/dca/perps/prediction) and which tool to call.
+    // The chat tab is free-form (no connector dropdown) → index-only; the server defaults
+    // the same index when a path omits it.
+    connectorContext: { ...buildConnectorContext() },
   });
 }
 
@@ -23370,6 +23533,10 @@ async function rerunChatTurn(session: ChatSession): Promise<void> {
   if (chatSubmitBlocked()) return;
   const last = session.messages[session.messages.length - 1];
   if (!last || last.role !== 'user') return;
+  // Defensive: chatSubmitBlocked() already prevents a rerun while a stream is live, but
+  // cancel any in-flight stream first so two streams can never mutate chat state (guards
+  // a future caller that bypasses the block).
+  cancelChatStream();
   chatSubmitPending = true;
   chatForceFocus = false;
   try {
@@ -23404,14 +23571,40 @@ async function rerunChatTurn(session: ChatSession): Promise<void> {
 }
 
 // Regenerate: drop the trailing assistant message(s) and re-run the last user turn.
+// When chat messages are dropped (regenerate / edit / delete-session), remove any
+// prepared-action cards those messages created so they don't orphan in the approval
+// rail. Scope is deliberately narrow + SAFE: only browser-local actions that are still
+// pending (no receipt, not approved/executing). Cloud/bridge actions are left to the
+// approval inbox; a signed/executed action keeps its receipt.
+function dropOrphanedChatPreparedActions(messages: ChatMessage[]): void {
+  let changed = false;
+  for (const msg of messages) {
+    const id = msg.preparedActionId;
+    if (!id || !isBrowserWorkflowId(id)) continue;
+    const action = state.preparedActions.find((a) => a.id === id);
+    if (!action) continue;
+    if (action.txid || action.status === 'approved') continue; // executing/executed → keep
+    if (state.receipts.some((r) => r.actionId === id)) continue; // has a receipt → keep
+    state.preparedActions = state.preparedActions.filter((a) => a.id !== id);
+    changed = true;
+  }
+  if (changed) {
+    state.materializedActions = state.preparedActions;
+    saveBrowserWorkflowState();
+  }
+}
+
 function regenerateLastChatTurn(): void {
   if (chatSubmitBlocked()) return;
   const session = activeChatSession();
   if (!session) return;
+  const dropped: ChatMessage[] = [];
   while (session.messages.length > 0 && session.messages[session.messages.length - 1]?.role === 'assistant') {
-    session.messages.pop();
+    const popped = session.messages.pop();
+    if (popped) dropped.push(popped);
   }
   if ((session.messages[session.messages.length - 1]?.role) !== 'user') return;
+  dropOrphanedChatPreparedActions(dropped);
   saveChatHistoryState();
   void rerunChatTurn(session);
 }
@@ -23425,6 +23618,7 @@ function editChatMessageIntoComposer(messageId: string): void {
   const idx = session.messages.findIndex((m) => m.id === messageId && m.role === 'user');
   if (idx === -1) return;
   const original = session.messages[idx]?.content ?? '';
+  dropOrphanedChatPreparedActions(session.messages.slice(idx));
   session.messages = session.messages.slice(0, idx);
   chatDraft = original;
   saveChatHistoryState();
@@ -23611,14 +23805,21 @@ async function runChatStream(sessionId: string, assistantId: string): Promise<vo
   await refreshChatWalletBalanceContextIfNeeded(session);
   if (abort.signal.aborted) return;
   const request = buildChatRequest(session);
+  // H9-1: a Stop+immediate-resend can leave the OLD stream's buffered SSE callbacks
+  // in-flight; without this guard they would mutate the old message (and the bridge
+  // read-loop kept reading). A handler is STALE once its own AbortController fired OR a
+  // newer stream took over chatStreamMsgId — in either case it must not touch state.
+  const streamIsStale = (): boolean => abort.signal.aborted || chatStreamMsgId !== assistantId;
   const handlers: ChatStreamHandlers = {
     onToken: (delta) => {
+      if (streamIsStale()) return;
       message.content += delta;
       appendChatAssistantText(assistantId, delta);
       scheduleChatCheckpoint();
       scheduleChatSrProgress();
     },
     onToolStatus: (info) => {
+      if (streamIsStale()) return;
       if (info.phase === 'start') {
         chatActiveTool = { tool: info.tool, label: chatToolRunningLabel(info.tool) };
       } else {
@@ -23631,12 +23832,15 @@ async function runChatStream(sessionId: string, assistantId: string): Promise<vo
       paintChatToolChips(assistantId, message);
     },
     onUsage: (usage) => {
+      if (streamIsStale()) return;
       message.usage = usage;
     },
     onCitations: (citations) => {
+      if (streamIsStale()) return;
       message.citations = citations.slice(0, 12);
     },
     onProposal: (proposal) => {
+      if (streamIsStale()) return;
       const mapped = mapProposedActionToChatProposal(proposal);
       if (!mapped) return;
       message.proposal = mapped;
@@ -23649,10 +23853,12 @@ async function runChatStream(sessionId: string, assistantId: string): Promise<vo
       render();
     },
     onError: (msg) => {
+      if (streamIsStale()) return;
       message.status = 'error';
       message.error = friendlyChatError(redactSecrets(msg));
     },
     onDone: (result) => {
+      if (streamIsStale()) return;
       if (result.answer && result.answer.length > message.content.length) {
         message.content = result.answer;
       }
@@ -24883,12 +25089,36 @@ function bindChat(): void {
     }
     render();
   });
+  // H9-2: keyboard navigation for the role="listbox" pending-approvals dropdown (the
+  // codebase already does this for the language picker + history menu). Arrow keys move
+  // the selection (+ focus); Enter/Space select via the native button click.
+  const movePendingSelection = (dir: 'next' | 'prev' | 'first' | 'last'): void => {
+    const ids = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-chat-pending-select]'))
+      .map((r) => r.dataset.chatPendingSelect ?? '');
+    if (ids.length === 0) return;
+    const cur = ids.indexOf(state.chatPendingSelectedId ?? '');
+    const idx = dir === 'first' ? 0
+      : dir === 'last' ? ids.length - 1
+      : cur < 0 ? (dir === 'next' ? 0 : ids.length - 1)
+      : dir === 'next' ? Math.min(cur + 1, ids.length - 1) : Math.max(cur - 1, 0);
+    state.chatPendingSelectedId = ids[idx] ?? null;
+    render();
+    document.querySelector<HTMLButtonElement>(`[data-chat-pending-select="${CSS.escape(ids[idx] ?? '')}"]`)?.focus();
+  };
   for (const row of document.querySelectorAll<HTMLButtonElement>('[data-chat-pending-select]')) {
     row.addEventListener('click', (event) => {
       event.stopPropagation();
       const id = row.dataset.chatPendingSelect ?? '';
       state.chatPendingSelectedId = state.chatPendingSelectedId === id ? null : id; // tap again = deselect
       render();
+    });
+    row.addEventListener('keydown', (event) => {
+      const dir = event.key === 'ArrowDown' ? 'next' : event.key === 'ArrowUp' ? 'prev'
+        : event.key === 'Home' ? 'first' : event.key === 'End' ? 'last' : null;
+      if (!dir) return;
+      event.preventDefault();
+      event.stopPropagation();
+      movePendingSelection(dir);
     });
   }
   for (const arrow of document.querySelectorAll<HTMLButtonElement>('[data-chat-pending-page]')) {
@@ -31885,7 +32115,7 @@ function currentDeviceAgentRuntimeSurface() {
 }
 
 async function invokeDeviceAgentNative<R>(
-  method: 'generatePlan' | 'reviewPlan' | 'ask' | 'localize' | 'chat' | 'complete',
+  method: 'generatePlan' | 'reviewPlan' | 'ask' | 'localize' | 'chat' | 'complete' | 'completeStream' | 'cancelStream',
   payload: unknown,
   options: { action: string; signal?: AbortSignal },
 ): Promise<R> {
@@ -31929,7 +32159,9 @@ async function invokeDeviceAgentNative<R>(
 }
 
 async function invokeBrowserDeviceAgent<R>(
-  method: 'status' | 'configure' | 'start' | 'stop' | 'generatePlan' | 'reviewPlan' | 'ask' | 'localize' | 'chat' | 'complete',
+  // 'completeStream'/'cancelStream' are native-only (Android/iOS); the browser/Tauri
+  // device agent streams in-JS, so they never reach here — listed only for the union.
+  method: 'status' | 'configure' | 'start' | 'stop' | 'generatePlan' | 'reviewPlan' | 'ask' | 'localize' | 'chat' | 'complete' | 'completeStream' | 'cancelStream',
   payload: Record<string, unknown>,
   options: { signal?: AbortSignal } = {},
 ): Promise<{ status: DeviceAgentStatus; result?: R }> {
@@ -35455,6 +35687,7 @@ function bind(): void {
         savePersistedState();
         void syncCloudPreference('ai-settings');
         void syncConfiguredBridgeAiSettings();
+        render(); // repaint the custom picker to the selected value (match model-select)
       }
     });
   }
@@ -57796,7 +58029,9 @@ async function streamBridgeAiChat(
     );
   }
 
-  await consumeChatSseResponse(response, handlers);
+  // H9-1: forward the abort signal so the SSE read-loop stops promptly on Stop (parity
+  // with streamHostedAiChat); without it the bridge stream kept reading after abort.
+  await consumeChatSseResponse(response, handlers, options.signal);
 }
 
 function bridgeOfflineMessage(): string {
@@ -60876,6 +61111,14 @@ function tokenSearchResultFromRecord(record: Record<string, unknown>): TokenSear
     ...(marketNumberField(record, ['marketCap', 'market_cap', 'mc']) !== undefined
       ? { marketCap: marketNumberField(record, ['marketCap', 'market_cap', 'mc']) }
       : {}),
+    // BirdEye search returns a verified flag on some records — surface it as the safety
+    // signal the Hosted tool also returns (H6.4).
+    ...((): { isVerified?: boolean } => {
+      for (const key of ['verified', 'is_verified', 'isVerified']) {
+        if (typeof record[key] === 'boolean') return { isVerified: record[key] as boolean };
+      }
+      return {};
+    })(),
     source: 'birdeye',
   };
   tokenMarketMetadata.set(metadata.mint, metadata);
@@ -68338,6 +68581,8 @@ function appendChatMessage(sessionId: string, message: ChatMessage): void {
 }
 
 function deleteChatSession(sessionId: string): void {
+  const removed = state.chat.sessions.find((s) => s.id === sessionId);
+  if (removed) dropOrphanedChatPreparedActions(removed.messages);
   state.chat.sessions = state.chat.sessions.filter((s) => s.id !== sessionId);
   if (state.chat.activeSessionId === sessionId) {
     state.chat.activeSessionId = state.chat.sessions[0]?.id ?? '';
@@ -68523,7 +68768,12 @@ async function hydrateChatHistoryFromCloud(): Promise<void> {
         });
         break;
       case 'restub':
-        // Cloud is newer — re-stub so the fresh thread is fetched on open.
+        // Cloud is newer — re-stub so the fresh thread is fetched on open. H7-C: but if a
+        // chat stream is actively writing to THIS session, clearing local.messages would
+        // orphan the streamed message object (token loss + nothing persisted). Skip the
+        // restub for the active session; it re-stubs on the next hydrate after the stream
+        // settles. (Mirrors the chatStreamSessionId guard in ensureChatSessionMessagesLoaded.)
+        if (chatStreamSessionId === meta.sessionId) break;
         local!.title = meta.title || local!.title;
         local!.updatedAt = meta.updatedAt || local!.updatedAt;
         local!.cluster = metaCluster;

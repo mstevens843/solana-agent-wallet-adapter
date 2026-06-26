@@ -119,6 +119,49 @@ describe('runAgentChatLoop orchestration', () => {
     });
     expect(events.at(-1)?.type).toBe('done');
   });
+
+  it('H8-A: trims a history ending on an assistant turn so the model generates after a user turn', async () => {
+    const adapter = chatTransportAdapter('openai-compatible');
+    let seen: Array<{ role: string }> = [];
+    await runAgentChatLoop({
+      request: { messages: [
+        { role: 'user', content: 'q1' },
+        { role: 'assistant', content: 'a1' },
+        { role: 'user', content: 'q2' },
+        { role: 'assistant', content: 'dangling assistant turn' }, // malformed: ends on assistant
+      ] },
+      adapter,
+      runProviderTurn: async (messages) => { seen = messages as Array<{ role: string }>; return { text: 'ok', toolCalls: [] }; },
+      executeTool: async () => ({ summary: '', data: {} }),
+      emit: () => {},
+    });
+    const roles = seen.map((m) => m.role).filter((r) => r !== 'system');
+    expect(roles[roles.length - 1]).toBe('user'); // ends on user (trailing assistant dropped)
+    for (let i = 1; i < roles.length; i += 1) expect(roles[i]).not.toBe(roles[i - 1]); // strict alternation
+  });
+
+  it('H7-F2: gives a final response turn after exhausting iterations with pending tools', async () => {
+    const events: AgentChatStreamEvent[] = [];
+    const adapter = chatTransportAdapter('openai-compatible');
+    let calls = 0;
+    await runAgentChatLoop({
+      request: { messages: [{ role: 'user', content: 'multi-step' }] },
+      adapter,
+      runProviderTurn: async (_m, onToken) => {
+        calls += 1;
+        if (calls <= 2) return { text: '', toolCalls: [{ id: `c${calls}`, name: 'get_market_regime', args: '{}' }] };
+        onToken('Here is the summary.'); // the closing turn finally answers
+        return { text: 'Here is the summary.', toolCalls: [] };
+      },
+      executeTool: async () => ({ summary: 'regime', data: {} }),
+      emit: (e) => { events.push(e); },
+      maxIterations: 2,
+    });
+    expect(calls).toBe(3); // 2 tool iterations + 1 closure turn
+    const done = events.at(-1);
+    expect(done?.type).toBe('done');
+    expect((done as { result?: { answer?: string } }).result?.answer).toBe('Here is the summary.');
+  });
 });
 
 describe('provider stream parsing', () => {

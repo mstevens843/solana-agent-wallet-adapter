@@ -349,6 +349,8 @@ final class AgenticAgentRuntime {
     private var _config: AgenticAgentRuntimeConfig?
     private var _lastError: String?
     private var _updatedAtMs: Int64 = 0
+    // The in-flight streaming chat task (held so it can be cancelled on abort/new turn).
+    private var _activeStreamTask: URLSessionTask?
 
     private init() {
         if let cached = readConfigFromKeychain() {
@@ -500,7 +502,7 @@ final class AgenticAgentRuntime {
         guard let bodyObject = payload["body"],
               JSONSerialization.isValidJSONObject(bodyObject),
               let bodyData = try? JSONSerialization.data(withJSONObject: bodyObject, options: []) else {
-            completion(.failure(AgenticAgentError(code: AgenticProviderErrorCodes.invalidResponse, message: "Device Agent complete payload is missing a valid request body.")))
+            completion(.failure(AgenticAgentError(code: AgenticProviderErrorCodes.invalidConfig, message: "Device Agent complete payload is missing a valid request body.")))
             return
         }
         let apiKey = (cfg.apiKey ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -557,6 +559,74 @@ final class AgenticAgentRuntime {
         task.resume()
     }
 
+    // Streaming chat completion: same endpoint/headers/body as `complete`, but the
+    // provider's SSE body is relayed to JS incrementally via `onChunk` (then `onEnd`),
+    // and `completion` resolves with {httpStatus, body?} (body only on a non-2xx error).
+    // Uses a URLSessionDataDelegate; the task is held so it can be cancelled on abort.
+    func completeStream(
+        _ payload: [String: Any],
+        onChunk: @escaping (String) -> Void,
+        onEnd: @escaping () -> Void,
+        onError: @escaping (String) -> Void,
+        completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void
+    ) {
+        let captured = queue.sync { _config }
+        guard let cfg = captured else {
+            completion(.failure(AgenticAgentError(code: AgenticProviderErrorCodes.invalidConfig, message: "Device Agent is not configured.")))
+            return
+        }
+        guard let bodyObject = payload["body"],
+              JSONSerialization.isValidJSONObject(bodyObject),
+              let bodyData = try? JSONSerialization.data(withJSONObject: bodyObject, options: []) else {
+            completion(.failure(AgenticAgentError(code: AgenticProviderErrorCodes.invalidConfig, message: "Device Agent completeStream payload is missing a valid request body.")))
+            return
+        }
+        let apiKey = (cfg.apiKey ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try AgenticProviderHttp.assertApiKeyHeaderSafe(apiKey)
+        } catch let err as AgenticAgentError {
+            completion(.failure(err)); return
+        } catch {
+            completion(.failure(AgenticAgentError(code: AgenticProviderErrorCodes.invalidConfig, message: "AI API key is invalid."))); return
+        }
+        let resolvedEndpoint: AgenticCompleteEndpoint?
+        let jsUrl = (payload["url"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !jsUrl.isEmpty {
+            resolvedEndpoint = genericCompleteEndpoint(url: jsUrl, headers: payload["headers"] as? [String: Any], keyHeader: payload["keyHeader"] as? [String: Any], config: cfg, apiKey: apiKey)
+        } else {
+            let transport = (payload["transport"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            resolvedEndpoint = completeStreamEndpoint(transport: transport, config: cfg, apiKey: apiKey)
+        }
+        guard let endpoint = resolvedEndpoint else {
+            completion(.failure(AgenticAgentError(code: AgenticProviderErrorCodes.invalidConfig, message: "Could not resolve a valid provider chat endpoint."))); return
+        }
+        let timeoutMs = (payload["timeoutMs"] as? Int).map { max(5_000, min(300_000, $0)) } ?? 120_000
+        var req = URLRequest(url: endpoint.url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: Double(timeoutMs) / 1000.0)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        for (name, value) in endpoint.headers { req.setValue(value, forHTTPHeaderField: name) }
+        req.httpBody = bodyData
+        // Cancel any prior in-flight stream (one chat stream at a time). Clear the held
+        // task ref when THIS stream completes so a finished task isn't retained.
+        cancelActiveStream()
+        let clearingCompletion: (Result<[String: Any], AgenticAgentError>) -> Void = { [weak self] result in
+            if let self = self { self.queue.sync { self._activeStreamTask = nil } }
+            completion(result)
+        }
+        let delegate = AgenticChatStreamDelegate(onChunk: onChunk, onEnd: onEnd, onError: onError, completion: clearingCompletion)
+        let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+        let task = session.dataTask(with: req)
+        queue.sync { _activeStreamTask = task }
+        task.resume()
+    }
+
+    // Cancel an in-flight streaming task (JS abort / new turn). Best-effort.
+    func cancelActiveStream() {
+        let task = queue.sync { () -> URLSessionTask? in let t = _activeStreamTask; _activeStreamTask = nil; return t }
+        task?.cancel()
+    }
+
     private struct AgenticCompleteEndpoint {
         let url: URL
         let headers: [String: String]
@@ -596,6 +666,22 @@ final class AgenticAgentRuntime {
             }
             return AgenticCompleteEndpoint(url: url, headers: headers)
         }
+    }
+
+    // Streaming endpoints. OpenAI/Anthropic stream on the SAME URL as non-streaming
+    // (only the body's `stream:true` differs), but Gemini streams on a DIFFERENT URL
+    // (`:streamGenerateContent?alt=sse` vs `:generateContent`) — without this, native
+    // Gemini streaming would POST to the non-streaming endpoint and get one JSON blob
+    // instead of SSE, so the JS parser would see no frames.
+    private func completeStreamEndpoint(transport: String, config: AgenticAgentRuntimeConfig, apiKey: String) -> AgenticCompleteEndpoint? {
+        if transport == "gemini-native" {
+            let base = AgenticProviderHttp.normalizeNativeBaseUrl(config.baseUrl)
+            let model = config.model.trimmingCharacters(in: .whitespacesAndNewlines)
+            let encodedModel = model.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? model
+            guard let url = URL(string: "\(base)/models/\(encodedModel):streamGenerateContent?alt=sse") else { return nil }
+            return AgenticCompleteEndpoint(url: url, headers: ["x-goog-api-key": apiKey])
+        }
+        return completeEndpoint(transport: transport, config: config, apiKey: apiKey)
     }
 
     // Generic keyed-fetch mode: JS supplies the full url + headers + key-injection.
@@ -783,7 +869,7 @@ final class AgenticAgentRuntime {
         status["capabilities"] = [
             "chatComplete": true,
             "chatCompleteGeneric": true,
-            "chatCompleteStream": false,
+            "chatCompleteStream": true,
             "version": "1",
             "supportedTransports": ["openai-compatible", "anthropic-messages", "gemini-native"],
         ]
@@ -850,6 +936,85 @@ final class AgenticAgentRuntime {
             kSecAttrAccount as String: configKey,
         ]
         SecItemDelete(query as CFDictionary)
+    }
+}
+
+// Streams a provider SSE response: relays each `didReceive data` to `onChunk` for a 2xx
+// response (JS reassembles SSE frames + parses); buffers the small error body otherwise.
+// `onEnd`/`completion` fire once on completion; `onError` on a transport failure.
+final class AgenticChatStreamDelegate: NSObject, URLSessionDataDelegate {
+    private let onChunk: (String) -> Void
+    private let onEnd: () -> Void
+    private let onError: (String) -> Void
+    private let completion: (Result<[String: Any], AgenticAgentError>) -> Void
+    private var status: Int = 0
+    private var errorBody = Data()
+    private var finished = false
+    // H7-G: buffer bytes across chunks. A network packet can end mid-multibyte (emoji/CJK/
+    // accent), and String(data:encoding:.utf8) returns nil for an incomplete sequence —
+    // dropping the chunk + corrupting the SSE frame. We decode the longest valid UTF-8
+    // prefix and carry the trailing partial bytes (≤3) into the next chunk.
+    private var pending = Data()
+
+    init(onChunk: @escaping (String) -> Void, onEnd: @escaping () -> Void, onError: @escaping (String) -> Void, completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void) {
+        self.onChunk = onChunk
+        self.onEnd = onEnd
+        self.onError = onError
+        self.completion = completion
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        guard status >= 200 && status < 300 else {
+            if errorBody.count < 64 * 1024 { errorBody.append(data) }
+            return
+        }
+        pending.append(data)
+        // Fast path: the whole buffer is valid UTF-8 → emit + clear.
+        if let text = String(data: pending, encoding: .utf8) {
+            if !text.isEmpty { onChunk(text) }
+            pending.removeAll(keepingCapacity: true)
+            return
+        }
+        // Trailing bytes are an incomplete multibyte char (≤3 bytes). Back off until the
+        // prefix decodes; emit it and keep the remainder for the next chunk.
+        let minKeep = max(0, pending.count - 3)
+        var cut = pending.count
+        while cut > minKeep {
+            cut -= 1
+            if let text = String(data: pending.prefix(cut), encoding: .utf8) {
+                if !text.isEmpty { onChunk(text) }
+                pending = Data(pending.suffix(pending.count - cut))
+                return
+            }
+        }
+        // Nothing decodable yet (still mid-sequence) — keep buffering for the next chunk.
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        defer { session.finishTasksAndInvalidate() }
+        if finished { return }
+        finished = true
+        if let error = error {
+            onError(error.localizedDescription)
+            completion(.failure(AgenticAgentError(code: AgenticProviderErrorCodes.network, message: error.localizedDescription)))
+            return
+        }
+        if status >= 200 && status < 300 {
+            // Flush any fully-decodable trailing bytes (a well-formed stream ends on a
+            // complete char, so this is usually empty).
+            if !pending.isEmpty, let text = String(data: pending, encoding: .utf8), !text.isEmpty { onChunk(text) }
+            pending.removeAll()
+            onEnd()
+            completion(.success(["httpStatus": status]))
+        } else {
+            let body = String(data: errorBody, encoding: .utf8) ?? ""
+            completion(.success(["httpStatus": status, "body": body]))
+        }
     }
 }
 

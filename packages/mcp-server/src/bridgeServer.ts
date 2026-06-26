@@ -122,6 +122,15 @@ export function createBridgeServer(options: CreateBridgeServerOptions): BridgeSe
       // unresolved and the review still works.
     }
   }
+  // Wire the connector-action fact resolver (the get_connector_facts chat tool + the
+  // single-shot connector-fact enrichment) to the action service, which holds the
+  // operator keys + RPC. Without an action service the planner returns capability
+  // knowledge only — never crashes. Returns the raw connectorReadFacts envelope; the
+  // workflow atom format() projects it to a compact block.
+  if (actionService) {
+    aiPlanner.connectorFactResolver = (capability, factInput, connectorId) =>
+      actionService.connectorReadFacts({ connectorId, capability, ...factInput });
+  }
   const agentRegistry = options.agentRegistry ?? new AgentRegistry({
     ...(options.agentsPersistPath ? { persistPath: options.agentsPersistPath } : {}),
     fallbackToken: backend.token,

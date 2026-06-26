@@ -6,6 +6,7 @@
 // data and NEVER throws the turn: on failure it returns { unavailable | error }.
 
 import type { ChatToolExecutor } from '@solana-agent-wallet-adapter/workflow';
+import { clampConnectorFacts, getConnectorAtom } from '@solana-agent-wallet-adapter/workflow';
 
 const BASE58_MINT_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
@@ -31,6 +32,11 @@ export interface ClientChatToolDeps {
   tokenAge?: (mint: string) => Promise<Record<string, unknown>>;
   // Connected wallet recent activity — optional (needs Helius/bridge/session).
   walletHistory?: (wallet: string) => Promise<Array<Record<string, unknown>>>;
+  // Live connector action facts — optional (needs the local bridge / cloud connector
+  // read proxy). Receives the connectorReadFacts input ({connectorId, capability, ...})
+  // and returns the SAME raw envelope the server gets, so the shared atom format() runs
+  // identically here. Undefined → connector facts come back as unavailable.
+  connectorFacts?: (req: { connectorId: string; capability: string } & Record<string, unknown>) => Promise<Record<string, unknown>>;
 }
 
 function isBase58Mint(value: string): boolean {
@@ -78,12 +84,18 @@ export function createClientChatToolExecutor(deps: ClientChatToolDeps): ChatTool
     if (name === 'get_token_price') {
       if (!query) return { summary: 'No token provided.', data: { error: 'query is required' } };
       try {
+        // H7-E2: shape each price like the server tool ({mint, usdPrice, priceChange24h,
+        // status}) so the model sees identical keys on device-agent vs Hosted. The client
+        // price source has no 24h change → null (honest); status mirrors the server.
+        const shapePrice = (mint: string, usdPrice: number | null) =>
+          ({ mint, usdPrice, priceChange24h: null, status: usdPrice != null ? 'priced' : 'unavailable' });
         const token = await resolveMint(query);
         if (!token) return { summary: `No token matched "${query}".`, data: { found: false, query } };
         if (typeof token.priceUsd === 'number') {
-          return { summary: `${query}: $${token.priceUsd}`, data: { query, prices: [{ mint: token.mint, usdPrice: token.priceUsd }] } };
+          return { summary: `${query}: $${token.priceUsd}`, data: { query, prices: [shapePrice(token.mint, token.priceUsd)] } };
         }
-        const prices = await deps.priceForMints([token.mint]);
+        const raw = await deps.priceForMints([token.mint]);
+        const prices = raw.map((p) => shapePrice(p.mint, p.usdPrice));
         const top = prices[0];
         const summary = top && top.usdPrice != null ? `${query}: $${top.usdPrice}` : `No price for "${query}".`;
         return { summary, data: { query, prices } };
@@ -128,9 +140,35 @@ export function createClientChatToolExecutor(deps: ClientChatToolDeps): ChatTool
       if (!deps.walletHistory) return { summary: 'Wallet history unavailable.', data: { wallet, unavailable: true, reason: 'no_history_source' } };
       try {
         const recent = (await deps.walletHistory(wallet)).slice(0, 5);
-        return { summary: 'Recent wallet activity', data: { wallet, count: recent.length, recent } };
+        // H7-E3: include source like the server tool ({…, source:'helius'}).
+        return { summary: 'Recent wallet activity', data: { wallet, count: recent.length, recent, source: 'helius' } };
       } catch (err) {
         return { summary: 'Wallet history unavailable.', data: { wallet, unavailable: true, error: err instanceof Error ? err.message : String(err) } };
+      }
+    }
+
+    if (name === 'get_connector_facts') {
+      const connectorId = typeof input.connectorId === 'string' && input.connectorId.trim() ? input.connectorId.trim() : 'jupiter';
+      const action = typeof input.action === 'string' ? input.action.trim() : '';
+      const atom = getConnectorAtom(connectorId, action);
+      if (!atom) return { summary: `No connector action for "${action}".`, data: { error: `unknown action ${action} for ${connectorId}` } };
+      // Knowledge-only atom (swap/portfolio) or no reader wired: return the capability
+      // card so the model still answers from grounded knowledge.
+      if (!atom.factSpec || !deps.connectorFacts) {
+        return { summary: `${connectorId} ${atom.action} info`, data: { knowledge: atom.knowledge } };
+      }
+      const factSpec = atom.factSpec;
+      const factArgs = {
+        ...(walletAddress ? { walletAddress } : {}),
+        ...(mintArg ? { mint: mintArg } : {}),
+        ...(query ? { query } : {}),
+      };
+      try {
+        const raw = await deps.connectorFacts({ connectorId, capability: factSpec.capability, ...factSpec.buildInput(factArgs) });
+        const formatted = clampConnectorFacts(factSpec.format(raw), factSpec.maxChars);
+        return { summary: `${connectorId} ${atom.action} facts`, data: { connectorId, action: atom.action, ...formatted } };
+      } catch (err) {
+        return { summary: `${connectorId} ${atom.action} unavailable.`, data: { connectorId, action: atom.action, unavailable: true, error: err instanceof Error ? err.message : String(err) } };
       }
     }
 

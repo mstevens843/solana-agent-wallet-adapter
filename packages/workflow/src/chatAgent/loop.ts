@@ -9,6 +9,7 @@ import {
   chatLoopExhaustedMessage,
   chatNoTextFallback,
   chatResult,
+  chatTruncatedSuffix,
   effectiveChatWalletAddress,
 } from './systemPrompt.js';
 import {
@@ -67,14 +68,28 @@ function boundedToolResultContent(data: unknown): string {
   });
 }
 
-// Cap the prior conversation resent each turn → linear (not quadratic) token cost +
-// no eventual context-length error. Keeps the most recent turns and ensures the
-// trimmed history still starts with a user turn (providers require it).
+// Cap the prior conversation resent each turn → linear (not quadratic) token cost + no
+// eventual context-length error. ALSO enforce strict user/assistant alternation ending on
+// a USER turn: providers require the first turn to be user, and (H8-A) a history that ends
+// on an assistant turn — or has consecutive same-role messages (cloud-sync replay, a
+// checkpoint, a bridge/third-party caller; the browser client guards this but the server
+// path does not) — would make pushAssistant append a SECOND adjacent assistant turn →
+// Anthropic + Gemini reject it with a 400. Collapse consecutive same-role runs (keep the
+// most recent) and drop a trailing assistant so the model always generates after a user.
 function trimChatHistory(messages: ChatHistoryMessage[]): ChatHistoryMessage[] {
   const trimmed = messages.length > CHAT_MAX_HISTORY_MESSAGES ? messages.slice(-CHAT_MAX_HISTORY_MESSAGES) : messages;
   let start = 0;
   while (start < trimmed.length && trimmed[start]!.role !== 'user') start += 1;
-  return trimmed.slice(start);
+  const alternating: ChatHistoryMessage[] = [];
+  for (const m of trimmed.slice(start)) {
+    if (alternating.length > 0 && alternating[alternating.length - 1]!.role === m.role) {
+      alternating[alternating.length - 1] = m; // same-role run → keep the most recent
+    } else {
+      alternating.push(m);
+    }
+  }
+  while (alternating.length > 0 && alternating[alternating.length - 1]!.role !== 'user') alternating.pop();
+  return alternating;
 }
 
 // Sum usage across the loop's turns into a single total (each tool-using turn is a
@@ -140,6 +155,10 @@ export async function runAgentChatLoop(opts: {
   maxIterations?: number;
 }): Promise<void> {
   const { request, adapter, runProviderTurn, executeTool, emit, signal } = opts;
+  // H7-B: the user's UI language (Android) so the loop's own fallback/exhausted/truncation
+  // strings are localized, not hardcoded English.
+  const uiLanguage = typeof request.context?.uiLanguage === 'string' ? request.context.uiLanguage : 'en';
+  const truncSuffix = (): string => `\n\n_${chatTruncatedSuffix(uiLanguage)}_`;
   const walletAddress = effectiveChatWalletAddress(request);
   const history = trimChatHistory((request.messages ?? []).filter((m) => m.role === 'user' || m.role === 'assistant'));
   const messages = adapter.initialMessages(history);
@@ -162,10 +181,10 @@ export async function runAgentChatLoop(opts: {
       let finalText = outcome.text.trim();
       // The answer hit the token cap mid-sentence — tell the user it was cut off
       // instead of presenting a truncated reply as complete.
-      if (finalText && truncated) finalText += '\n\n_(response was cut off at the length limit; ask me to continue.)_';
-      if (!finalText) await streamTextAsTokens(chatNoTextFallback(proposalEmitted), emit, signal);
+      if (finalText && truncated) finalText += truncSuffix();
+      if (!finalText) await streamTextAsTokens(chatNoTextFallback(proposalEmitted, uiLanguage), emit, signal);
       await emitChatSummaries(emit, usageAcc.total(), citations);
-      await emit({ type: 'done', result: chatResult(finalText || chatNoTextFallback(proposalEmitted)) });
+      await emit({ type: 'done', result: chatResult(finalText || chatNoTextFallback(proposalEmitted, uiLanguage)) });
       return;
     }
 
@@ -209,8 +228,25 @@ export async function runAgentChatLoop(opts: {
     if (signal?.aborted) return;
     adapter.pushToolResults(messages, results);
   }
+  // H7-F2: the loop exhausted iterations on a turn that produced tool calls — the results
+  // are in `messages` but the model never got a turn to RESPOND to them. Give it ONE final
+  // response turn (any further tool calls are ignored — strictly bounded) so the user gets
+  // a real answer instead of the generic exhausted message.
+  if (!signal?.aborted) {
+    const closing = await runProviderTurn(messages, (text) => emit({ type: 'token', text }), signal);
+    if (signal?.aborted) return;
+    usageAcc.add(closing.usage);
+    if (closing.citations?.length) citations.push(...closing.citations);
+    let finalText = closing.text.trim();
+    if (finalText && isTruncatedFinish(closing.finishReason)) finalText += truncSuffix();
+    if (finalText) {
+      await emitChatSummaries(emit, usageAcc.total(), citations);
+      await emit({ type: 'done', result: chatResult(finalText) });
+      return;
+    }
+  }
   await emitChatSummaries(emit, usageAcc.total(), citations);
-  await emit({ type: 'done', result: chatResult(chatLoopExhaustedMessage()) });
+  await emit({ type: 'done', result: chatResult(chatLoopExhaustedMessage(uiLanguage)) });
 }
 
 function chatProviderEndpoint(profile: ChatModelProfile, apiKey: string, transport: ChatAiTransport): { url: string; headers: Record<string, string> } {
@@ -251,10 +287,22 @@ export function chatSleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-// Exponential backoff with jitter; honors a numeric Retry-After (seconds) when present.
+// Exponential backoff with jitter; honors a Retry-After header in BOTH RFC 7231 forms —
+// numeric delay-seconds AND an HTTP-date (H8-B: the date form was parsing to NaN and
+// silently falling back to the aggressive 500ms·2^attempt backoff, hammering a server
+// that told us to wait). Everything is capped at 8s so a far-future date can't hang.
 export function chatRetryDelayMs(attempt: number, retryAfterHeader: string | null): number {
-  const retryAfter = retryAfterHeader ? Number.parseInt(retryAfterHeader, 10) : Number.NaN;
-  const base = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 500 * 2 ** attempt;
+  let retryAfterMs = Number.NaN;
+  if (retryAfterHeader) {
+    const seconds = Number.parseInt(retryAfterHeader, 10);
+    if (Number.isFinite(seconds)) {
+      retryAfterMs = seconds * 1000;
+    } else {
+      const when = Date.parse(retryAfterHeader); // e.g. "Sun, 06 Nov 2025 08:49:37 GMT"
+      if (Number.isFinite(when)) retryAfterMs = when - Date.now();
+    }
+  }
+  const base = Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? retryAfterMs : 500 * 2 ** attempt;
   return Math.min(base, 8000) * (0.8 + Math.random() * 0.4);
 }
 

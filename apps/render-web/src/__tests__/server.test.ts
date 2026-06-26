@@ -158,7 +158,10 @@ describe('render web hosted BYOK API', () => {
     });
   });
 
-  it('omits the swap platform fee for the iOS app', async () => {
+  it('applies the swap platform fee on the iOS app too (mirrors SolPulse)', async () => {
+    // Policy reversal: the Ultra swap referral fee now applies on every platform,
+    // including the iOS bundled app (SolPulse charges the same swap fee on iOS and is
+    // App-Store-approved). The x-agentic-client header no longer skips the fee.
     vi.stubEnv('JUPITER_API_KEY', 'jup-test-key');
     vi.stubEnv('JUPITER_REFERRAL_ACCOUNT', DEVICE_AGENT_WALLET_A);
     vi.stubEnv('JUPITER_REFERRAL_FEE_BPS', '50');
@@ -179,8 +182,8 @@ describe('render web hosted BYOK API', () => {
       expect(response.status).toBe(200);
       expect(jupiterCalls).toHaveLength(1);
       const ordered = new URL(jupiterCalls[0]!);
-      expect(ordered.searchParams.has('referralAccount')).toBe(false);
-      expect(ordered.searchParams.has('referralFee')).toBe(false);
+      expect(ordered.searchParams.get('referralAccount')).toBe(DEVICE_AGENT_WALLET_A);
+      expect(ordered.searchParams.get('referralFee')).toBe('50');
     });
   });
 

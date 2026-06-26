@@ -36,6 +36,31 @@ data class HttpResponse(val status: Int, val body: String)
  */
 interface HttpExecutor {
     suspend fun postJson(url: String, headers: Map<String, String>, body: String): HttpResponse
+
+    /**
+     * Streaming POST for token-by-token chat. For a 2xx response, reads the body
+     * incrementally and invokes [onChunk] with each raw chunk (the caller relays them to
+     * JS, which reassembles SSE frames + parses); returns `{status, body=""}`. For a
+     * non-2xx response, buffers the (capped) error body and returns it with no chunks.
+     *
+     * Default impl delegates to [postJson] and emits the whole body as a single chunk —
+     * a safe fallback (JS still parses it; just not incrementally) so fakes need not
+     * implement streaming.
+     */
+    suspend fun postJsonStreaming(
+        url: String,
+        headers: Map<String, String>,
+        body: String,
+        onChunk: (String) -> Unit,
+    ): HttpResponse {
+        val res = postJson(url, headers, body)
+        return if (res.status in 200..299) {
+            if (res.body.isNotEmpty()) onChunk(res.body)
+            HttpResponse(res.status, "")
+        } else {
+            res
+        }
+    }
 }
 
 /**
@@ -139,6 +164,88 @@ internal class DefaultHttpExecutor(
                     } catch (_: Throwable) {
                         // ignore
                     }
+                }
+            }
+        }
+    }
+
+    override suspend fun postJsonStreaming(
+        url: String,
+        headers: Map<String, String>,
+        body: String,
+        onChunk: (String) -> Unit,
+    ): HttpResponse {
+        if (!url.startsWith("https://", ignoreCase = true)) {
+            throw ProviderHttpException(
+                ProviderErrorCodes.INVALID_CONFIG,
+                "Device Agent provider URL must use https://; got \"$url\".",
+            )
+        }
+        return withContext(Dispatchers.IO) {
+            suspendCancellableCoroutine { cont ->
+                val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = connectTimeoutMs
+                    readTimeout = readTimeoutMs
+                    doInput = true
+                    doOutput = true
+                    useCaches = false
+                    instanceFollowRedirects = false
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    setRequestProperty("Accept", "text/event-stream")
+                    for ((name, value) in headers) {
+                        setRequestProperty(name, value)
+                    }
+                }
+                cont.invokeOnCancellation {
+                    try { connection.disconnect() } catch (_: Throwable) { }
+                }
+                val payloadBytes = body.toByteArray(Charsets.UTF_8)
+                connection.setFixedLengthStreamingMode(payloadBytes.size)
+                try {
+                    connection.outputStream.use { it.write(payloadBytes) }
+                    val status = connection.responseCode
+                    if (status !in 200..299) {
+                        // No SSE stream on an error — buffer the (small, capped) error body.
+                        val err = connection.errorStream?.let { readCapped(it) }.orEmpty()
+                        cont.resume(HttpResponse(status = status, body = err))
+                        return@suspendCancellableCoroutine
+                    }
+                    // 2xx: relay the body incrementally. JS reassembles SSE frames, so an
+                    // arbitrary read boundary is fine. Cap retained as a runaway guard.
+                    val reader = InputStreamReader(connection.inputStream, Charsets.UTF_8)
+                    val buffer = CharArray(BUFFER_CHARS)
+                    var total = 0
+                    while (true) {
+                        if (!cont.isActive) return@suspendCancellableCoroutine
+                        val read = reader.read(buffer)
+                        if (read == -1) break
+                        total += read
+                        if (total > MAX_RESPONSE_BYTES) throw ResponseTooLargeException()
+                        if (read > 0) onChunk(String(buffer, 0, read))
+                    }
+                    cont.resume(HttpResponse(status = status, body = ""))
+                } catch (cap: ResponseTooLargeException) {
+                    cont.resumeWithException(
+                        ProviderHttpException(
+                            ProviderErrorCodes.INVALID_RESPONSE,
+                            "Provider response exceeded the ${MAX_RESPONSE_BYTES / 1024} KiB cap.",
+                        ),
+                    )
+                } catch (timeout: SocketTimeoutException) {
+                    cont.resumeWithException(
+                        ProviderHttpException(ProviderErrorCodes.TIMEOUT, "Provider request timed out."),
+                    )
+                } catch (io: IOException) {
+                    if (!cont.isActive) return@suspendCancellableCoroutine
+                    cont.resumeWithException(
+                        ProviderHttpException(
+                            ProviderErrorCodes.NETWORK,
+                            io.message?.takeIf { it.isNotBlank() } ?: "Provider network error.",
+                        ),
+                    )
+                } finally {
+                    try { connection.disconnect() } catch (_: Throwable) { }
                 }
             }
         }

@@ -37,6 +37,7 @@ export * from './agentEvidenceRequirements.js';
 export * from './agentEvidenceGate.js';
 export * from './agentAtoms.js';
 export * from './agentCapabilityRegistry.js';
+export * from './connectorAtoms/index.js';
 export * from './policyEvaluator.js';
 export * from './policyOrchestrator.js';
 export * from './policyLanguage.js';

@@ -3,7 +3,12 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   anthropicHeaders,
   bearerJsonHeaders,
+  chatAgenticSystemPrompt,
+  chatLoopExhaustedMessage,
+  chatNoTextFallback,
+  chatRetryDelayMs,
   chatTransportAdapter,
+  chatTruncatedSuffix,
   createStreamingProviderTurn,
   isSolanaAddress,
   iterateProviderSse,
@@ -105,11 +110,12 @@ describe('SSE robustness (F1/F3)', () => {
 describe('provider-specific correctness (Phase G)', () => {
   it('OpenAI reasoning models use max_completion_tokens + no temperature; standard use max_tokens', () => {
     const a = chatTransportAdapter('openai-compatible');
-    const reasoning = a.buildBody('SYS', [], 'gpt-5', []);
+    // Reasoning fields only apply on a native OpenAI/OpenRouter route (H7-A1).
+    const reasoning = a.buildBody('SYS', [], 'gpt-5', [], { openAiNative: true });
     expect(reasoning.max_completion_tokens).toBeGreaterThan(0);
     expect(reasoning.max_tokens).toBeUndefined();
     expect(reasoning.temperature).toBeUndefined();
-    const standard = a.buildBody('SYS', [], 'gpt-4o', []);
+    const standard = a.buildBody('SYS', [], 'gpt-4o', [], { openAiNative: true });
     expect(standard.max_tokens).toBeGreaterThan(0);
     expect(standard.max_completion_tokens).toBeUndefined();
     expect(standard.temperature).toBe(0.3);
@@ -117,16 +123,20 @@ describe('provider-specific correctness (Phase G)', () => {
 
   it('maps reasoning depth per provider (H2)', () => {
     const oai = chatTransportAdapter('openai-compatible');
-    // o-series gets reasoning_effort; 'minimal' clamps to 'low' for non-gpt-5.
-    expect(oai.buildBody('S', [], 'o3', [], { reasoningEffort: 'high' }).reasoning_effort).toBe('high');
-    expect(oai.buildBody('S', [], 'o3', [], { reasoningEffort: 'minimal' }).reasoning_effort).toBe('low');
-    expect(oai.buildBody('S', [], 'gpt-5', [], { reasoningEffort: 'minimal' }).reasoning_effort).toBe('minimal');
+    // o-series gets reasoning_effort ONLY on a native OpenAI/OpenRouter route; 'minimal' clamps to 'low' for non-gpt-5.
+    expect(oai.buildBody('S', [], 'o3', [], { reasoningEffort: 'high', openAiNative: true }).reasoning_effort).toBe('high');
+    expect(oai.buildBody('S', [], 'o3', [], { reasoningEffort: 'minimal', openAiNative: true }).reasoning_effort).toBe('low');
+    expect(oai.buildBody('S', [], 'gpt-5', [], { reasoningEffort: 'minimal', openAiNative: true }).reasoning_effort).toBe('minimal');
     // Non-reasoning models get NO reasoning_effort.
-    expect(oai.buildBody('S', [], 'gpt-4o', [], { reasoningEffort: 'high' }).reasoning_effort).toBeUndefined();
-    // Anthropic: medium/high enable extended thinking + DROP temperature.
+    expect(oai.buildBody('S', [], 'gpt-4o', [], { reasoningEffort: 'high', openAiNative: true }).reasoning_effort).toBeUndefined();
+    // Anthropic: ONLY 'high' enables extended thinking (+ DROP temperature). The default
+    // 'medium' stays fast (no thinking tax) so simple lookups don't pay the per-turn cost.
+    const aHigh = chatTransportAdapter('anthropic-messages').buildBody('S', [], 'claude-sonnet-4', [], { reasoningEffort: 'high' });
+    expect((aHigh.thinking as { budget_tokens: number }).budget_tokens).toBeGreaterThan(0);
+    expect(aHigh.temperature).toBeUndefined();
     const aMed = chatTransportAdapter('anthropic-messages').buildBody('S', [], 'claude-sonnet-4', [], { reasoningEffort: 'medium' });
-    expect((aMed.thinking as { budget_tokens: number }).budget_tokens).toBeGreaterThan(0);
-    expect(aMed.temperature).toBeUndefined();
+    expect(aMed.thinking).toBeUndefined();
+    expect(aMed.temperature).toBe(0.3);
     const aLow = chatTransportAdapter('anthropic-messages').buildBody('S', [], 'claude-sonnet-4', [], { reasoningEffort: 'low' });
     expect(aLow.thinking).toBeUndefined();
     expect(aLow.temperature).toBe(0.3);
@@ -135,6 +145,91 @@ describe('provider-specific correctness (Phase G)', () => {
     expect(((g25.generationConfig as { thinkingConfig?: { thinkingBudget: number } }).thinkingConfig)?.thinkingBudget).toBe(128);
     const g15 = chatTransportAdapter('gemini-native').buildBody('S', [], 'gemini-1.5-flash', [], { reasoningEffort: 'minimal' });
     expect((g15.generationConfig as { thinkingConfig?: unknown }).thinkingConfig).toBeUndefined();
+  });
+
+  it('H7-A1: custom gateway (openAiNative=false) with an o-named model gets NO OpenAI-only fields', () => {
+    const oai = chatTransportAdapter('openai-compatible');
+    // A local gateway model merely NAMED 'o1-local' must use max_tokens, no reasoning_effort, keep temperature.
+    const body = oai.buildBody('S', [], 'o1-local', [], { reasoningEffort: 'high', openAiNative: false });
+    expect(body.reasoning_effort).toBeUndefined();
+    expect(body.max_tokens).toBeDefined();
+    expect(body.max_completion_tokens).toBeUndefined();
+    expect(body.temperature).toBe(0.3);
+    // Genuine OpenAI o-series still gets the reasoning fields.
+    const real = oai.buildBody('S', [], 'o1', [], { reasoningEffort: 'high', openAiNative: true });
+    expect(real.max_completion_tokens).toBeDefined();
+    expect(real.max_tokens).toBeUndefined();
+    expect(real.temperature).toBeUndefined();
+  });
+
+  it('H7-A2/A3: gemini regex requires the decimal + flash-lite floors at 512', () => {
+    const gem = chatTransportAdapter('gemini-native');
+    const cfg = (m: string, lvl: 'minimal' | 'low') => (gem.buildBody('S', [], m, [], { reasoningEffort: lvl }).generationConfig as { thinkingConfig?: { thinkingBudget: number } }).thinkingConfig;
+    // 'gemini-25-flash' (no decimal) must NOT match → no thinkingConfig.
+    expect(cfg('gemini-25-flash', 'minimal')).toBeUndefined();
+    // Flash-Lite 'minimal' floors at 512 (API minimum); Flash stays 128.
+    expect(cfg('gemini-2.5-flash-lite', 'minimal')?.thinkingBudget).toBe(512);
+    expect(cfg('gemini-2.5-flash', 'minimal')?.thinkingBudget).toBe(128);
+    expect(cfg('gemini-2.5-flash-lite', 'low')?.thinkingBudget).toBe(1024);
+  });
+
+  it('H7-B: loop fallback strings localize by uiLanguage (no English leak)', () => {
+    expect(chatLoopExhaustedMessage('es')).not.toBe(chatLoopExhaustedMessage('en'));
+    expect(chatNoTextFallback(false, 'ja')).not.toBe(chatNoTextFallback(false, 'en'));
+    expect(chatNoTextFallback(true, 'de')).not.toBe(chatNoTextFallback(false, 'de'));
+    expect(chatTruncatedSuffix('ru')).not.toBe(chatTruncatedSuffix('en'));
+    // unknown / omitted language falls back to English, never empty.
+    expect(chatLoopExhaustedMessage('xx')).toBe(chatLoopExhaustedMessage('en'));
+    expect(chatTruncatedSuffix()).toBe(chatTruncatedSuffix('en'));
+    expect(chatLoopExhaustedMessage('en')).toBeTruthy();
+  });
+
+  it('H7-F1: OpenAI [DONE] with trailing whitespace terminates (no leak after it)', async () => {
+    const enc = new TextEncoder();
+    let ctrl: ReadableStreamDefaultController<Uint8Array> | null = null;
+    const stream = new ReadableStream<Uint8Array>({ start(c) { ctrl = c; } });
+    void (async () => {
+      for (const c of [
+        'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+        'data: [DONE] \n\n', // trailing whitespace
+        'data: {"choices":[{"delta":{"content":"LEAK"}}]}\n\n', // after [DONE] — must be ignored
+      ]) ctrl!.enqueue(enc.encode(c));
+      ctrl!.close();
+    })();
+    const turn = await chatTransportAdapter('openai-compatible').parseStream(new Response(stream), () => {});
+    expect(turn.text).toBe('hi');
+    expect(turn.text).not.toContain('LEAK');
+  });
+
+  it('H8-B: Retry-After HTTP-date is honored, not the aggressive exponential', () => {
+    const future = new Date(Date.now() + 6000).toUTCString(); // RFC 7231 HTTP-date form
+    expect(chatRetryDelayMs(0, future)).toBeGreaterThan(1500); // ~6s (clamped to 8s)
+    expect(chatRetryDelayMs(0, '5')).toBeGreaterThan(1500); // numeric seconds still work
+    // a non-date / non-numeric header falls back to the attempt-0 exponential (~500ms).
+    expect(chatRetryDelayMs(0, 'garbage')).toBeLessThan(800);
+    // a PAST date also falls back (no negative/zero wait surfacing as the date).
+    expect(chatRetryDelayMs(0, new Date(Date.now() - 60000).toUTCString())).toBeLessThan(800);
+  });
+
+  it('H8-D: token-symbol guidance matches CHAT_MAJOR_SYMBOLS (no SOL/USDC-only drift)', () => {
+    // An unresolved token error now names the full major-symbol set.
+    const bad = validateChatProposedAction({ kind: 'transfer_spl', summary: 's', params: { recipient: USDC, amount: '1', token: 'UNKNOWNCOIN' } });
+    expect(bad.proposal).toBeUndefined();
+    expect(bad.error).toMatch(/USDT|PYUSD/);
+    // USDT by symbol is accepted (the prepare path resolves it) — no search_tokens needed.
+    const ok = validateChatProposedAction({ kind: 'transfer_spl', summary: 's', params: { recipient: USDC, amount: '1', token: 'USDT' } });
+    expect(ok.proposal).toBeDefined();
+    // The system prompt's symbol guidance matches the validator (no SOL/USDC-only text).
+    const prompt = chatAgenticSystemPrompt({ walletAddress: USDC });
+    expect(prompt).toContain('USDT');
+    expect(prompt).toContain('PYUSD');
+  });
+
+  it('H8-E: canonicalizes scientific-notation amounts to a plain decimal', () => {
+    const r = validateChatProposedAction({ kind: 'transfer_sol', summary: 's', params: { recipient: USDC, amountSol: '1e9' } });
+    expect((r.proposal!.params as { amountSol: string }).amountSol).toBe('1000000000');
+    const swap = validateChatProposedAction({ kind: 'swap', summary: 's', params: { amount: '2e3', inputToken: 'SOL', outputToken: 'USDC' } });
+    expect((swap.proposal!.params as { amount: string }).amount).toBe('2000');
   });
 
   it('gates stream_options to native OpenAI/OpenRouter only (H0.2)', () => {
@@ -188,6 +283,66 @@ describe('provider-specific correctness (Phase G)', () => {
       sseResponse('data: {"candidates":[{"finishReason":"SAFETY"}]}\n\n'),
       () => {},
     )).rejects.toThrow(/blocked|SAFETY/i);
+  });
+
+  it('parseStream consumes a Response rebuilt from native chunks (H4a streaming contract)', async () => {
+    // Native relays raw SSE chunks; JS rebuilds a Response + reuses parseStream.
+    const chunks = [
+      'data: {"choices":[{"delta":{"content":"He"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"llo"}}]}\n\n',
+      'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2}}\n\n',
+      'data: [DONE]\n\n',
+    ];
+    const encoder = new TextEncoder();
+    let ctrl: ReadableStreamDefaultController<Uint8Array> | null = null;
+    const stream = new ReadableStream<Uint8Array>({ start(c) { ctrl = c; } });
+    void (async () => { for (const c of chunks) ctrl!.enqueue(encoder.encode(c)); ctrl!.close(); })();
+    const tokens: string[] = [];
+    const turn = await chatTransportAdapter('openai-compatible').parseStream(new Response(stream), (t) => { tokens.push(t); });
+    expect(tokens.join('')).toBe('Hello');
+    expect(turn.text).toBe('Hello');
+    expect(turn.usage).toEqual({ inputTokens: 5, outputTokens: 2 });
+  });
+
+  // Helper: feed raw SSE chunks through a synthetic Response → parseStream (the native
+  // streaming relay contract). Returns the streamed tokens + the parsed turn.
+  async function relayChunks(transport: 'anthropic-messages' | 'gemini-native', chunks: string[]) {
+    const enc = new TextEncoder();
+    let ctrl: ReadableStreamDefaultController<Uint8Array> | null = null;
+    const stream = new ReadableStream<Uint8Array>({ start(c) { ctrl = c; } });
+    void (async () => { for (const c of chunks) ctrl!.enqueue(enc.encode(c)); ctrl!.close(); })();
+    const tokens: string[] = [];
+    const turn = await chatTransportAdapter(transport).parseStream(new Response(stream), (t) => { tokens.push(t); });
+    return { tokens, turn };
+  }
+
+  it('Anthropic native chunk relay streams text + DROPS thinking blocks (H4a/H5.7 + H2 no-leak)', async () => {
+    // thinking block (index 0) must be dropped; the text block (index 1) is the answer.
+    const { tokens, turn } = await relayChunks('anthropic-messages', [
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":7}}}\n\n',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}\n\n',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"SECRET reasoning"}}\n\n',
+      'data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}\n\n',
+      'data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hi"}}\n\n',
+      'data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" there"}}\n\n',
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}\n\n',
+    ]);
+    expect(tokens.join('')).toBe('Hi there');
+    expect(turn.text).toBe('Hi there');
+    expect(turn.text).not.toContain('SECRET');
+    expect(turn.usage).toEqual({ inputTokens: 7, outputTokens: 3 });
+  });
+
+  it('Gemini native chunk relay streams text + DROPS thought parts (H4a/H5.7 + H2 no-leak)', async () => {
+    const { tokens, turn } = await relayChunks('gemini-native', [
+      'data: {"candidates":[{"content":{"parts":[{"thought":true,"text":"SECRET reasoning"}]}}]}\n\n',
+      'data: {"candidates":[{"content":{"parts":[{"text":"Hi"}]}}]}\n\n',
+      'data: {"candidates":[{"content":{"parts":[{"text":" there"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3}}\n\n',
+    ]);
+    expect(tokens.join('')).toBe('Hi there');
+    expect(turn.text).toBe('Hi there');
+    expect(turn.text).not.toContain('SECRET');
+    expect(turn.usage).toEqual({ inputTokens: 7, outputTokens: 3 });
   });
 
   it('retries a 429 then succeeds (G2)', async () => {

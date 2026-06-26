@@ -20,14 +20,19 @@ export const CHAT_TOOL_NAMES = new Set([
   'get_market_regime',
   'get_token_age',
   'get_wallet_history',
+  'get_connector_facts',
 ]);
 export const CHAT_PROPOSAL_KINDS = new Set(['transfer_sol', 'transfer_spl', 'swap', 'sign_proof']);
 export const CHAT_BASE58_MINT_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 export const CHAT_RESOLUTION_SOURCES = new Set(['evidence', 'user_input']);
 const CHAT_STATEMENT_MAX_CHARS = 280;
-// Tokens that may be referenced by symbol in a chat proposal. Every other token
-// (the long tail of SPLs) MUST be a base58 mint - never a guessed symbol.
+// Tokens that may be referenced by symbol in a chat proposal (the prepare path resolves
+// these symbols→mints via the known-token map). Every other token (the long tail of
+// SPLs) MUST be a base58 mint - never a guessed symbol.
 export const CHAT_MAJOR_SYMBOLS = new Set(['SOL', 'USDC', 'USDT', 'PYUSD']);
+// Single source of truth for the symbol list shown in the system prompt + error messages,
+// so they can never drift from the validator again (H8-D). e.g. "SOL/USDC/USDT/PYUSD".
+export const CHAT_MAJOR_SYMBOLS_LABEL = [...CHAT_MAJOR_SYMBOLS].join('/');
 
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
@@ -75,10 +80,23 @@ function isPositiveAmount(value: unknown): boolean {
   return Number.isFinite(n) && n > 0;
 }
 
+// Canonicalize a positive amount to a PLAIN decimal string so the approval card + the
+// prepared action never show scientific notation like "1e9 SOL" (H8-E). Returns
+// undefined if the value isn't a finite positive number (caller keeps the original).
+function canonicalAmount(value: unknown): string | undefined {
+  if (!isPositiveAmount(value)) return undefined;
+  return Number(value).toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 20 });
+}
+
 export function chatToolStatusLabel(name: string, input: Record<string, unknown>): string {
   const query = typeof input.query === 'string' ? input.query : '';
   if (name === 'get_token_price') return query ? `Checking price of ${query}…` : 'Checking price…';
   if (name === 'search_tokens') return query ? `Searching tokens for ${query}…` : 'Searching tokens…';
+  if (name === 'get_connector_facts') {
+    const connector = typeof input.connectorId === 'string' && input.connectorId.trim() ? input.connectorId.trim() : 'Jupiter';
+    const action = typeof input.action === 'string' ? input.action.trim() : '';
+    return action ? `Reading ${connector} ${action}…` : `Reading ${connector}…`;
+  }
   return `Running ${name}…`;
 }
 
@@ -138,6 +156,20 @@ export function chatToolsAnthropic(): Array<Record<string, unknown>> {
       name: 'get_wallet_history',
       description: "Get the connected wallet's most recent on-chain transactions (compact summaries). Call this for 'my recent transactions / activity / what did I do' questions.",
       input_schema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'get_connector_facts',
+      description: "Get live, pre-formatted facts for a DeFi connector action (Jupiter today). Call this for questions about the user's Jupiter Lend/Earn positions, Borrow positions & health, Limit/TP-SL (trigger) orders, DCA/recurring orders, Perps status, or prediction markets - e.g. 'my Jupiter lend positions', 'show my limit orders', 'what's my borrow health'. For token prices/safety use get_token_price / get_token_safety instead. connectorId defaults to 'jupiter'.",
+      input_schema: {
+        type: 'object',
+        properties: {
+          connectorId: { type: 'string', description: "Connector id, e.g. 'jupiter' (default)" },
+          action: { type: 'string', description: 'lend | borrow | limit | dca | perps | prediction' },
+          mint: { type: 'string', description: 'Optional token/asset mint to scope the read' },
+          query: { type: 'string', description: 'Optional search query (e.g. for prediction events)' },
+        },
+        required: ['action'],
+      },
     },
     {
       name: 'propose_wallet_action',
@@ -212,26 +244,33 @@ export function validateChatProposedAction(input: Record<string, unknown>): { pr
     if (!isPositiveAmount(amount)) {
       return { error: 'a positive amount is required.' };
     }
+    const canonical = canonicalAmount(amount);
+    if (canonical !== undefined) {
+      if (params.amount !== undefined) params.amount = canonical;
+      if (params.amountSol !== undefined) params.amountSol = canonical;
+    }
   }
   if (kind === 'transfer_spl') {
     const token = typeof params.token === 'string' ? params.token.trim() : '';
-    if (!token) return { error: 'transfer_spl requires the token mint (or SOL/USDC symbol) in params.token.' };
+    if (!token) return { error: `transfer_spl requires the token mint (or a ${CHAT_MAJOR_SYMBOLS_LABEL} symbol) in params.token.` };
     if (!isResolvedTokenRef(token)) {
-      return { error: `${token} needs a mint address. Pick the token from your balances or paste its base58 mint.` };
+      return { error: `${token} needs a mint address (or a ${CHAT_MAJOR_SYMBOLS_LABEL} symbol). Pick the token from your balances or paste its base58 mint.` };
     }
   }
   if (kind === 'swap') {
     if (!isPositiveAmount(params.amount)) {
       return { error: 'a positive swap amount is required.' };
     }
+    const canonicalSwap = canonicalAmount(params.amount);
+    if (canonicalSwap !== undefined) params.amount = canonicalSwap;
     const inputToken = typeof params.inputToken === 'string' ? params.inputToken.trim() : '';
     const outputToken = typeof params.outputToken === 'string' ? params.outputToken.trim() : '';
     if (!inputToken || !outputToken) return { error: 'swap requires both params.inputToken and params.outputToken.' };
     if (!isResolvedTokenRef(inputToken)) {
-      return { error: `${inputToken} needs a mint address. Pick the input token from your balances or paste its base58 mint.` };
+      return { error: `${inputToken} needs a mint address (or a ${CHAT_MAJOR_SYMBOLS_LABEL} symbol). Pick the input token from your balances or paste its base58 mint.` };
     }
     if (!isResolvedTokenRef(outputToken)) {
-      return { error: `${outputToken} needs a mint address. Pick the output token from your balances or paste its base58 mint.` };
+      return { error: `${outputToken} needs a mint address (or a ${CHAT_MAJOR_SYMBOLS_LABEL} symbol). Pick the output token from your balances or paste its base58 mint.` };
     }
     if (inputToken === outputToken) return { error: 'input and output tokens must be different.' };
   }

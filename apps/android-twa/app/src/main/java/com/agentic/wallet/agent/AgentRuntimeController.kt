@@ -79,7 +79,7 @@ class AgentRuntimeController(
             JSONObject()
                 .put("chatComplete", true)
                 .put("chatCompleteGeneric", true)
-                .put("chatCompleteStream", false)
+                .put("chatCompleteStream", true)
                 .put("version", "1")
                 .put("supportedTransports", org.json.JSONArray(listOf("openai-compatible", "anthropic-messages", "gemini-native"))),
         )
@@ -170,7 +170,7 @@ class AgentRuntimeController(
         val config = RuntimeConfig.fromJson(configJson())
             ?: throw ProviderHttpException(ProviderErrorCodes.INVALID_CONFIG, "Device Agent is not configured.")
         val body = payload.optJSONObject("body")?.toString()
-            ?: throw ProviderHttpException(ProviderErrorCodes.INVALID_RESPONSE, "Device Agent complete payload is missing the request body.")
+            ?: throw ProviderHttpException(ProviderErrorCodes.INVALID_CONFIG, "Device Agent complete payload is missing the request body.")
         val apiKey = (config.apiKey ?: "").trim()
         ProviderHttp.assertApiKeyHeaderSafe(apiKey)
         // Chat tool-using turns can run long; allow JS to tune the read timeout (clamped).
@@ -187,6 +187,35 @@ class AgentRuntimeController(
         return JSONObject()
             .put("httpStatus", response.status)
             .put("body", response.body)
+    }
+
+    // Streaming chat completion: identical setup to [complete], but the provider SSE
+    // body is relayed to JS incrementally via [onChunk] (JS rebuilds a Response +
+    // reuses its parser). Resolves with {httpStatus, body?} at the end (body only on a
+    // non-2xx error). The key stays native. Gated by capabilities.chatCompleteStream.
+    suspend fun completeStream(payload: JSONObject, onChunk: (String) -> Unit): JSONObject {
+        if (!BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT) {
+            throw ProviderHttpException(ProviderErrorCodes.INVALID_CONFIG, "Android Device Agent is disabled for this build.")
+        }
+        val config = RuntimeConfig.fromJson(configJson())
+            ?: throw ProviderHttpException(ProviderErrorCodes.INVALID_CONFIG, "Device Agent is not configured.")
+        val body = payload.optJSONObject("body")?.toString()
+            ?: throw ProviderHttpException(ProviderErrorCodes.INVALID_CONFIG, "Device Agent completeStream payload is missing the request body.")
+        val apiKey = (config.apiKey ?: "").trim()
+        ProviderHttp.assertApiKeyHeaderSafe(apiKey)
+        val timeoutMs = payload.optInt("timeoutMs", 120_000).coerceIn(5_000, 300_000)
+        val http = DefaultHttpExecutor(readTimeoutMs = timeoutMs)
+        val jsUrl = payload.optString("url", "").trim()
+        val endpoint = if (jsUrl.isNotEmpty()) {
+            assertCompleteUrlHostAllowed(jsUrl, config)
+            CompleteEndpoint(jsUrl, injectKeyHeader(jsonToStringMap(payload.optJSONObject("headers")), payload.optJSONObject("keyHeader"), apiKey))
+        } else {
+            completeStreamEndpoint(payload.optString("transport", "").trim(), config, apiKey)
+        }
+        val response = http.postJsonStreaming(endpoint.url, endpoint.headers, body, onChunk)
+        val result = JSONObject().put("httpStatus", response.status)
+        if (response.status !in 200..299 && response.body.isNotEmpty()) result.put("body", response.body)
+        return result
     }
 
     private data class CompleteEndpoint(val url: String, val headers: Map<String, String>)
@@ -256,6 +285,20 @@ class AgentRuntimeController(
                 CompleteEndpoint("$base/chat/completions", headers)
             }
         }
+    }
+
+    // Streaming endpoints. OpenAI/Anthropic stream on the SAME URL as non-streaming
+    // (only the body's `stream:true` differs), but Gemini streams on a DIFFERENT URL
+    // (`:streamGenerateContent?alt=sse` vs `:generateContent`) — without this, native
+    // Gemini streaming would POST to the non-streaming endpoint and get one JSON blob
+    // instead of an SSE stream, so the JS parser would see no frames.
+    private fun completeStreamEndpoint(transport: String, config: RuntimeConfig, apiKey: String): CompleteEndpoint {
+        if (transport == "gemini-native") {
+            val base = ProviderHttp.normalizeNativeBaseUrl(config.baseUrl)
+            val encodedModel = java.net.URLEncoder.encode(config.model.trim(), "UTF-8")
+            return CompleteEndpoint("$base/models/$encodedModel:streamGenerateContent?alt=sse", mapOf("x-goog-api-key" to apiKey))
+        }
+        return completeEndpoint(transport, config, apiKey)
     }
 
     suspend fun submit(request: RuntimeRequest): RuntimeResult =
