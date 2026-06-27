@@ -5494,6 +5494,14 @@
     "Unknown": "알 수 없음",
     "Withdraw funds": "자금 출금",
     "Marinade staked": "Marinade 스테이킹됨",
-    "OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.": "브라우저 세션 모드에서는 OpenAI 키를 직접 호출할 수 없습니다. Hosted BYOK 또는 Local bridge를 선택하세요."
+    "OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.": "브라우저 세션 모드에서는 OpenAI 키를 직접 호출할 수 없습니다. Hosted BYOK 또는 Local bridge를 선택하세요.",
+    "View wallet portfolio": "지갑 포트폴리오 보기",
+    "Chat storage is full": "채팅 저장 공간이 가득 찼습니다",
+    "The oldest chats were removed to free space. Delete chats you no longer need to keep new ones.": "공간을 확보하기 위해 가장 오래된 채팅이 삭제되었습니다. 새 채팅을 유지하려면 더 이상 필요 없는 채팅을 삭제하세요.",
+    "Copy message": "메시지 복사",
+    "Copied message": "메시지를 복사함",
+    "Delete this chat?": "이 채팅을 삭제할까요?",
+    "Chat limit reached": "채팅 한도에 도달했습니다",
+    "You've reached the max of {max} saved chats. Delete some to start a new one.": "저장된 채팅이 최대 {max}개에 도달했습니다. 새로 시작하려면 일부를 삭제하세요."
   }
 }

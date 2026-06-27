@@ -78,6 +78,49 @@ describe('mobile rail sheet policy', () => {
     })).toBe(true);
   });
 
+  it('keeps the chat-wallet-balances sheet on the chat tab and clears it elsewhere', () => {
+    expect(shouldClearActiveMobileRailSheet({
+      activeTab: 'chat',
+      mobileViewport: true,
+      route: '/app',
+      sheet: 'chat-wallet-balances',
+    })).toBe(false);
+    // Stays open even on a non-mobile viewport (it is native-shell gated at the open site, not by viewport).
+    expect(shouldClearActiveMobileRailSheet({
+      activeTab: 'chat',
+      mobileViewport: false,
+      route: '/app',
+      sheet: 'chat-wallet-balances',
+    })).toBe(false);
+    expect(shouldClearActiveMobileRailSheet({
+      activeTab: 'overview',
+      mobileViewport: true,
+      route: '/app',
+      sheet: 'chat-wallet-balances',
+    })).toBe(true);
+    expect(shouldClearActiveMobileRailSheet({
+      activeTab: 'chat',
+      mobileViewport: true,
+      route: '/connect',
+      sheet: 'chat-wallet-balances',
+    })).toBe(true);
+  });
+
+  it('applies the body sheet dataset for the chat-wallet-balances sheet on the chat tab', () => {
+    expect(shouldApplyMobileRailBodyDataset({
+      activeTab: 'chat',
+      mobileViewport: true,
+      route: '/app',
+      sheet: 'chat-wallet-balances',
+    })).toBe(true);
+    expect(shouldApplyMobileRailBodyDataset({
+      activeTab: 'overview',
+      mobileViewport: true,
+      route: '/app',
+      sheet: 'chat-wallet-balances',
+    })).toBe(false);
+  });
+
   it('applies the body sheet dataset for the chat-action sheet on the chat tab', () => {
     expect(shouldApplyMobileRailBodyDataset({
       activeTab: 'chat',

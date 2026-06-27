@@ -5494,6 +5494,14 @@
     "Unknown": "Unknown",
     "Withdraw funds": "Withdraw funds",
     "Marinade staked": "Marinade staked",
-    "OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.": "OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge."
+    "OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.": "OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.",
+    "View wallet portfolio": "View wallet portfolio",
+    "Chat storage is full": "Chat storage is full",
+    "The oldest chats were removed to free space. Delete chats you no longer need to keep new ones.": "The oldest chats were removed to free space. Delete chats you no longer need to keep new ones.",
+    "Copy message": "Copy message",
+    "Copied message": "Copied message",
+    "Delete this chat?": "Delete this chat?",
+    "Chat limit reached": "Chat limit reached",
+    "You've reached the max of {max} saved chats. Delete some to start a new one.": "You've reached the max of {max} saved chats. Delete some to start a new one."
   }
 }

@@ -644,7 +644,7 @@ export function renderPayOutPanel(): string {
             <h2>${t('Pay Merchant')}</h2>
             <span class="pay-out-mode">${t('Manual approval')}</span>
           </div>
-          <p>${t('Review a merchant cart, then add the payment to Needs Approval. Your wallet signs later; this screen never transfers automatically.')}</p>
+          <p>${t('Review a merchant cart, then add the payment to Sign Approval. Your wallet signs later; this screen never transfers automatically.')}</p>
           <div class="pay-out-capability-row" aria-label="${t('Pay Merchant safeguards')}">
             <span class="dev-tab-pill">${t('Readable cart review')}</span>
             <span class="dev-tab-pill">${t('Cart validation')}</span>
@@ -669,7 +669,7 @@ export function renderPayOutPanel(): string {
             </div>
             <div>
               <span>${t('Approval')}</span>
-              <strong>${t('Needs Approval')}</strong>
+              <strong>${t('Sign Approval')}</strong>
             </div>
           </div>
         </div>
@@ -684,7 +684,7 @@ export function renderPayOutPanel(): string {
           },
           {
             title: t('Turn a cart into wallet approval'),
-            body: t('After the review looks right, the cart becomes a Needs Approval card. This screen queues the payment; it does not transfer funds by itself.'),
+            body: t('After the review looks right, the cart becomes a Sign Approval card. This screen queues the payment; it does not transfer funds by itself.'),
           },
           {
             title: t('Catch wrong merchants or amounts'),
@@ -710,7 +710,7 @@ function composeView(cartText: string, busy: boolean): string {
         <div>
           <span class="pay-out-section-label">${t('Merchant payment')}</span>
           <h3>${t('Create a merchant payment')}</h3>
-          <p>${t('Type the merchant payment details, review the human-readable summary, then add it to Needs Approval.')}</p>
+          <p>${t('Type the merchant payment details, review the human-readable summary, then add it to Sign Approval.')}</p>
         </div>
         ${entryModeTabs(entryMode)}
       </div>
@@ -801,7 +801,7 @@ function manualRequestPanel(draft: PayOutDraft, disabled: string): string {
         </div>
       </div>
       <div class="pay-out-actions">
-        <span class="pay-out-action-note">${t('Validation runs before anything reaches Needs Approval.')}</span>
+        <span class="pay-out-action-note">${t('Validation runs before anything reaches Sign Approval.')}</span>
         <div class="pay-out-actions-end">
           <button type="button" class="pay-out-button" data-pay-out-action="preview" ${disabled}>${t('Review merchant payment')}</button>
         </div>
@@ -1077,12 +1077,12 @@ function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
           </span>
         </div>
 
-        <p class="pay-out-disclaimer">${t('Confirming adds this merchant payment to Needs Approval. No transfer happens until your wallet approves it.')}</p>
+        <p class="pay-out-disclaimer">${t('Confirming adds this merchant payment to Sign Approval. No transfer happens until your wallet approves it.')}</p>
 
         <div class="pay-out-actions">
           <button type="button" class="pay-out-button secondary" data-pay-out-action="edit" ${disabled}>${t('Change payment')}</button>
           <div class="pay-out-actions-end">
-            <button type="button" class="pay-out-button" data-pay-out-action="confirm" ${disabled}>${t('Add to Needs Approval')}</button>
+            <button type="button" class="pay-out-button" data-pay-out-action="confirm" ${disabled}>${t('Add to Sign Approval')}</button>
           </div>
         </div>
         ${busy ? `<p class="pay-out-busy" data-pay-out-busy>${t('Creating approval…')}</p>` : ''}
@@ -1239,7 +1239,7 @@ function cartRecordForLocalApproval(cart: unknown, preview: AcpPreviewDisplay): 
 export function approveCartLocally(cart: unknown, preview: AcpPreviewDisplay): FetchResult<ApprovalCreated> {
   const walletAddress = getConnectedAddress();
   if (!walletAddress) {
-    return { kind: 'badRequest', message: t('Connect a wallet before adding the merchant payment to Needs Approval.') };
+    return { kind: 'badRequest', message: t('Connect a wallet before adding the merchant payment to Sign Approval.') };
   }
   const cartRecord = cartRecordForLocalApproval(cart, preview);
   const cartId = isStringField(cartRecord.id) ? cartRecord.id : preview.cartId;
@@ -1307,7 +1307,7 @@ export function approveCartLocally(cart: unknown, preview: AcpPreviewDisplay): F
 function browserLocalNotice(): NoticeInfo {
   return {
     title: t('Using browser-local approvals'),
-    body: t('The cloud ACP route is unavailable, so the approval will be saved in this browser under Needs Approval.'),
+    body: t('The cloud ACP route is unavailable, so the approval will be saved in this browser under Sign Approval.'),
   };
 }
 
@@ -1661,7 +1661,7 @@ async function runConfirm(): Promise<void> {
   }
   panelState.busy = false;
   if (result.kind === 'ok') {
-    showToast(tf('Approval ready · {id} — review in Needs Approval', { id: shortAddress(result.value.approvalId) }));
+    showToast(tf('Approval ready · {id} — review in Sign Approval', { id: shortAddress(result.value.approvalId) }));
     const dispatched = dispatchPayOutApprovalCreated({
       source: 'acp_outbound',
       approvalId: result.value.approvalId,

@@ -10,9 +10,9 @@ export function shouldClearActiveMobileRailSheet(options: {
 }): boolean {
   if (!options.sheet) return false;
   if (!mobileRailSheetRouteAllowed(options.route)) return true;
-  // The chat-action sheet is opened only on native mobile (gated at the open
-  // site) and lives on the Chat tab; clear it whenever we leave that tab.
-  if (options.sheet === 'chat-action') return options.activeTab !== 'chat';
+  // The chat-action + chat-wallet-balances sheets are opened only on native mobile (gated at the
+  // open site) and live on the Chat tab; clear them whenever we leave that tab.
+  if (options.sheet === 'chat-action' || options.sheet === 'chat-wallet-balances') return options.activeTab !== 'chat';
   return !options.mobileViewport || options.activeTab !== 'overview';
 }
 
@@ -23,7 +23,7 @@ export function shouldApplyMobileRailBodyDataset(options: {
   sheet: string | null | undefined;
 }): boolean {
   if (!options.sheet || !mobileRailSheetRouteAllowed(options.route)) return false;
-  if (options.sheet === 'chat-action') return options.activeTab === 'chat';
+  if (options.sheet === 'chat-action' || options.sheet === 'chat-wallet-balances') return options.activeTab === 'chat';
   return options.mobileViewport && options.activeTab === 'overview';
 }
 

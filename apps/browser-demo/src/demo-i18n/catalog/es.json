@@ -5494,6 +5494,14 @@
     "Unknown": "Desconocido",
     "Withdraw funds": "Retirar fondos",
     "Marinade staked": "En staking con Marinade",
-    "OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.": "Las claves de OpenAI no se pueden usar directamente en el modo de sesión del navegador. Selecciona Hosted BYOK o Local bridge."
+    "OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.": "Las claves de OpenAI no se pueden usar directamente en el modo de sesión del navegador. Selecciona Hosted BYOK o Local bridge.",
+    "View wallet portfolio": "Ver portafolio de la wallet",
+    "Chat storage is full": "El almacenamiento de chats está lleno",
+    "The oldest chats were removed to free space. Delete chats you no longer need to keep new ones.": "Se eliminaron los chats más antiguos para liberar espacio. Elimina los chats que ya no necesites para conservar los nuevos.",
+    "Copy message": "Copiar mensaje",
+    "Copied message": "Mensaje copiado",
+    "Delete this chat?": "¿Eliminar este chat?",
+    "Chat limit reached": "Límite de chats alcanzado",
+    "You've reached the max of {max} saved chats. Delete some to start a new one.": "Has alcanzado el máximo de {max} chats guardados. Elimina algunos para empezar uno nuevo."
   }
 }

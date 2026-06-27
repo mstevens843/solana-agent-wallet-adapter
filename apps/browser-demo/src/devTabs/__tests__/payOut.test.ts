@@ -383,7 +383,7 @@ describe('renderPayOutPanel', () => {
     expect(html).toContain('4fTq…MoHd');
     expect(html).toContain('data-pay-out-action="confirm"');
     expect(html).toContain('Change payment');
-    expect(html).toContain('Add to Needs Approval');
+    expect(html).toContain('Add to Sign Approval');
     expect(html).toContain('data-pay-out-action="edit"');
   });
 

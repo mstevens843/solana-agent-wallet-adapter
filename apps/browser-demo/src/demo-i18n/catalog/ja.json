@@ -5494,6 +5494,14 @@
     "Unknown": "不明",
     "Withdraw funds": "資金を引き出す",
     "Marinade staked": "Marinade でステーク済み",
-    "OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.": "OpenAI キーはブラウザのセッションモードから直接呼び出すことはできません。Hosted BYOK または Local bridge を選択してください。"
+    "OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.": "OpenAI キーはブラウザのセッションモードから直接呼び出すことはできません。Hosted BYOK または Local bridge を選択してください。",
+    "View wallet portfolio": "ウォレットポートフォリオを表示",
+    "Chat storage is full": "チャットの保存容量がいっぱいです",
+    "The oldest chats were removed to free space. Delete chats you no longer need to keep new ones.": "空き容量を確保するため、最も古いチャットが削除されました。新しいチャットを保持するには、不要なチャットを削除してください。",
+    "Copy message": "メッセージをコピー",
+    "Copied message": "メッセージをコピーしました",
+    "Delete this chat?": "このチャットを削除しますか？",
+    "Chat limit reached": "チャットの上限に達しました",
+    "You've reached the max of {max} saved chats. Delete some to start a new one.": "保存できるチャットの上限（{max}件）に達しました。新しく始めるには、いくつか削除してください。"
   }
 }

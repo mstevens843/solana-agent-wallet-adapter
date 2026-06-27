@@ -63,7 +63,7 @@ function filterLabel(filter: SpendFilter): string {
     case 'all':
       return t('All');
     case 'needs_approval':
-      return t('Needs Approval');
+      return t('Sign Approval');
     case 'active_schedules':
       return t('Active Schedules');
     case 'live_streams':
@@ -217,7 +217,7 @@ function envelopePrimaryAction(envelope: SpendEnvelope): string {
 function legacyEnvelopeAction(envelope: SpendEnvelope): string {
   switch (envelope.kind) {
     case 'one-time':
-      return `<button type="button" class="utility" data-spend-legacy-tab="inbox" data-spend-open="${escapeHtml(envelope.action.id)}">${t('Open in Needs Approval')}</button>`;
+      return `<button type="button" class="utility" data-spend-legacy-tab="inbox" data-spend-open="${escapeHtml(envelope.action.id)}">${t('Open in Sign Approval')}</button>`;
     case 'recurring':
       return `<button type="button" class="utility" data-spend-legacy-tab="schedule" data-recurring-view="active" data-spend-open="${escapeHtml(envelope.schedule.id)}">${t('Open in Repeat Payments')}</button>`;
     case 'streaming':
@@ -404,7 +404,7 @@ export function renderSpendPanel(): string {
       </header>
       <div class="spend-overview" aria-label="${escapeHtml(t('Spend summary'))}">
         <div class="dev-tab-stat"><span>${t('Active')}</span><strong>${activeCount}</strong></div>
-        <div class="dev-tab-stat"><span>${t('Needs Approval')}</span><strong>${needsApprovalCount}</strong></div>
+        <div class="dev-tab-stat"><span>${t('Sign Approval')}</span><strong>${needsApprovalCount}</strong></div>
         <div class="dev-tab-stat"><span>${t('Live Streams')}</span><strong>${liveStreamCount}</strong></div>
       </div>
       <div class="spend-filter-row" role="tablist" aria-label="${escapeHtml(t('Spend envelope filters'))}">

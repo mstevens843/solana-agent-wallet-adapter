@@ -796,7 +796,7 @@ export function renderExternalAgentsPanel(): string {
           },
           {
             title: t('Keep automated requests auditable'),
-            body: t('Each mandate keeps its source, amount, recipient, and status visible before you decide whether it belongs in Needs Approval.'),
+            body: t('Each mandate keeps its source, amount, recipient, and status visible before you decide whether it belongs in Sign Approval.'),
           },
         ],
       })}

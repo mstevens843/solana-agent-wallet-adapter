@@ -54,6 +54,11 @@ html {
   background: #020303;
   min-height: 100%;
   scroll-behavior: smooth;
+  /* Pin text scaling: iOS WKWebView auto-inflates text under larger Dynamic Type /
+     accessibility text sizes, which made the bottom tab labels (e.g. "Sign Approval")
+     wrap on an iPhone 16 set to bigger text while an iPhone 12 at default size fit. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {
@@ -5438,40 +5443,110 @@ code {
   gap: 5px;
 }
 
+/* Base sizing is kept compact so the shared row stays tight in the desktop home rail card +
+   overlay; the mobile/chat Wallet Balances sheet bumps it roomier via its own override below. */
 .wallet-balance-row {
   background: rgba(0, 0, 0, 0.16);
   border: 1px solid rgba(224, 230, 226, 0.065);
-  border-radius: 7px;
-  grid-template-columns: 42px minmax(0, 1fr) auto;
-  min-height: 30px;
-  padding: 6px 7px;
+  border-radius: 9px;
+  gap: 8px;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  min-height: 38px;
+  padding: 7px 9px;
 }
 
-.wallet-balance-row span {
-  color: var(--dim);
-  font-size: 0.69rem;
-  font-weight: 920;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+/* Left: token logo <img> overlaying a monogram base layer. The monogram shows when no logo is
+   known OR when the image fails to load (bindWalletBalanceLogoFallback hides the failed img). */
+.wallet-balance-logo {
+  flex: 0 0 auto;
+  height: 24px;
+  position: relative;
+  width: 24px;
 }
 
-.wallet-balance-row strong {
-  color: var(--text);
-  font-size: 0.82rem;
-  line-height: 1.1;
+.wallet-balance-mono {
+  align-items: center;
+  background: var(--accent-soft);
+  border-radius: 50%;
+  color: var(--accent);
+  display: flex;
+  font-size: 0.56rem;
+  font-weight: 900;
+  inset: 0;
+  justify-content: center;
+  letter-spacing: 0.02em;
+  position: absolute;
+}
+
+.wallet-balance-logo-img {
+  border-radius: 50%;
+  display: block;
+  height: 100%;
+  object-fit: cover;
+  position: relative;
+  width: 100%;
+  z-index: 1;
+}
+
+/* Middle: token name + held amount. */
+.wallet-balance-id {
+  display: grid;
+  gap: 1px;
   min-width: 0;
+}
+
+.wallet-balance-id strong {
+  color: var(--text);
+  font-size: 0.86rem;
+  font-weight: 820;
+  line-height: 1.15;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.wallet-balance-row em {
+.wallet-balance-id small {
   color: rgba(196, 205, 202, 0.82);
-  font-size: 0.76rem;
-  font-style: normal;
+  font-size: 0.74rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+/* Right: USD value + "% of portfolio · 24h change" subline. */
+.wallet-balance-val {
+  display: grid;
+  gap: 1px;
+  justify-items: end;
+  text-align: right;
+}
+
+.wallet-balance-val strong {
+  color: var(--text);
+  font-size: 0.86rem;
   font-weight: 820;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.wallet-balance-sub {
+  color: var(--dim);
+  font-size: 0.72rem;
+  font-style: normal;
+  font-weight: 700;
   line-height: 1.1;
   white-space: nowrap;
+}
+
+.wallet-balance-delta.up {
+  color: var(--accent);
+}
+
+.wallet-balance-delta.down {
+  color: rgba(255, 150, 120, 0.92);
+}
+
+.wallet-balance-delta.flat {
+  color: var(--dim);
 }
 
 .wallet-balance-state {
@@ -17692,15 +17767,6 @@ button.danger:hover:not(:disabled) {
     padding: 9px;
   }
 
-  .wallet-balance-row {
-    grid-template-columns: 38px minmax(0, 1fr);
-  }
-
-  .wallet-balance-row em {
-    grid-column: 2;
-    justify-self: start;
-    margin-top: -2px;
-  }
 
   .public-wallet-actions {
     gap: 8px;
@@ -25813,6 +25879,16 @@ button.danger:hover:not(:disabled) {
     width: 100%;
   }
 
+  /* iOS app: keep the /app top nav pinned to the top on every tab. The base rule above
+     makes it position:static, so on the iOS WKWebView the nav scrolls down with content
+     and appears to "drift into the middle." Sticky stays in normal flow (no padding/overlap
+     surgery) but pins to the top on scroll. Scoped to the iOS shell only — Android is fine. */
+  .route-app.ios-native-shell .homepage-nav[data-layout="app-nav"] {
+    position: sticky;
+    top: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap));
+    z-index: 120;
+  }
+
   .route-app .homepage-brand {
     max-width: 44px;
     overflow: hidden;
@@ -28100,19 +28176,26 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app.android-shell .preferences-page-head,
+.route-app.ios-native-shell .preferences-page-head,
 .route-app.android-shell .preferences-storage-policy,
-.route-app.android-shell .preferences-subtabs {
+.route-app.ios-native-shell .preferences-storage-policy,
+.route-app.android-shell .preferences-subtabs,
+.route-app.ios-native-shell .preferences-subtabs {
   display: none;
 }
 
 .route-app.android-shell .preferences-mobile-picker,
+.route-app.ios-native-shell .preferences-mobile-picker,
 .route-app.android-shell .preferences-mobile-tabs,
-.route-app.android-shell .preferences-mobile-section-tabs {
+.route-app.ios-native-shell .preferences-mobile-tabs,
+.route-app.android-shell .preferences-mobile-section-tabs,
+.route-app.ios-native-shell .preferences-mobile-section-tabs {
   display: block;
   width: 100%;
 }
 
-.route-app.android-shell .preferences-page .preferences-group-head {
+.route-app.android-shell .preferences-page .preferences-group-head,
+.route-app.ios-native-shell .preferences-page .preferences-group-head {
   display: none;
 }
 
@@ -29562,6 +29645,19 @@ button.danger:hover:not(:disabled) {
   flex-direction: column;
 }
 
+/* On phones the centered modal would sit behind the on-screen keyboard (its txid input
+   summons it), and a centered dialog has no way to settle back down on dismiss. Anchor it
+   near the top instead: the input stays above the keyboard and the modal never has to move,
+   so there is no "stuck up after dismiss" state to fix. */
+@media (max-width: 899px) {
+  .attach-tx-modal {
+    top: max(12px, env(safe-area-inset-top));
+    transform: translateX(-50%);
+    width: min(520px, 94vw);
+    max-height: 80vh;
+  }
+}
+
 .attach-tx-modal header {
   padding: 16px 20px;
   display: flex;
@@ -30761,17 +30857,23 @@ button.danger:hover:not(:disabled) {
     line-height: 1.05;
     min-height: 48px;
     min-width: 0;
-    padding: 5px 4px;
+    padding: 5px 3px;
     position: relative;
     text-align: center;
-    white-space: normal;
+    letter-spacing: -0.01em;
+    /* Tab labels must NEVER wrap to a second line on any phone size. */
+    white-space: nowrap;
     width: 100%;
   }
 
   .route-app .android-bottom-tab-dock .workspace-bottom-tab span {
     display: block;
     max-width: 100%;
-    overflow-wrap: anywhere;
+    /* One line, fit the 1/5 column; truncate with an ellipsis only as a last resort on
+       the very narrowest screens rather than wrapping. */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .route-app .android-bottom-tab-dock .workspace-more-trigger.workspace-bottom-tab::after {
@@ -31108,15 +31210,19 @@ button.danger:hover:not(:disabled) {
   .route-app .mobile-rail-sheet.wallet-balances .wallet-balance-row {
     background: rgba(0, 0, 0, 0.2);
     border-color: rgba(224, 230, 226, 0.09);
-    grid-template-columns: 48px minmax(0, 1fr) auto;
-    min-height: 42px;
-    padding: 9px 10px;
+    gap: 10px;
+    grid-template-columns: 30px minmax(0, 1fr) auto;
+    min-height: 50px;
+    padding: 10px 12px;
   }
 
-  .route-app .mobile-rail-sheet.wallet-balances .wallet-balance-row em {
-    grid-column: auto;
-    justify-self: end;
-    margin-top: 0;
+  .route-app .mobile-rail-sheet.wallet-balances .wallet-balance-logo {
+    height: 30px;
+    width: 30px;
+  }
+
+  .route-app .mobile-rail-sheet.wallet-balances .wallet-balance-mono {
+    font-size: 0.62rem;
   }
 
   .route-app .mobile-rail-sheet.wallet-balances .wallet-balance-overlay-list {
@@ -31127,10 +31233,6 @@ button.danger:hover:not(:disabled) {
 
   .route-app .mobile-rail-sheet.wallet-balances .wallet-balance-state {
     min-height: 46px;
-  }
-
-  .route-app .mobile-rail-sheet.wallet-balances .wallet-balance-row strong {
-    white-space: normal;
   }
 
   .route-app .mobile-rail-sheet-body .ai-actions {
@@ -35360,6 +35462,31 @@ button.danger:hover:not(:disabled) {
 .chat-session-open:hover { color: var(--accent); }
 .chat-session-del { background: transparent; border: 0; color: var(--dim); cursor: pointer; padding: 4px 9px; font-size: 1rem; line-height: 1; }
 .chat-session-del:hover { color: var(--danger); }
+/* Inline two-step delete confirm: the row stacks (title on top, confirm below). */
+.chat-session-row.confirming { flex-direction: column; align-items: stretch; gap: 4px; padding-bottom: 8px; background: var(--accent-soft); }
+.chat-session-confirm { display: flex; flex-direction: column; gap: 6px; padding: 0 6px; }
+.chat-session-confirm-q { font-size: 0.8rem; color: var(--text); }
+.chat-session-confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.chat-session-confirm-actions button { font: inherit; font-size: 0.78rem; padding: 6px 12px; border-radius: 6px; cursor: pointer; min-height: var(--btn-min-h-sm); border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); }
+.chat-session-confirm-cancel:hover { border-color: var(--accent); }
+.chat-session-confirm-del { color: var(--danger); border-color: var(--danger-soft); }
+.chat-session-confirm-del:hover { background: var(--danger-soft); }
+/* Phones/tablets (incl. the Android/iOS apps; matches the app's 899px mobile surface):
+   center the history menu on screen so it can't clip off the left/right edge the way the
+   right-anchored desktop dropdown does. */
+@media (max-width: 899px) {
+  .chat-sessions-menu {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    right: auto;
+    transform: translate(-50%, -50%);
+    width: min(360px, calc(100vw - 24px));
+    min-width: 0;
+    max-width: none;
+    max-height: min(60vh, 460px);
+  }
+}
 
 .chat-transcript {
   flex: 1;
@@ -35484,6 +35611,22 @@ button.danger:hover:not(:disabled) {
 .chat-msg-edit { opacity: 0; margin-left: 6px; font-size: 12px; color: var(--muted); background: transparent; border: none; cursor: pointer; vertical-align: middle; transition: opacity 0.12s; }
 .chat-msg.user:hover .chat-msg-edit, .chat-msg-edit:focus-visible { opacity: 0.8; }
 .chat-msg-edit:hover { opacity: 1; color: var(--text); }
+/* ⧉ copy: shared by the user bubble (reveal-on-hover/tap beside ✎) and the assistant
+   actions row (always visible beside ↻ Regenerate). */
+.chat-msg-copy { font-size: 13px; color: var(--muted); background: transparent; border: none; cursor: pointer; vertical-align: middle; transition: opacity 0.12s, color 0.12s; line-height: 1; }
+.chat-msg-copy:hover { color: var(--text); }
+.chat-msg.user .chat-msg-copy { opacity: 0; margin-left: 6px; }
+.chat-msg.user:hover .chat-msg-copy, .chat-msg.user .chat-msg-copy:focus-visible { opacity: 0.8; }
+.chat-msg.user .chat-msg-copy:hover { opacity: 1; }
+.chat-msg-actions { display: flex; align-items: center; gap: 8px; }
+.chat-msg-actions .chat-msg-copy { opacity: 0.7; }
+.chat-msg-actions .chat-msg-copy:hover { opacity: 1; }
+/* Comfortable touch targets for the message controls on touch devices (native apps).
+   On touch, the first tap on a bubble fires the emulated :hover that reveals ✎ and ⧉
+   together (same as today's pencil); the second tap activates the control. */
+@media (pointer: coarse) {
+  .chat-msg-edit, .chat-msg-copy { padding: 6px; min-width: 32px; min-height: 32px; }
+}
 
 .chat-empty { margin: auto; text-align: center; color: var(--muted); max-width: 540px; padding: 24px 8px; }
 .chat-empty .chat-empty-mark {
@@ -35736,8 +35879,9 @@ button.danger:hover:not(:disabled) {
 
 /* --- Chat "Pending Approvals" dropdown (web header pill + mobile actions-row control) --- */
 .chat-pending { position: relative; flex: 0 0 auto; }
-/* On the mobile actions row, sit at the right edge (Wallet Actions stays left). */
-.chat-pending--mobile { margin-left: auto; }
+/* The right-side group (.chat-actions-row-end) owns alignment now; pending just needs to be able
+   to shrink when it shares the row with the wallet-value pill. */
+.chat-pending--mobile { min-width: 0; }
 
 /* Pill trigger — modeled on .chat-receive-pill-btn (rounded, hover → accent). */
 .chat-pending-pill {
@@ -35773,6 +35917,52 @@ button.danger:hover:not(:disabled) {
   color: var(--accent);
   font-size: 0.72rem;
   font-weight: 800;
+  flex: 0 0 auto;
+}
+
+/* Right-side group on the mobile actions row: Pending Approvals (left) + wallet-value pill
+   (right), pushed to the far right edge while Wallet Actions stays left. */
+.chat-actions-row-end {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  min-width: 0;
+}
+
+/* Wallet-value pill → opens the full portfolio sheet. Same pill shape as .chat-pending-pill. */
+.chat-balances-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  line-height: 1;
+  white-space: nowrap;
+  font-size: 0.74rem;
+  font-weight: 700;
+  max-width: 45%;
+}
+.chat-balances-pill:hover { border-color: var(--accent); }
+.chat-balances-pill[aria-expanded="true"] { border-color: var(--accent); }
+.chat-balances-pill-logo { width: 15px; height: 15px; border-radius: 50%; display: block; flex: 0 0 auto; }
+.chat-balances-pill-val { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-balances-pill-caret { color: var(--dim); font-size: 0.8rem; line-height: 1; }
+
+/* When both pills share the row, shrink Pending slightly and let its label ellipsize so the
+   count badge always stays visible (the wallet-value pill keeps its full width). */
+.chat-actions-row-end.has-balances .chat-pending { flex: 0 1 auto; min-width: 0; }
+.chat-actions-row-end.has-balances .chat-pending-pill--sm { font-size: 0.66rem; padding: 5px 8px; gap: 5px; min-width: 0; max-width: 100%; }
+.chat-actions-row-end.has-balances .chat-pending-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 /* Shared menu shell. */

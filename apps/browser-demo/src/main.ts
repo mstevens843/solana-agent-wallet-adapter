@@ -1066,7 +1066,7 @@ type AndroidAiIntroTab = 'benefits' | 'no-ai';
 type AndroidAiInfoTab = 'no-ai' | 'hosted' | 'bridge' | 'session' | 'device-agent' | 'plan-connector';
 type AiReviewSetupTab = 'api-key' | 'plan-connector';
 type AndroidCloudInfoTab = 'approval' | 'scheduler' | 'audit' | 'identity';
-type MobileRailSheet = 'workspace-storage' | 'ai-drafting' | 'wallet-balances' | 'chat-action';
+type MobileRailSheet = 'workspace-storage' | 'ai-drafting' | 'wallet-balances' | 'chat-action' | 'chat-wallet-balances';
 type ExpandNoteFieldRef =
   | { kind: 'agent-prompt' }
   | { kind: 'recurring-note' }
@@ -1584,6 +1584,13 @@ const TOKEN_PRICE_CACHE_MS = 60_000;
 const TOKEN_METADATA_CACHE_MS = 24 * 60 * 60_000;
 const TOKEN_MARKET_RETRY_BACKOFF_MS = 30_000;
 const WALLET_BALANCE_FULL_CACHE_MS = 60_000;
+// How long a token's hydrated market metadata (logo/name/24h change) stays fresh for the
+// Wallet Balances sheet before ensureWalletBalanceSheetMarket() re-fetches it.
+const WALLET_BALANCE_MARKET_CACHE_MS = 5 * 60_000;
+// Jupiter lite /tokens/v2/search?query= accepts comma-separated mints; batch held tokens into one
+// request per chunk instead of one request per token.
+const WALLET_BALANCE_MARKET_BATCH_SIZE = 50;
+let walletBalanceMarketInFlight = false;
 let walletBalanceSummaryRequestId = 0;
 let walletBalanceFullRequestId = 0;
 const TOKEN_SEARCH_DEBOUNCE_MS = 260;
@@ -2509,7 +2516,9 @@ interface TokenMarketMetadata {
   name: string;
   logoURI?: string;
   decimals?: number;
-  source: 'birdeye' | 'known' | 'custom';
+  /** 24h price change %, hydrated for held tokens by ensureWalletBalanceSheetMarket(). */
+  priceChange24h?: number;
+  source: 'birdeye' | 'known' | 'custom' | 'jupiter';
   fetchedAt: number;
 }
 
@@ -2606,6 +2615,7 @@ let chatHistorySaveLocked = false;
 // dropping every write for the whole session without a word.
 let chatHistorySaveLockedNotified = false;
 let chatStorageUnavailableNotified = false;
+let chatHistoryEvictedNotified = false;
 // null = not yet probed; set once by chatLocalStorageWritable().
 let chatLocalStorageWritableCache: boolean | null = null;
 
@@ -3383,6 +3393,9 @@ interface DemoState {
   // Wallet Actions menu tab: 'primary' = everyday actions; 'advanced' = connector verbs (Lend/Limit/…).
   chatWalletActionTab: 'primary' | 'advanced';
   chatHistoryOpen: boolean;
+  // The history session whose × is armed for delete (ephemeral). '' = none armed; set to a
+  // session id to show the inline Cancel/Delete confirm in that row. Cleared on menu close.
+  chatDeleteConfirmId: string;
   // "Pending Approvals" per-chat dropdown (ephemeral; mirrors chatComposerOpen/chatHistoryOpen,
   // not persisted). chatPendingPage is 1-based and clamped on render; selection is an action id.
   chatPendingOpen: boolean;
@@ -4072,7 +4085,7 @@ const GUIDED_DEMO_SCENARIOS: ReadonlyArray<GuidedDemoScenario> = [
     prompt: 'Prepare a 0.2 SOL transfer. Don\'t send until I approve.',
     detail: 'The agent prepares the payment terms, but the wallet still owns the final approve or deny step.',
     planTitle: 'Prepared SOL transfer for wallet review',
-    route: 'New Request -> Needs Approval',
+    route: 'New Request -> Sign Approval',
     risk: 'Confirm the recipient, amount, cluster, and network fee before approving the final wallet request.',
     approvalBoundary: 'No transaction is signed or submitted until you approve it from the wallet review step.',
     receiptType: 'one_time_transfer_receipt',
@@ -4096,7 +4109,7 @@ const GUIDED_DEMO_SCENARIOS: ReadonlyArray<GuidedDemoScenario> = [
     prompt: 'Prepare a SOL to USDC swap review before signing. Amount: 0.01 SOL. Max slippage: 0.5%. Do not submit anything.',
     detail: 'AI prepares the review summary; the wallet owner checks route, amount, protocol, and slippage before approval.',
     planTitle: 'Prepared SOL to USDC swap review',
-    route: 'New Request -> Needs Approval',
+    route: 'New Request -> Sign Approval',
     risk: 'Review price impact, route programs, minimum output, and final quote before approving.',
     approvalBoundary: 'AI prepares the request. The wallet owner approves only after checking the wallet action.',
     receiptType: 'swap_review_receipt',
@@ -4120,7 +4133,7 @@ const GUIDED_DEMO_SCENARIOS: ReadonlyArray<GuidedDemoScenario> = [
     prompt: 'Create a weekly DCA plan with a max spend cap. Each run waits for my approval.',
     detail: 'The agent prepares the repeat payment; every due payment still returns for approve or deny.',
     planTitle: 'Prepared weekly DCA schedule',
-    route: 'Repeat Payments -> Needs Approval payment',
+    route: 'Repeat Payments -> Sign Approval payment',
     risk: 'Repeat payments should keep a clear max spend, cadence, token pair, and manual review rule.',
     approvalBoundary:
       'The schedule only prepares future requests. Each occurrence still requires wallet approval before funds move.',
@@ -4130,7 +4143,7 @@ const GUIDED_DEMO_SCENARIOS: ReadonlyArray<GuidedDemoScenario> = [
       'Weekly cadence only.',
       'Spend cap must be visible before schedule creation.',
       'Each future run still needs explicit approval.',
-      'Every due payment appears in Needs Approval.',
+      'Every due payment appears in Sign Approval.',
       'User can pause, resume, or delete the schedule.',
     ],
     facts: [
@@ -4146,7 +4159,7 @@ const GUIDED_DEMO_SCENARIOS: ReadonlyArray<GuidedDemoScenario> = [
     prompt: 'Queue contributor payouts for wallet review. Let me approve each payout individually.',
     detail: 'The agent prepares the payout queue, but each recipient payment stays individually reviewable.',
     planTitle: 'Prepared contributor payout queue',
-    route: 'New Request -> Needs Approval batch',
+    route: 'New Request -> Sign Approval batch',
     risk: 'Check every recipient, memo, token, and payout amount before approving individual requests.',
     approvalBoundary:
       'The agent can prepare the payout list; each payout still needs wallet approval before sending.',
@@ -4553,6 +4566,7 @@ const state: DemoState = {
   chatComposerOpen: false,
   chatWalletActionTab: 'primary',
   chatHistoryOpen: false,
+  chatDeleteConfirmId: '',
   chatPendingOpen: false,
   chatPendingPage: 1,
   chatPendingSelectedId: null,
@@ -4653,6 +4667,15 @@ let nativeKeyboardVisible = false;
 let virtualKeyboardInsetsBound = false;
 let virtualKeyboardInset = 0;
 let virtualKeyboardVisible = false;
+// Time-box for the focus-only fallback inset: when a mobile-rail text control was last
+// genuinely focused, and whether a REAL keyboard metric (native/visual/layout-resize) has
+// reported the keyboard since that focus. The focus-only fallback lifts the sheet the instant
+// a field is focused (before the real metric arrives); these stop it once a real metric has
+// spoken OR the bridge window elapses, so a keyboard dismissed via its own button (focus
+// retained, real metric -> 0) can no longer pin the sheet up. See mobileRailFocusedControlFallbackInset.
+let lastMobileRailFocusAt = 0;
+let mobileRailKeyboardMetricSeenVisible = false;
+const MOBILE_RAIL_FOCUS_FALLBACK_WINDOW_MS = 1200;
 type MobileRailKeyboardMetricSource =
   | 'none'
   | 'native'
@@ -4931,6 +4954,7 @@ async function startApp(): Promise<void> {
     if (!appRoot) {
       throw new Error('Missing #app');
     }
+    bindWalletBalanceLogoFallback();
     // Tag the GA session with the runtime surface so the single Web stream can segment
     // web vs in-app (android/ios) vs desktop traffic. IS_* constants resolve at module load.
     initializeAnalytics(
@@ -5071,7 +5095,7 @@ function handleAp2InboundDemoCreated(detail: Ap2InboundDemoCreatedDetail): void 
   state.preparedActions = mergePreparedActions([localAction], state.preparedActions);
   state.materializedActions = state.preparedActions;
   saveBrowserWorkflowState();
-  pushToast('success', t('Incoming request ready'), t('Open it from Incoming Requests, then approve in Needs Approval.'));
+  pushToast('success', t('Incoming request ready'), t('Open it from Incoming Requests, then approve in Sign Approval.'));
   render();
 }
 
@@ -5091,7 +5115,7 @@ async function handlePayOutApprovalCreated(detail: PayOutApprovalCreatedDetail):
       const action = materializeLocalPayOutApproval(detail);
       state.steps.inbox = 'done';
       state.error = '';
-      pushToast('success', t('Approval added to Needs Approval'), tf('{cartId} is saved on this device.', { cartId: detail.cartId }));
+      pushToast('success', t('Approval added to Sign Approval'), tf('{cartId} is saved on this device.', { cartId: detail.cartId }));
       render();
       focusInboxApprovalCard(action.id);
     } catch (err) {
@@ -5127,7 +5151,7 @@ async function handlePayOutApprovalCreated(detail: PayOutApprovalCreatedDetail):
 
 function materializeLocalPayOutApproval(detail: PayOutApprovalCreatedDetail): PreparedAction {
   if (!state.address) {
-    throw new Error(t('Connect a wallet before adding the Pay Merchant approval to Needs Approval.'));
+    throw new Error(t('Connect a wallet before adding the Pay Merchant approval to Sign Approval.'));
   }
   const action = cloudApprovalToPreparedAction(detail.approval);
   if (!action) {
@@ -5157,7 +5181,7 @@ function handleStreamingApprovalRequested(detail: StreamingApprovalRequestedDeta
     state.inboxFilter = 'all';
     state.error = '';
     state.steps.inbox = 'done';
-    pushToast('success', t('Streaming approval ready'), tf('{operation} is in Needs Approval.', { operation: streamingOperationLabel(detail.operation) }));
+    pushToast('success', t('Streaming approval ready'), tf('{operation} is in Sign Approval.', { operation: streamingOperationLabel(detail.operation) }));
     render();
     focusInboxApprovalCard(action.id);
     dispatchStreamingApprovalCompleted({
@@ -5327,11 +5351,11 @@ async function checkInlineStreamingTransaction(
 
 function materializeLocalStreamingApproval(detail: StreamingApprovalRequestedDetail): PreparedAction {
   if (!state.address) {
-    throw new Error(t('Connect a wallet before adding the streaming session approval to Needs Approval.'));
+    throw new Error(t('Connect a wallet before adding the streaming session approval to Sign Approval.'));
   }
   const walletAddress = detail.walletAddress?.trim() || state.address;
   if (walletAddress !== state.address) {
-    throw new Error(tf('Connect {wallet} before adding this streaming session approval to Needs Approval.', { wallet: short(walletAddress) }));
+    throw new Error(tf('Connect {wallet} before adding this streaming session approval to Sign Approval.', { wallet: short(walletAddress) }));
   }
   const cluster = streamingApprovalCluster(detail);
   const now = new Date().toISOString();
@@ -5418,10 +5442,23 @@ function focusInboxApprovalCard(approvalId: string): void {
 function handleGlobalKeydown(event: KeyboardEvent): void {
   // Chat: Escape closes an open menu first, then aborts an in-flight stream,
   // before any other handler — mirrors the Android back-button expectation.
+  // Escape first disarms an armed delete-confirm without closing the whole menu;
+  // a second Escape then closes the menu via the block below.
+  if (event.key === 'Escape' && state.chatDeleteConfirmId) {
+    event.preventDefault();
+    const disarmedId = state.chatDeleteConfirmId;
+    state.chatDeleteConfirmId = '';
+    render();
+    // Return focus to the restored × for that row (the Cancel button it was on is now gone).
+    (document.querySelector<HTMLButtonElement>(`[data-chat-del="${disarmedId}"]`)
+      ?? document.querySelector<HTMLButtonElement>('[data-chat-history-trigger]'))?.focus();
+    return;
+  }
   if (event.key === 'Escape' && (state.chatHistoryOpen || state.chatComposerOpen || state.chatPendingOpen)) {
     event.preventDefault();
     const restoreHistoryFocus = state.chatHistoryOpen;
     state.chatHistoryOpen = false;
+    state.chatDeleteConfirmId = '';
     state.chatComposerOpen = false;
     state.chatPendingOpen = false;
     state.chatPendingSelectedId = null;
@@ -10010,24 +10047,17 @@ function reconcileBodyScrollLockDatasetsAfterRender(): void {
 // survives. Only the chat panel + the two bottom sheets are touched; the non-chat subtrees
 // (rail, tab bars, request-context) are left exactly as they were so their (non-idempotent)
 // listeners stay intact without a rebind.
-const CHAT_MORPH_SKIP_SELECTOR = [
+const WORKSPACE_MORPH_SKIP_SELECTOR = [
   '[data-morph-skip]',
-  '[data-layout="app-rail"]',
-  '[data-layout="app-tabs-row"]',
-  '[data-layout="app-intro"]',
-  '[data-layout="request-context"]',
-  '[data-layout="android-bottom-tab-dock"]',
-  '.context-panel',
+  // Imperatively-mounted panels + canvases must NOT be reconciled away (their DOM is owned by JS,
+  // not the HTML string). Everything else in #workspace is morphed for every tab.
   '[data-plan-connector-pairing-panel]',
   '[data-connector-keys-panel]',
+  '[data-tauri-local-runtime-panel]',
+  'canvas',
 ].join(',');
 
-let lastRenderedToastSig = '';
 let lastRenderedChatOutsideWorkspaceHtml = '';
-
-function chatToastSignature(): string {
-  return state.toasts.map((toast) => `${toast.id}:${toast.kind}`).join('|');
-}
 
 // Markup the full render path appends AFTER #workspace: the toast stack (inside pageShell) and
 // the four wallet overlays (appended at appRoot). The Chat morph only patches #workspace, so
@@ -10043,14 +10073,13 @@ function chatOutsideWorkspaceHtml(): string {
 // we're on the Chat tab, its workspace DOM already exists (so every binder attached once on the
 // first full paint), and nothing OUTSIDE #workspace (a toast / a wallet overlay) changed since
 // the last paint.
-function canMorphChat(): boolean {
-  if (state.activeTab !== 'chat') return false;
+function canMorphActiveTab(): boolean {
   if (!appRoot || typeof document === 'undefined') return false;
   const workspace = document.getElementById('workspace');
-  if (!workspace || !workspace.querySelector('[data-layout="active-panel"] .chat-surface')) {
-    return false;
-  }
-  if (chatToastSignature() !== lastRenderedToastSig) return false;
+  // The workspace only exists on /app; require its active panel (so this is an in-tab update, not a
+  // first paint / route change) and nothing OUTSIDE #workspace (a toast / a wallet overlay) to have
+  // changed since the last paint — those take the full render path.
+  if (!workspace || !workspace.querySelector('[data-layout="active-panel"]')) return false;
   if (chatOutsideWorkspaceHtml() !== lastRenderedChatOutsideWorkspaceHtml) return false;
   return true;
 }
@@ -10072,12 +10101,13 @@ function chatAfterMorphScroll(): void {
   }
 }
 
-function renderChat(): void {
+function renderWorkspace(): void {
   const workspace = document.getElementById('workspace');
   if (!workspace) return;
+  const onChatTab = state.activeTab === 'chat';
 
-  // Chat-relevant bookkeeping, mirroring render() — keep the connector surface consistent and
-  // run the same sheet/expand-note lifecycle predicates.
+  // In-tab bookkeeping mirroring render(): keep the connector surface consistent and run the
+  // sheet/expand-note lifecycle predicates.
   reconcileChatConnectorSession();
   const route = currentRoute();
   if (shouldClearActiveMobileRailSheet({
@@ -10096,12 +10126,13 @@ function renderChat(): void {
     state.activeExpandNoteField = null;
   }
 
-  // Close transient menus + ABORT the sheet AbortControllers so the rebind below re-arms them
-  // cleanly (these are torn down by abort, not by an innerHTML wipe).
+  // Close transient menus + ABORT the sheets' bind-time AbortControllers so the re-bind below
+  // re-arms them cleanly (torn down by abort, not by an innerHTML wipe). Mirrors render().
   closeTemplatePickerInteractions();
   closeDemoLanguagePickerInteractions();
   closeArtifactPickerInteractions();
   closeWalletBalanceOverlayInteractions();
+  closePlanConnectorPairingPanelInteractions();
   closeMobileRailSheetInteractions();
   closeExpandNoteSheetInteractions();
 
@@ -10112,8 +10143,8 @@ function renderChat(): void {
   });
   syncBodyScrollLockDatasets(route);
 
-  // The control the user is mid-interaction with: never let the morph overwrite its value or
-  // selection (the composer draft, or a sheet input being typed into).
+  // Never let the morph overwrite the control the user is mid-interaction with (a focused input's
+  // value/selection, or the chat composer draft).
   const activeEl = document.activeElement;
 
   morphElement(workspace, appWorkspace('app'), {
@@ -10123,7 +10154,7 @@ function renderChat(): void {
       return el.getAttribute('id') || el.getAttribute('data-chat-msg-id') || undefined;
     },
     onBeforeElUpdated: (fromEl) => {
-      if (fromEl.nodeType === 1 && typeof fromEl.matches === 'function' && fromEl.matches(CHAT_MORPH_SKIP_SELECTOR)) {
+      if (fromEl.nodeType === 1 && typeof fromEl.matches === 'function' && fromEl.matches(WORKSPACE_MORPH_SKIP_SELECTOR)) {
         return false;
       }
       if (fromEl === activeEl) return false;
@@ -10131,34 +10162,51 @@ function renderChat(): void {
     },
   });
 
-  // The composer textarea renders empty (its draft is JS-injected), so the morph clears it.
-  // Re-apply the live draft unless the composer is exactly what the user is editing (then the
-  // morph skipped it above and its value/selection are already intact).
-  const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
-  if (input && input !== activeEl) {
-    input.value = chatDraft;
-    chatAutoGrow(input);
+  // The chat composer textarea renders empty (its draft is JS-injected); the morph clears it.
+  if (onChatTab) {
+    const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
+    if (input && input !== activeEl) {
+      input.value = chatDraft;
+      chatAutoGrow(input);
+    }
   }
 
   reconcileBodyScrollLockDatasetsAfterRender();
 
-  // Re-run ONLY the binders whose nodes are inside the morphed region. bindChat is idempotent
-  // (bindOnce); the two sheet binders re-arm their AbortControllers. Non-chat binders are NOT
-  // re-run — their nodes were skipped by the morph and keep the listeners from the first paint.
-  bindChat();
-  bindMobileRailSheet();
-  bindExpandNoteSheet();
+  // Morph the toast stack in place too (it lives outside #workspace) so toast-producing actions and
+  // dismissals never force a full-render blink.
+  const toastRoot = document.getElementById('toast-root');
+  if (toastRoot) {
+    morphElement(toastRoot, `<div id="toast-root">${toastStack()}</div>`, {});
+  }
 
-  chatAfterMorphScroll();
-  syncChatKeyboardInset();
+  // Re-bind everything idempotently. bind()'s inline + picker/sheet handlers use bindOnce; the
+  // sheets' AbortControllers were aborted above and are re-armed here. Overlays / desktop surfaces
+  // are unchanged (the gate bails when they differ) so their listeners persist untouched.
+  bind();
+  restoreDisclosureOpenState(disclosureOpenState);
+
+  // Imperative panels are skip-listed (morph preserves a mounted one's state). Mount only a
+  // freshly-added (empty) container — re-mounting a populated one would reset it.
+  const pairingPanel = document.querySelector('[data-plan-connector-pairing-panel]');
+  if (pairingPanel && pairingPanel.childElementCount === 0) mountPlanConnectorPairingPanel();
+  const keysPanel = document.querySelector('[data-connector-keys-panel]');
+  if (keysPanel && keysPanel.childElementCount === 0) mountConnectorKeysPanel({ container: 'connector-keys-panel' });
+  if (state.tauriNativeEnvironment.isTauriNative) {
+    const tauriPanel = document.querySelector('[data-tauri-local-runtime-panel]');
+    if (tauriPanel && tauriPanel.childElementCount === 0) mountTauriLocalRuntimePanel('tauri-local-runtime-panel');
+  }
+
+  if (onChatTab) {
+    chatAfterMorphScroll();
+    syncChatKeyboardInset();
+  }
   updateTabTitleBadge();
 
   lastRenderedMobileRailSheet = state.activeMobileRailSheet;
   suppressMobileRailSheetEnterAnimation = false;
-  lastRenderedToastSig = chatToastSignature();
   lastRenderedChatOutsideWorkspaceHtml = chatOutsideWorkspaceHtml();
 }
-
 function render(): void {
   if (!appRoot) return;
   // Defer re-render while the user is mid-IME-composition in the chat input: a
@@ -10178,8 +10226,8 @@ function render(): void {
   // pain). The full render path below still runs for the tab's first paint, for cross-tab
   // navigation, and whenever something OUTSIDE the workspace (a toast or a wallet overlay)
   // must change — cases the scoped morph cannot repaint.
-  if (canMorphChat()) {
-    renderChat();
+  if (canMorphActiveTab()) {
+    renderWorkspace();
     return;
   }
   // Restore the New Request planner draft if the chat Connector Actions surface was left open
@@ -10263,7 +10311,6 @@ function render(): void {
   // Chat-tab morph fast-path (canMorphChat) can tell when one of them changed and must take
   // the full render path instead — the scoped workspace morph cannot repaint them.
   lastRenderedChatOutsideWorkspaceHtml = outsideWorkspaceHtml;
-  lastRenderedToastSig = chatToastSignature();
   reconcileBodyScrollLockDatasetsAfterRender();
   flushPendingSpendNavigation();
   bind();
@@ -10481,7 +10528,7 @@ function pageShell(content: string, activeRoute: AppRoute | null): string {
       ? 'android-shell'
       : '';
   return `
-    ${toastStack()}
+    <div id="toast-root">${toastStack()}</div>
     <section class="shell homepage-shell ${routeClass} ${platformClass}">
       ${homepageNav(activeRoute)}
       ${content}
@@ -11219,7 +11266,7 @@ function cliCloudStorageEducation(): string {
       </article>
     </div>
     <section class="cli-cloud-benefits" aria-label="Cloud Storage benefits">
-      ${cliCloudBenefit('Cloud Needs Approval', 'Save drafts and due approval items to wallet-scoped cloud storage. The wallet still signs every decision proof or supported transaction.')}
+      ${cliCloudBenefit('Cloud Sign Approval', 'Save drafts and due approval items to wallet-scoped cloud storage. The wallet still signs every decision proof or supported transaction.')}
       ${cliCloudBenefit('Repeat Payment Scheduler', 'Cloud repeat payments can create due approval items, track history, pause/resume, expiry, and spend caps.')}
       ${cliCloudBenefit('Done + Saved Proofs', 'Done work, saved proofs, risk metadata, and audit events survive refreshes and device changes.')}
       ${cliCloudBenefit('No Key Custody', 'Cloud sign-in proves wallet ownership for sync. It never stores seed phrases, private keys, delegated signers, or AI provider keys.')}
@@ -13177,7 +13224,7 @@ function desktopHeroSection(): string {
         </div>
       </div>
       <div class="tooling-proof-grid" aria-label="Desktop app model">
-        ${toolingProofCard('Queue', 'Needs Approval inbox', 'Review prepared agent work before any wallet signature is requested.', 'codex')}
+        ${toolingProofCard('Queue', 'Sign Approval inbox', 'Review prepared agent work before any wallet signature is requested.', 'codex')}
         ${toolingProofCard('Logs', 'Bridge diagnostics', 'See local bridge, wallet host, and request lifecycle state in one place.', 'agentRouter')}
         ${toolingProofCard('Wallets', 'Same signer boundary', IS_IOS_APP ? 'Desktop controls the runtime; Phantom, Solflare, Backpack, or Wallet Standard still sign.' : 'Desktop controls the runtime; Phantom, Solflare, Backpack, MWA, or Wallet Standard still sign.', 'solanaMobile')}
       </div>
@@ -13253,7 +13300,7 @@ function desktopDownloadSection(): string {
         <!-- Desktop App eyebrow intentionally hidden. -->
         <h2 id="desktop-title">${escapeHtml(t('Download the Agentic Desktop App.'))}</h2>
         <p>
-          ${escapeHtml(t('The Desktop App is optional easy mode for the local bridge, Needs Approval queue, logs, and diagnostics. Use it when you want app controls instead of terminal commands. Browser extension wallets still approve every signing request through the external wallet host.'))}
+          ${escapeHtml(t('The Desktop App is optional easy mode for the local bridge, Sign Approval queue, logs, and diagnostics. Use it when you want app controls instead of terminal commands. Browser extension wallets still approve every signing request through the external wallet host.'))}
         </p>
       </div>
       <div class="download-grid desktop-download-grid">
@@ -13531,7 +13578,7 @@ function bindDemoLanguagePicker(): void {
     }
   };
 
-  trigger.addEventListener('click', (event) => {
+  bindOnce(trigger, 'click', (event) => {
     event.stopPropagation();
     if (menu.hidden) {
       openPicker(false);
@@ -13540,7 +13587,7 @@ function bindDemoLanguagePicker(): void {
     }
   });
 
-  trigger.addEventListener('keydown', (event) => {
+  bindOnce(trigger, 'keydown', (event) => {
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       openPicker('selected');
@@ -13557,7 +13604,7 @@ function bindDemoLanguagePicker(): void {
     }
   });
 
-  menu.addEventListener('keydown', (event) => {
+  bindOnce(menu, 'keydown', (event) => {
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       focusAdjacentTemplateOption(options, 1);
@@ -13584,8 +13631,8 @@ function bindDemoLanguagePicker(): void {
   });
 
   for (const option of options) {
-    option.addEventListener('click', () => chooseOption(option));
-    option.addEventListener('pointermove', () => setActiveTemplateOption(options, option, false));
+    bindOnce(option, 'click', () => chooseOption(option));
+    bindOnce(option, 'pointermove', () => setActiveTemplateOption(options, option, false));
   }
 }
 
@@ -14682,7 +14729,7 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
                 ${chatTabHidden() ? '' : tabButton('chat', t('Chat'))}
                 ${tabButton('agent', t('New Request'), t('New'))}
                 ${chatTabHidden() ? tabButton('schedule', t('Repeat Payments'), t('Repeats')) : ''}
-                ${tabButton('inbox', t('Needs Approval'), t('Approve'))}
+                ${tabButton('inbox', t('Sign Approval'), t('Approve'))}
                 ${tabButton('completed', t('Done'))}
                 ${moreMenuButton()}
               </nav>
@@ -14711,39 +14758,43 @@ function androidBottomTabDock(): string {
 function mobileRailBottomSheet(): string {
   const sheet = state.activeMobileRailSheet;
   if (!sheet) return '';
-  // The chat-action sheet hosts the chat wallet-action pickers; it is gated to the
-  // native Android/iOS shells (NOT narrow web) and only on the Chat tab. The legacy
-  // workspace sheets stay overview-only and use the broader mobile-viewport gate.
-  if (sheet === 'chat-action') {
+  // The chat-action + chat-wallet-balances sheets ride the Chat tab on the native Android/iOS
+  // shells (NOT narrow web); the legacy workspace sheets stay overview-only on the broader
+  // mobile-viewport gate.
+  if (sheet === 'chat-action' || sheet === 'chat-wallet-balances') {
     if (!(IS_ANDROID_APP || IS_IOS_APP) || state.activeTab !== 'chat') return '';
   } else if (!isMobileAppViewport() || state.activeTab !== 'overview') {
     return '';
   }
+  const isWalletBalances = sheet === 'wallet-balances' || sheet === 'chat-wallet-balances';
   const title = sheet === 'workspace-storage'
     ? t('Workspace Storage')
-    : sheet === 'wallet-balances'
+    : isWalletBalances
       ? t('Wallet Balances')
       : sheet === 'chat-action'
         ? chatActionSheetTitle()
         : t('AI Connector');
   const detail = sheet === 'workspace-storage'
     ? t('Browser-local workflow storage')
-    : sheet === 'wallet-balances'
+    : isWalletBalances
       ? t('Wallet portfolio')
       : sheet === 'chat-action'
         ? chatActionSheetDetail()
         : t('AI route and provider setup');
   const body = sheet === 'workspace-storage'
     ? cloudWorkspaceRailBody()
-    : sheet === 'wallet-balances'
+    : isWalletBalances
       ? walletBalanceSheetBodyHtml()
       : sheet === 'chat-action'
         ? chatActionSheetBodyHtml()
         : aiSettingsCard('rail');
   const enterAnimationClass = suppressMobileRailSheetEnterAnimation ? ' mobile-rail-sheet-no-enter' : '';
+  // chat-wallet-balances borrows the wallet-balances CSS (height + row overrides) via the shared
+  // class token, so it doesn't need its own stylesheet block.
+  const sheetClass = `${escapeHtml(sheet)}${sheet === 'chat-wallet-balances' ? ' wallet-balances' : ''}`;
   return `
     <div class="mobile-rail-sheet-scrim${enterAnimationClass}" data-mobile-rail-sheet-close aria-hidden="true"></div>
-    <aside class="mobile-rail-sheet ${escapeHtml(sheet)}${enterAnimationClass}" data-mobile-rail-sheet-root role="dialog" aria-modal="true" aria-labelledby="mobileRailSheetTitle">
+    <aside class="mobile-rail-sheet ${sheetClass}${enterAnimationClass}" data-mobile-rail-sheet-root role="dialog" aria-modal="true" aria-labelledby="mobileRailSheetTitle">
       <header class="mobile-rail-sheet-header">
         <div>
           <span>${escapeHtml(detail)}</span>
@@ -14759,7 +14810,7 @@ function mobileRailBottomSheet(): string {
 }
 
 function isMobileRailSheet(value: string | undefined): value is MobileRailSheet {
-  return value === 'workspace-storage' || value === 'ai-drafting' || value === 'wallet-balances' || value === 'chat-action';
+  return value === 'workspace-storage' || value === 'ai-drafting' || value === 'wallet-balances' || value === 'chat-action' || value === 'chat-wallet-balances';
 }
 
 function preferredAiReviewSetupTabForMobileRailOpen(nextSheet: MobileRailSheet): AiReviewSetupTab {
@@ -14847,8 +14898,14 @@ function maybeRefreshDeviceAgentStatusForMobileRailOpen(sheet: MobileRailSheet):
 function openMobileRailSheet(sheet: MobileRailSheet): void {
   state.activeMobileRailSheet = sheet;
   state.error = '';
-  if (sheet === 'wallet-balances') {
+  if (sheet === 'wallet-balances' || sheet === 'chat-wallet-balances') {
     startWalletBalanceFullLoad(false, { openOverlay: false });
+    // startWalletBalanceFullLoad returns WITHOUT rendering when no wallet is connected — paint the
+    // (empty) sheet anyway so the tap isn't a dead no-op.
+    if (!state.address) render();
+    // Enrich rows when balances are already cached (the load above short-circuits); fresh loads
+    // fire the same hydrate from loadWalletBalanceFull's success path.
+    ensureWalletBalanceSheetMarket();
     return;
   }
   render();
@@ -14937,6 +14994,7 @@ function closeMobileRailSheet(): void {
   // The chat-action sheet borrows the rail-sheet engine; closing it (scrim / × /
   // Escape) must also drop the chat picker + composer-menu state so a reopen starts
   // clean and the builder chips don't render as "open" with no sheet behind them.
+  // (chat-wallet-balances has no companion state, so the default null-out below is enough.)
   if (state.activeMobileRailSheet === 'chat-action') {
     // The connector + recurring surfaces borrow this same sheet; closing one must restore the
     // draft it was editing (snapshot/restore), or that draft is left clobbered.
@@ -15373,7 +15431,7 @@ function firstRunNextAction(): FirstRunAction {
   if (signals.activeApprovalCount > 0 && !signals.hasReceipt) {
     return {
       id: 'open-inbox',
-      label: t('Needs Approval'),
+      label: t('Sign Approval'),
       detail: t('Approve or deny the queued request from your wallet.'),
     };
   }
@@ -16505,7 +16563,7 @@ function cloudWorkspaceCard(): string {
     // so quick actions are not nested inside a sheet-opening button.
     const nativeMobileApp = IS_ANDROID_APP || IS_IOS_APP;
     const tone = matched ? 'good' : signedIn ? 'warn' : 'idle';
-    const railSummaryDetail = IS_ANDROID_APP && !signedIn
+    const railSummaryDetail = nativeMobileApp && !signedIn
       ? t('Saved on this device')
       : summaryDetail;
     const legacyActionLabel = signedIn ? t('Manage') : t('Sign in');
@@ -16540,7 +16598,7 @@ function cloudWorkspaceCard(): string {
           ${signedIn ? `<button type="button" class="rail-conn-action danger" data-cloud-action="sign-out" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Sign out'))}</button>` : ''}
         </span>
       `;
-    const trigger = IS_ANDROID_APP
+    const trigger = nativeMobileApp
       ? `
           <span class="rail-conn-identity">
             <span class="rail-conn-icon ${escapeHtml(tone)}">${commandCenterIcon('cloud')}</span>
@@ -18563,8 +18621,8 @@ function walletBalanceRailCard(): string {
       </div>
       ${summary ? `
         <div class="wallet-balance-primary-rows">
-          ${walletBalanceAssetRowHtml(summary.sol)}
-          ${walletBalanceAssetRowHtml(summary.usdc)}
+          ${walletBalanceAssetRowHtml(summary.sol, summary.totalUsd)}
+          ${walletBalanceAssetRowHtml(summary.usdc, summary.totalUsd)}
         </div>
       ` : `
         <div class="wallet-balance-state ${error ? 'error' : 'loading'}">
@@ -18599,7 +18657,7 @@ function walletBalanceOverlayHtml(): string {
       ${
         full
           ? rows.length > 0
-            ? `<div class="wallet-balance-overlay-list">${rows.map(walletBalanceAssetRowHtml).join('')}</div>`
+            ? `<div class="wallet-balance-overlay-list">${rows.map((asset) => walletBalanceAssetRowHtml(asset, full.totalUsd)).join('')}</div>`
             : `<p class="wallet-balance-overlay-empty">${escapeHtml(t('No balances found.'))}</p>`
           : `<div class="wallet-balance-state ${balance.fullStatus === 'error' ? 'error' : 'loading'}">
               <span>${escapeHtml(balance.fullStatus === 'error' ? (balance.fullError || t('All balances unavailable')) : t('Loading all balances...'))}</span>
@@ -18636,14 +18694,14 @@ function walletBalanceSheetBodyHtml(): string {
         <strong>${escapeHtml(formatWalletBalanceSnapshotUsd(full))}</strong>
       </div>
       <div class="wallet-balance-sheet-primary">
-        ${walletBalanceAssetRowHtml(full.sol)}
-        ${walletBalanceAssetRowHtml(full.usdc)}
+        ${walletBalanceAssetRowHtml(full.sol, full.totalUsd)}
+        ${walletBalanceAssetRowHtml(full.usdc, full.totalUsd)}
       </div>
       <div class="wallet-balance-sheet-section">
         <span>${escapeHtml(t('Other balances'))}</span>
         ${
           otherRows.length
-            ? `<div class="wallet-balance-overlay-list">${otherRows.map(walletBalanceAssetRowHtml).join('')}</div>`
+            ? `<div class="wallet-balance-overlay-list">${otherRows.map((asset) => walletBalanceAssetRowHtml(asset, full.totalUsd)).join('')}</div>`
             : `<p class="wallet-balance-overlay-empty">${escapeHtml(t('No other token balances.'))}</p>`
         }
       </div>
@@ -18651,12 +18709,50 @@ function walletBalanceSheetBodyHtml(): string {
   `;
 }
 
-function walletBalanceAssetRowHtml(asset: { symbol: string; amount: number; valueUsd?: number }): string {
+// One portfolio row: token logo (or monogram fallback) + name/amount on the left, USD value
+// with a "% of portfolio · 24h change" subline on the right. Logos, full names, and the 24h
+// change are hydrated lazily into tokenMarketMetadata by ensureWalletBalanceSheetMarket(); every
+// enriched field degrades gracefully when absent so the row never reflows. Shared by the Home-tab
+// rail card/overlay AND the mobile/chat Wallet Balances sheet.
+function walletBalanceAssetRowHtml(asset: WalletBalanceAsset, totalUsd = 0): string {
+  const meta = tokenMarketMetadata.get(asset.mint);
+  const logo = meta?.logoURI || knownTokenLogo(asset.mint);
+  const title = (meta?.name && meta.name !== asset.symbol ? meta.name : asset.symbol) || asset.symbol;
+  const mono = ((asset.symbol || '?').replace(/[^A-Za-z0-9]/g, '').slice(0, 3) || '?').toUpperCase();
+  const valueText = asset.valueUsd === undefined ? t('price unavailable') : formatWalletBalanceUsd(asset.valueUsd);
+  const ratio = totalUsd > 0 && asset.valueUsd !== undefined ? asset.valueUsd / totalUsd : NaN;
+  const pct = Number.isFinite(ratio) && ratio > 0
+    ? `${(ratio * 100).toFixed(ratio >= 0.1 ? 0 : 1)}%`
+    : '';
+  // Jupiter stats24h.priceChange is a PERCENT (e.g. 1.25 = +1.25%): classify off the rounded
+  // displayed value so "flat" (▬) is reachable and we never render a coloured ▲0.00% / ▼0.00%.
+  const change = typeof meta?.priceChange24h === 'number' && Number.isFinite(meta.priceChange24h) ? meta.priceChange24h : undefined;
+  const changeStr = change !== undefined ? Math.abs(change).toFixed(2) : '';
+  const isFlat = changeStr === '0.00';
+  const deltaClass = change === undefined ? '' : isFlat ? 'flat' : change > 0 ? 'up' : 'down';
+  const deltaArrow = change === undefined ? '' : isFlat ? '▬' : change > 0 ? '▲' : '▼';
+  const deltaText = change === undefined ? '' : `${deltaArrow}${changeStr}%`;
+  const subInner = [
+    pct ? escapeHtml(pct) : '',
+    deltaText ? `<span class="wallet-balance-delta ${deltaClass}">${escapeHtml(deltaText)}</span>` : '',
+  ].filter(Boolean).join(' · ');
+  // Monogram is the always-present base layer; the logo <img> overlays it. A failed/slow image is
+  // hidden by the delegated capture-phase error handler (see bindWalletBalanceLogoFallback) so the
+  // monogram shows through instead of a broken-image glyph — no inline onerror (CSP-safe).
+  const logoInner = `<span class="wallet-balance-mono">${escapeHtml(mono)}</span>${
+    logo ? `<img class="wallet-balance-logo-img" src="${escapeHtml(logo)}" alt="" loading="lazy" referrerpolicy="no-referrer" />` : ''
+  }`;
   return `
-    <div class="wallet-balance-row">
-      <span>${escapeHtml(asset.symbol)}</span>
-      <strong>${escapeHtml(formatWalletBalanceAmount(asset.amount, asset.symbol))}</strong>
-      <em>${escapeHtml(asset.valueUsd === undefined ? t('price unavailable') : formatWalletBalanceUsd(asset.valueUsd))}</em>
+    <div class="wallet-balance-row" data-mint="${escapeHtml(asset.mint)}">
+      <span class="wallet-balance-logo" aria-hidden="true">${logoInner}</span>
+      <span class="wallet-balance-id">
+        <strong>${escapeHtml(title)}</strong>
+        <small>${escapeHtml(formatWalletBalanceAmount(asset.amount, asset.symbol))}</small>
+      </span>
+      <span class="wallet-balance-val">
+        <strong>${escapeHtml(valueText)}</strong>
+        ${subInner ? `<em class="wallet-balance-sub">${subInner}</em>` : ''}
+      </span>
     </div>
   `;
 }
@@ -18917,7 +19013,7 @@ function guidedStartPanel(title: string, detail: string, extras?: string): strin
         <button data-start-action="discover" class="primary" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Discover wallets'))}</button>
         <button data-start-action="connect" class="${state.wallets.length ? 'primary' : ''}" ${(state.wallets.length === 0 || !selectedProvider) || state.busy ? 'disabled' : ''} title="${!selectedProvider ? escapeHtml(t('Discover and select a wallet provider first.')) : ''}">${escapeHtml(t('Connect wallet'))}</button>`}
       </div>
-      <p class="guided-note">${escapeHtml(t('Needs Approval, repeat payments, saved proofs, and transaction tools unlock after a wallet is connected.'))}</p>
+      <p class="guided-note">${escapeHtml(t('Sign Approval, repeat payments, saved proofs, and transaction tools unlock after a wallet is connected.'))}</p>
       ${extras ?? ''}
     </section>
   `;
@@ -19124,7 +19220,7 @@ function outcomeShortLabel(outcome: TemplateOutcome): string {
 function outcomeDetailForTemplate(template: AgentPlanTemplate): string {
   const outcome = templateOutcome(template);
   if (template.actionType === 'recurring_payment') {
-    return t('This creates a repeat payment. Each due payment appears in Needs Approval for approve or deny.');
+    return t('This creates a repeat payment. Each due payment appears in Sign Approval for approve or deny.');
   }
   switch (outcome) {
     case 'queueable':
@@ -19661,7 +19757,7 @@ function aiPathPreferenceLabel(mode: AiSettings['mode']): string {
     case 'device-agent':
       return 'Device Agent';
     case 'session':
-      return IS_ANDROID_APP ? 'Android Session' : 'Browser Session';
+      return IS_ANDROID_APP ? 'Android Session' : (IS_IOS_APP || state.iosNativeEnvironment.isIosNative) ? 'iOS Session' : 'Browser Session';
   }
 }
 
@@ -19784,8 +19880,8 @@ function commandAiRouteCards(): string {
     {
       id: 'session',
       mode: 'session',
-      title: IS_ANDROID_APP ? t('Android Session') : t('Browser Session'),
-      detail: tf('Connect a temporary key in {location} without saving it to Agentic.', { location: IS_ANDROID_APP ? t('this app runtime') : t('this tab') }),
+      title: IS_ANDROID_APP ? t('Android Session') : (IS_IOS_APP || state.iosNativeEnvironment.isIosNative) ? t('iOS Session') : t('Browser Session'),
+      detail: tf('Connect a temporary key in {location} without saving it to Agentic.', { location: (IS_ANDROID_APP || IS_IOS_APP || state.iosNativeEnvironment.isIosNative) ? t('this app runtime') : t('this tab') }),
       meta: t('Session AI connection'),
       // Session is a browser/web route, not a native mobile app route.
       available: !IS_TAURI_APP && !mobileAiPathPolicy,
@@ -19866,7 +19962,7 @@ function commandAiRouteCards(): string {
             'ai-route',
             entry.id,
             mobileAiPathPolicy && entry.mode
-              ? IS_ANDROID_APP ? androidMobileAiPathTabLabel(entry.mode) : mobileAiPathTabLabel(entry.mode)
+              ? (IS_ANDROID_APP || IS_IOS_APP || state.iosNativeEnvironment.isIosNative) ? androidMobileAiPathTabLabel(entry.mode) : mobileAiPathTabLabel(entry.mode)
               : shortLabels[entry.id] ?? entry.title,
             entry.id === activeId,
           )).join('')}
@@ -20010,9 +20106,9 @@ function commandAiInfoCardsGroup(): string {
     {
       id: 'session',
       tab: 'SESSION',
-      title: IS_ANDROID_APP ? t('Android Session AI') : t('Browser Session AI'),
+      title: IS_ANDROID_APP ? t('Android Session AI') : (IS_IOS_APP || state.iosNativeEnvironment.isIosNative) ? t('iOS Session AI') : t('Browser Session AI'),
       badge: t('Session drafting'),
-      detail: tf('AI drafts inside {location}, then the plan enters the same normalized workflow pipeline.', { location: IS_ANDROID_APP ? t('this app runtime') : t('this browser session') }),
+      detail: tf('AI drafts inside {location}, then the plan enters the same normalized workflow pipeline.', { location: (IS_ANDROID_APP || IS_IOS_APP || state.iosNativeEnvironment.isIosNative) ? t('this app runtime') : t('this browser session') }),
       foot: t('Useful for temporary keys, but subject to provider and session limits.'),
       // Mirror the route-tab gate: Session on Android app + web, off iOS/Tauri.
       available: !IS_TAURI_APP && (!mobileAiPathPolicy || IS_ANDROID_APP),
@@ -20078,7 +20174,7 @@ function commandAiInfoCardsGroup(): string {
             'ai-info',
             entry.id,
             mobileAiPathPolicy && entry.id !== 'plan-connector'
-              ? IS_ANDROID_APP
+              ? (IS_ANDROID_APP || IS_IOS_APP || state.iosNativeEnvironment.isIosNative)
                 ? androidMobileAiPathTabLabel(entry.id as AiSettings['mode'])
                 : mobileAiPathTabLabel(entry.id as AiSettings['mode'])
               : entry.tab,
@@ -20587,7 +20683,7 @@ function commandCloudInfoCardsGroup(): string {
     {
       id: 'approval',
       tab: t('Approval'),
-      title: t('Cloud Needs Approval'),
+      title: t('Cloud Sign Approval'),
       badge: t('Cross-session review'),
       detail: t('Save drafts and due approval items to wallet-scoped cloud approval storage instead of only this browser.'),
       foot: t('The wallet still signs every decision proof or supported transaction.'),
@@ -21011,7 +21107,7 @@ const CHAT_SUGGESTED_PROMPTS: string[] = [
 const CHAT_POWER_ACTIONS: Array<{ id: string; eyebrow: string; title: string; description: string; template: string }> = [
   { id: 'swap', eyebrow: 'Trading', title: 'Swap Tokens', description: 'Prepare a DeFi swap with input, output, amount, and slippage.', template: 'Swap [0.1] SOL to USDC' },
   { id: 'send', eyebrow: 'Payments', title: 'Send Tokens', description: 'Prepare a token payment with recipient, amount, and memo.', template: 'Send [amount] SOL to [recipient address]' },
-  { id: 'recurring', eyebrow: 'Automation', title: 'Recurring / DCA', description: 'Set up a recurring payment or DCA swap. Each run returns to Needs Approval.', template: '' },
+  { id: 'recurring', eyebrow: 'Automation', title: 'Recurring / DCA', description: 'Set up a recurring payment or DCA swap. Each run returns to Sign Approval.', template: '' },
   { id: 'sign', eyebrow: 'Proof', title: 'Sign Proof', description: 'Sign a message to create a verifiable proof receipt. No transaction.', template: 'Sign a proof that [statement to attest]' },
 ];
 
@@ -21125,13 +21221,20 @@ function defaultBuilderFor(kind: ChatBuilderKind): ChatActionBuilder {
   return { kind, statement: '' };
 }
 
+// Prepend a leading zero to a bare-decimal entry (".50" -> "0.50") so a $ value
+// never serializes as the ambiguous, parser-rejected "$.50". Leaves "0.50", "50",
+// and non-numeric/placeholder text untouched.
+function leadingZeroDecimal(raw: string): string {
+  return /^\.\d/.test(raw) ? `0${raw}` : raw;
+}
+
 // Render the amount field as grammar text (token amount, $usd, or pct%).
 function chatBuilderAmountText(amount: ChatBuilderAmount | undefined, fallback: string): string {
   const raw = amount?.raw.trim();
   if (!amount || !raw) return fallback;
-  if (amount.mode === 'usd') return `$${raw}`;
-  if (amount.mode === 'percent') return `${raw}%`;
-  return raw;
+  if (amount.mode === 'usd') return `$${leadingZeroDecimal(raw)}`;
+  if (amount.mode === 'percent') return `${leadingZeroDecimal(raw)}%`;
+  return leadingZeroDecimal(raw);
 }
 
 // The token's grammar value: symbol for SOL/USDC, base58 mint for everything else
@@ -21169,9 +21272,9 @@ function compileBuilderToDraft(b: ChatActionBuilder): string {
 function chatBuilderAmountLabel(b: ChatActionBuilder): string {
   const a = b.amount;
   if (!a || !a.raw.trim()) return t('Amount');
-  if (a.mode === 'usd') return `$${a.raw.trim()}`;
-  if (a.mode === 'percent') return `${a.raw.trim()}%`;
-  return a.raw.trim();
+  if (a.mode === 'usd') return `$${leadingZeroDecimal(a.raw.trim())}`;
+  if (a.mode === 'percent') return `${leadingZeroDecimal(a.raw.trim())}%`;
+  return leadingZeroDecimal(a.raw.trim());
 }
 
 function chatBuilderTokenLabel(token: ChatBuilderToken | undefined, fallback: string): string {
@@ -21244,16 +21347,28 @@ function chatHeaderHtml(session: ChatSession | null): string {
           <div class="chat-sessions${state.chatHistoryOpen ? ' open' : ''}" data-chat-history>
             <button type="button" class="chat-history-trigger" data-chat-history-trigger aria-haspopup="menu" aria-expanded="${state.chatHistoryOpen ? 'true' : 'false'}">${escapeHtml(t('History'))} <span class="chat-sessions-caret" aria-hidden="true">▾</span></button>
             <div class="chat-sessions-menu" role="menu" ${state.chatHistoryOpen ? '' : 'hidden'}>
-              ${sessions.map((s) => `
-                <div class="chat-session-row${s.id === state.chat.activeSessionId ? ' active' : ''}" role="presentation">
+              ${sessions.map((s) => {
+                // Two-step delete: the × arms an inline Cancel/Delete confirm in the same row
+                // so a stray tap can't drop a chat. state.chatDeleteConfirmId holds the armed id.
+                const confirming = s.id === state.chatDeleteConfirmId;
+                return `
+                <div class="chat-session-row${s.id === state.chat.activeSessionId ? ' active' : ''}${confirming ? ' confirming' : ''}" role="presentation">
                   <button type="button" role="menuitem" class="chat-session-open" data-chat-switch="${escapeHtml(s.id)}" aria-label="${escapeHtml(s.title)}" title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</button>
-                  <button type="button" role="menuitem" class="chat-session-del" data-chat-del="${escapeHtml(s.id)}" aria-label="${escapeHtml(tf('Delete chat {title}', { title: s.title }))}" title="${escapeHtml(t('Delete chat'))}">×</button>
+                  ${confirming
+                    ? `<div class="chat-session-confirm" role="group" aria-label="${escapeHtml(t('Delete this chat?'))}">
+                         <span class="chat-session-confirm-q">${escapeHtml(t('Delete this chat?'))}</span>
+                         <span class="chat-session-confirm-actions">
+                           <button type="button" role="menuitem" class="chat-session-confirm-cancel" data-chat-del-cancel="${escapeHtml(s.id)}">${escapeHtml(t('Cancel'))}</button>
+                           <button type="button" role="menuitem" class="chat-session-confirm-del" data-chat-del-confirm="${escapeHtml(s.id)}">${escapeHtml(t('Delete'))}</button>
+                         </span>
+                       </div>`
+                    : `<button type="button" role="menuitem" class="chat-session-del" data-chat-del="${escapeHtml(s.id)}" aria-label="${escapeHtml(tf('Delete chat {title}', { title: s.title }))}" title="${escapeHtml(t('Delete chat'))}">×</button>`}
                 </div>
-              `).join('')}
+              `;
+              }).join('')}
             </div>
           </div>` : ''}
         <button type="button" data-chat-new>${escapeHtml(t('New chat'))}</button>
-        ${hasHistory ? `<button type="button" class="danger" data-chat-clear>${escapeHtml(t('Clear'))}</button>` : ''}
       </div>
     </div>
   `;
@@ -21302,6 +21417,28 @@ function chatLoadErrorState(session: ChatSession): string {
   `;
 }
 
+// A small ⧉ copy button for a chat message. Carries the raw text in data-chat-copy so
+// the morph-safe handler in bindChat() can write it to the clipboard (works for both the
+// user bubble and the assistant actions row). copyId scopes the transient highlight.
+function chatMsgCopyButtonHtml(text: string, copyId: string): string {
+  return `<button type="button" class="chat-msg-copy" data-chat-copy="${escapeHtml(text)}" data-chat-copy-id="${escapeHtml(copyId)}" title="${escapeHtml(t('Copy'))}" aria-label="${escapeHtml(t('Copy message'))}">⧉</button>`;
+}
+
+// The assistant message footer action row: a per-message ⧉ copy (any settled, non-error
+// message with text) plus the ↻ Regenerate control (last assistant message only). Returns
+// '' while a stream is in flight so the inert controls don't flash mid-answer.
+function chatAssistantActionsHtml(msg: ChatMessage, sessionId: string, isStreaming: boolean, isError: boolean): string {
+  if (isStreaming || chatStreamActive()) return '';
+  const isLast = isLastAssistantChatMessage(msg, sessionId);
+  const canCopy = !isError && Boolean(msg.content.trim());
+  if (!canCopy && !isLast) return '';
+  const copyBtn = canCopy ? chatMsgCopyButtonHtml(msg.content, msg.id) : '';
+  const regenBtn = isLast
+    ? `<button type="button" class="chat-msg-regenerate" data-chat-regenerate title="${escapeHtml(t('Regenerate'))}" aria-label="${escapeHtml(t('Regenerate'))}">↻ ${escapeHtml(t('Regenerate'))}</button>`
+    : '';
+  return `<div class="chat-msg-actions">${copyBtn}${regenBtn}</div>`;
+}
+
 function chatMessageHtml(msg: ChatMessage, sessionId: string): string {
   if (msg.role === 'user') {
     // ✎ edit-and-resend: truncates the chat to before this message + loads it into the
@@ -21311,7 +21448,10 @@ function chatMessageHtml(msg: ChatMessage, sessionId: string): string {
     const editBtn = chatStreamActive()
       ? ''
       : `<button type="button" class="chat-msg-edit" data-chat-edit="${escapeHtml(msg.id)}" title="${escapeHtml(t('Edit & resend'))}" aria-label="${escapeHtml(t('Edit & resend'))}">✎</button>`;
-    return `<div class="chat-msg user" dir="auto" data-chat-msg-id="${escapeHtml(msg.id)}"><span class="chat-user-text">${escapeHtml(msg.content)}</span>${editBtn}</div>`;
+    // ⧉ copy: writes the raw message text to the clipboard. Always available (read-only) and
+    // bound morph-safely in bindChat() via [data-chat-copy]; reveals on hover/tap alongside ✎.
+    const copyBtn = chatMsgCopyButtonHtml(msg.content, msg.id);
+    return `<div class="chat-msg user" dir="auto" data-chat-msg-id="${escapeHtml(msg.id)}"><span class="chat-user-text">${escapeHtml(msg.content)}</span>${editBtn}${copyBtn}</div>`;
   }
   if (msg.role === 'system') {
     // Synthetic UI-only notices (e.g. the trim marker) store English text; translate
@@ -21340,9 +21480,7 @@ function chatMessageHtml(msg: ChatMessage, sessionId: string): string {
         ${msg.receiveCard ? `<div class="chat-card">${chatReceiveCardHtml(msg.receiveCard.address)}</div>` : ''}
         ${msg.recurringCardId ? chatRecurringCardLookupHtml(msg.recurringCardId) : ''}
         ${chatMessageFooterHtml(msg)}
-        ${(!isStreaming && !chatStreamActive() && isLastAssistantChatMessage(msg, sessionId))
-          ? `<div class="chat-msg-actions"><button type="button" class="chat-msg-regenerate" data-chat-regenerate title="${escapeHtml(t('Regenerate'))}" aria-label="${escapeHtml(t('Regenerate'))}">↻ ${escapeHtml(t('Regenerate'))}</button></div>`
-          : ''}
+        ${chatAssistantActionsHtml(msg, sessionId, isStreaming, isError)}
       </div>
     </div>
   `;
@@ -21628,6 +21766,93 @@ function closeChatActionSheet(): void {
   chatSheetTokenOpen = null;
   chatSheetNoteOpen = false;
   chatActionPopoverOpen = false;
+}
+
+let walletBalanceLogoFallbackBound = false;
+// Hide token-logo <img>s that fail to load (404 / blocked / offline) so the monogram layer beneath
+// shows through instead of a broken-image glyph. Delegated + capture phase because `error` events
+// don't bubble; registered exactly once. No inline onerror (CSP-safe).
+function bindWalletBalanceLogoFallback(): void {
+  if (walletBalanceLogoFallbackBound || typeof document === 'undefined') return;
+  walletBalanceLogoFallbackBound = true;
+  document.addEventListener('error', (event) => {
+    const target = event.target;
+    if (target instanceof HTMLImageElement && target.classList.contains('wallet-balance-logo-img')) {
+      target.style.display = 'none';
+    }
+  }, true);
+}
+
+// Lazily enrich the Wallet Balances sheet rows (logo + full name + 24h price change) for the
+// CURRENTLY HELD tokens, then repaint ONCE when anything changed — mirrors ensureChatTokenLogos.
+// Source is the public Jupiter lite-api search (CORS-OK, keyless), the same endpoint the
+// tokenMarket() client tool reads, so no new BirdEye bridge/cloud route is needed. Results are
+// upserted into tokenMarketMetadata (the shared cache the token pickers + rows read). Called when
+// a balance surface (mobile/chat sheet or the desktop overlay) is open; gated by a 5-min TTL and
+// an in-flight flag so it can't stack fetches across renders.
+function ensureWalletBalanceSheetMarket(): void {
+  if (walletBalanceMarketInFlight) return;
+  const snapshot = state.walletBalance.full ?? state.walletBalance.summary;
+  if (!snapshot) return;
+  const assets = [snapshot.sol, snapshot.usdc, ...snapshot.others].filter((asset) => asset.amount > 0);
+  const mints = [...new Set(assets.map((asset) => asset.mint).filter(Boolean))]
+    .filter((mint) => {
+      const cached = tokenMarketMetadata.get(mint);
+      return !cached || cached.priceChange24h === undefined || Date.now() - cached.fetchedAt > WALLET_BALANCE_MARKET_CACHE_MS;
+    });
+  if (!mints.length) return;
+  walletBalanceMarketInFlight = true;
+  const requested = new Set(mints);
+  const chunks: string[][] = [];
+  for (let i = 0; i < mints.length; i += WALLET_BALANCE_MARKET_BATCH_SIZE) {
+    chunks.push(mints.slice(i, i + WALLET_BALANCE_MARKET_BATCH_SIZE));
+  }
+  void Promise.allSettled(chunks.map(async (chunk) => {
+    const arr = await jupiterLiteJson(`/tokens/v2/search?query=${encodeURIComponent(chunk.join(','))}`);
+    return Array.isArray(arr) ? arr : [];
+  }))
+    .then((settled) => {
+      let changed = false;
+      for (const entry of settled) {
+        if (entry.status !== 'fulfilled') continue;
+        for (const raw of entry.value) {
+          const record = asRecord(raw);
+          if (!record) continue;
+          // Jupiter v2 token records carry the mint in `id`; ignore any fuzzy matches we didn't ask for.
+          const mint = [record.id, record.address, record.mint].find((v): v is string => typeof v === 'string' && v.length > 0);
+          if (!mint || !requested.has(mint)) continue;
+          const stats = asRecord(record.stats24h);
+          const change = stats ? numberField(stats.priceChange) : undefined;
+          const symbol = typeof record.symbol === 'string' && record.symbol.trim() ? record.symbol.trim() : undefined;
+          const name = typeof record.name === 'string' && record.name.trim() ? record.name.trim() : undefined;
+          const logoURI = typeof record.icon === 'string' && record.icon.trim()
+            ? record.icon.trim()
+            : (typeof record.logoURI === 'string' && record.logoURI.trim() ? record.logoURI.trim() : undefined);
+          const prev = tokenMarketMetadata.get(mint);
+          const nextLogo = logoURI ?? prev?.logoURI;
+          const nextChange = change ?? prev?.priceChange24h;
+          tokenMarketMetadata.set(mint, {
+            mint,
+            symbol: symbol ?? prev?.symbol ?? tokenDisplayLabel(mint),
+            name: name ?? prev?.name ?? symbol ?? prev?.symbol ?? tokenDisplayLabel(mint),
+            ...(nextLogo ? { logoURI: nextLogo } : {}),
+            ...(prev?.decimals !== undefined ? { decimals: prev.decimals } : {}),
+            ...(nextChange !== undefined ? { priceChange24h: nextChange } : {}),
+            source: 'jupiter',
+            fetchedAt: Date.now(),
+          });
+          changed = true;
+        }
+      }
+      // Repaint once, only if the rows are actually on screen (mobile/chat sheet or desktop overlay).
+      if (changed && (
+        state.activeMobileRailSheet === 'wallet-balances' ||
+        state.activeMobileRailSheet === 'chat-wallet-balances' ||
+        state.walletBalance.overlayOpen
+      )) render();
+    })
+    .catch(() => undefined)
+    .finally(() => { walletBalanceMarketInFlight = false; });
 }
 
 // Hydrate logos for the token LIST lazily (chat is not in the standard
@@ -22550,7 +22775,7 @@ function closeChatRecurringSurface(restore: boolean): void {
 
 // One-line confirmation echo of what was set up, plus the lifecycle explainer.
 function chatRecurringConfirmText(payment: RecurringPayment | undefined, draft: RecurringDraft): string {
-  const lifecycle = t('It is saved in Active Repeats, and the first run is waiting in Needs Approval to sign now. Each future run returns to Needs Approval when it is due. Manage or cancel it in Active Repeats.');
+  const lifecycle = t('It is saved in Active Repeats, and the first run is waiting in Sign Approval to sign now. Each future run returns to Sign Approval when it is due. Manage or cancel it in Active Repeats.');
   if (payment) {
     const title = recurringPaymentTitle(payment);
     const schedule = recurringScheduleShortLabel(payment);
@@ -22776,9 +23001,33 @@ function chatComposerHtml(): string {
     const pendingCount = chatSessionPendingApprovals(pendingSession).length;
     const pendingMobile = pendingCount > 0 ? `
       <div class="chat-pending chat-pending--mobile${state.chatPendingOpen ? ' open' : ''}" data-chat-pending>
-        <button type="button" class="chat-pending-pill chat-pending-pill--sm" data-chat-pending-toggle aria-haspopup="listbox" aria-expanded="${state.chatPendingOpen ? 'true' : 'false'}">${escapeHtml(t('Pending Approvals'))} <span class="chat-pending-count">${pendingCount}</span></button>
+        <button type="button" class="chat-pending-pill chat-pending-pill--sm" data-chat-pending-toggle aria-haspopup="listbox" aria-expanded="${state.chatPendingOpen ? 'true' : 'false'}"><span class="chat-pending-label">${escapeHtml(t('Pending Approvals'))}</span> <span class="chat-pending-count">${pendingCount}</span></button>
         ${state.chatPendingOpen ? chatPendingPanelHtml(pendingSession, 'mobile') : ''}
       </div>` : '';
+    // Native chat has no on-page wallet rail, so a tiny pill on the right of this row surfaces
+    // total wallet value (USD) and opens the full portfolio sheet on tap. Value is read straight
+    // from the already-preloaded snapshot (bindChat preloads it) — no fetch on render. Shown only
+    // when a wallet is connected (the USD total is meaningless otherwise).
+    // Only trust the snapshot when it belongs to the CURRENT wallet/cluster scope — otherwise a
+    // fast wallet switch would briefly flash the previous wallet's total. When prices are missing,
+    // show a compact "—" rather than the long "USD unavailable" string (which would overflow).
+    const balanceScopeOk = state.walletBalance.scopeKey === walletBalanceScopeKey();
+    const balanceSnap = balanceScopeOk ? (state.walletBalance.full ?? state.walletBalance.summary) : null;
+    const balanceLoading = state.walletBalance.fullStatus === 'loading' || state.walletBalance.fullStatus === 'idle';
+    const balanceText = !state.address
+      ? '…'
+      : (balanceSnap && balanceSnap.priceStatus !== 'unavailable')
+        ? formatWalletBalanceSnapshotUsd(balanceSnap)
+        : (balanceLoading ? '…' : '—');
+    const balancesPill = state.address ? `
+      <button type="button" class="chat-balances-pill" data-chat-balances-pill aria-haspopup="dialog" aria-expanded="${state.activeMobileRailSheet === 'chat-wallet-balances' ? 'true' : 'false'}" aria-label="${escapeHtml(t('View wallet portfolio'))}">
+        <img class="chat-balances-pill-logo" src="${escapeHtml(BRAND_LOGOS.solana)}" alt="" aria-hidden="true" />
+        <span class="chat-balances-pill-val">${escapeHtml(balanceText)}</span>
+        <span class="chat-balances-pill-caret" aria-hidden="true">⌄</span>
+      </button>` : '';
+    const actionsEnd = pendingMobile || balancesPill
+      ? `<div class="chat-actions-row-end${pendingMobile && balancesPill ? ' has-balances' : ''}">${pendingMobile}${balancesPill}</div>`
+      : '';
     return `
       <form class="chat-composer chat-composer-mobile" data-chat-composer>
         <div class="chat-actions-row">
@@ -22786,7 +23035,7 @@ function chatComposerHtml(): string {
             ${walletActionsBtn}
             ${plusMenu}
           </div>
-          ${pendingMobile}
+          ${actionsEnd}
         </div>
         <div class="chat-input-row">
           ${textarea}
@@ -24631,7 +24880,9 @@ function resolveChatAmount(raw: string, fromAsset: WalletBalanceAsset | null): {
     if (!(amount > 0)) return { error: t('That percentage leaves nothing to send after fees.') };
     return { amount: trimChatAmount(amount, fromAsset.decimals) };
   }
-  const usdMatch = /^\$\s*(\d+(?:\.\d+)?)$/.exec(value) ?? /^(\d+(?:\.\d+)?)\s*usd$/i.exec(value);
+  // Accept a leading-decimal dollar value ("$.50") as well as "$0.50"/"0.50 usd";
+  // Number('.50') === 0.5, so the conversion below is unaffected.
+  const usdMatch = /^\$\s*(\d+(?:\.\d+)?|\.\d+)$/.exec(value) ?? /^(\d+(?:\.\d+)?|\.\d+)\s*usd$/i.exec(value);
   if (usdMatch) {
     const usd = Number(usdMatch[1]);
     const price = fromAsset?.priceUsd;
@@ -25571,6 +25822,24 @@ function bindChat(): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-edit]')) {
     bindOnce(button, 'click', () => editChatMessageIntoComposer(button.dataset.chatEdit ?? ''));
   }
+  // ⧉ copy a chat message to the clipboard. Bound here (not via the global [data-copy] pass,
+  // which doesn't re-run on the chat morph fast-path) so copy buttons on morph-added messages
+  // stay live. No render afterward — the toast confirms and a render would thrash chat scroll.
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-copy]')) {
+    bindOnce(button, 'click', (event: Event) => {
+      event.stopPropagation();
+      const value = button.dataset.chatCopy ?? '';
+      if (!value) return;
+      void (async () => {
+        try {
+          await writeClipboardText(value, 'Message');
+          pushToast('success', t('Copied message'), '');
+        } catch (err) {
+          pushToast('error', t('Copy failed'), err instanceof Error ? err.message : t('Clipboard permission was denied.'));
+        }
+      })();
+    });
+  }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-promote]')) {
     bindOnce(button, 'click', () => {
       const action = promoteChatProposalToPreparedAction(button.dataset.chatSession ?? '', button.dataset.chatMsg ?? '');
@@ -25588,6 +25857,14 @@ function bindChat(): void {
       state.chatPendingSelectedId = null;
     }
     render();
+  });
+  // Wallet-value pill → full portfolio sheet. Bound here via bindOnce (NOT a data-mobile-rail-sheet
+  // attribute) because bindMobileRailSheet's trigger loop uses raw addEventListener and re-runs on
+  // every chat morph — a persisting attribute-trigger would stack duplicate open handlers.
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-balances-pill]'), 'click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openMobileRailSheet('chat-wallet-balances'); // triggers its own render
   });
   // H9-2: keyboard navigation for the role="listbox" pending-approvals dropdown (the
   // codebase already does this for the language picker + history menu). Arrow keys move
@@ -25638,6 +25915,7 @@ function bindChat(): void {
     event.stopPropagation();
     const opening = !state.chatHistoryOpen;
     state.chatHistoryOpen = opening;
+    state.chatDeleteConfirmId = ''; // never reopen the menu with a stale delete armed
     render();
     // On open, move keyboard focus into the menu (the active session, else the first).
     if (opening) {
@@ -25664,6 +25942,7 @@ function bindChat(): void {
     bindOnce(button, 'click', () => {
       const id = button.dataset.chatSwitch ?? '';
       state.chatHistoryOpen = false;
+      state.chatDeleteConfirmId = '';
       if (!id || state.chat.activeSessionId === id) { render(); return; }
       if (chatStreamActive()) cancelChatStream();
       state.chat.activeSessionId = id;
@@ -25694,11 +25973,33 @@ function bindChat(): void {
       });
     });
   }
+  // × arms the inline confirm (does NOT delete) — prevents accidental one-tap loss.
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-del]')) {
     bindOnce(button, 'click', (event) => {
       event.stopPropagation();
+      state.chatDeleteConfirmId = button.dataset.chatDel ?? '';
+      render();
+      // Focus Cancel (not Delete) so a follow-up Enter can't confirm by accident.
+      document.querySelector<HTMLButtonElement>('[data-chat-del-cancel]')?.focus();
+    });
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-del-cancel]')) {
+    bindOnce(button, 'click', (event) => {
+      event.stopPropagation();
+      const cancelledId = button.dataset.chatDelCancel ?? '';
+      state.chatDeleteConfirmId = '';
+      render();
+      // Restore focus to the row's × (this Cancel button is now removed from the DOM).
+      document.querySelector<HTMLButtonElement>(`[data-chat-del="${cancelledId}"]`)?.focus();
+    });
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-del-confirm]')) {
+    bindOnce(button, 'click', (event) => {
+      event.stopPropagation();
       if (chatStreamActive()) cancelChatStream();
-      deleteChatSession(button.dataset.chatDel ?? '');
+      const id = button.dataset.chatDelConfirm ?? '';
+      state.chatDeleteConfirmId = '';
+      deleteChatSession(id);
       if (state.chat.sessions.filter(chatSessionHasContent).length === 0) state.chatHistoryOpen = false;
       render();
     });
@@ -25709,8 +26010,23 @@ function bindChat(): void {
   });
   bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-new]'), 'click', () => {
     if (chatStreamActive()) cancelChatStream();
-    clearChatComposerDraft();
     state.chatHistoryOpen = false;
+    state.chatDeleteConfirmId = '';
+    // Reuse the active session if it's still empty — don't stack blank "New chat" rows.
+    const active = activeChatSession();
+    if (active && !chatSessionHasContent(active)) {
+      clearChatComposerDraft();
+      render();
+      return;
+    }
+    // Hard cap: block instead of silently evicting the oldest once the user has
+    // MAX_CHAT_SESSIONS real chats. They must delete one to make room.
+    if (state.chat.sessions.filter(chatSessionHasContent).length >= MAX_CHAT_SESSIONS) {
+      pushToast('info', t('Chat limit reached'), tf('You\'ve reached the max of {max} saved chats. Delete some to start a new one.', { max: String(MAX_CHAT_SESSIONS) }));
+      render();
+      return;
+    }
+    clearChatComposerDraft();
     createChatSession();
     render();
   });
@@ -25730,6 +26046,7 @@ function bindChat(): void {
       const wrap = document.querySelector('[data-chat-history]');
       if (wrap && event.target instanceof Node && wrap.contains(event.target)) return;
       state.chatHistoryOpen = false;
+      state.chatDeleteConfirmId = '';
       render();
     }, true);
   }
@@ -25806,7 +26123,7 @@ function agentPlanPanel(): string {
   // per-tab description (Swap/Send/Proof/Evidence each differ) so it doubles as the
   // section subtitle and lets us drop the redundant mid-page template description.
   const headerDetail = state.oneTimePlanView === 'review'
-    ? t('Saved one-time plans. Send executable work to Needs Approval for a wallet decision.')
+    ? t('Saved one-time plans. Send executable work to Sign Approval for a wallet decision.')
     : isNativeAppShellSurface()
       ? t(selectedTemplate().description)
       : t('Create a one-time payment or swap. Nothing is sent until you approve it.');
@@ -25976,7 +26293,7 @@ function generatedPlansPanel(embedded = false): string {
       ${embedded
         ? `<div class="generated-plans-toolbar-row">${toolbar}</div>`
         : `<div class="signature-object-head">
-        ${sectionTitleLine(t('Check request'), t('Saved one-time plans. Send executable work to Needs Approval for a wallet decision.'))}
+        ${sectionTitleLine(t('Check request'), t('Saved one-time plans. Send executable work to Sign Approval for a wallet decision.'))}
         ${toolbar}
       </div>
       `}
@@ -28003,11 +28320,11 @@ function inboxDeleteModal(): string {
       <section class="generated-plan-modal inbox-delete-modal delete-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="inbox-delete-title">
         <div class="generated-plan-modal-head">
           <div>
-            <span class="workbench-kicker">${escapeHtml(t('Needs Approval deletion'))}</span>
+            <span class="workbench-kicker">${escapeHtml(t('Sign Approval deletion'))}</span>
             <h2 id="inbox-delete-title">${escapeHtml(t('Delete this approval request?'))}</h2>
             <p>${escapeHtml(title)}</p>
           </div>
-          <button class="utility" data-inbox-delete-cancel aria-label="${escapeHtml(t('Close Needs Approval deletion confirmation'))}">${escapeHtml(t('Close'))}</button>
+          <button class="utility" data-inbox-delete-cancel aria-label="${escapeHtml(t('Close Sign Approval deletion confirmation'))}">${escapeHtml(t('Close'))}</button>
         </div>
         <div class="completed-delete-warning delete-confirmation-content">
           <strong>${escapeHtml(t('This request will be removed entirely.'))}</strong>
@@ -28033,11 +28350,11 @@ function deleteAllInboxModal(): string {
       <section class="generated-plan-modal delete-all-modal delete-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="delete-all-inbox-title">
         <div class="generated-plan-modal-head">
           <div>
-            <span class="workbench-kicker">${escapeHtml(t('Clear Needs Approval'))}</span>
+            <span class="workbench-kicker">${escapeHtml(t('Clear Sign Approval'))}</span>
             <h2 id="delete-all-inbox-title">${tf('Delete {count} visible requests?', { count })}</h2>
             <p>${count === 0 ? escapeHtml(t('No visible requests to delete.')) : tf('Every visible approval request{filterNote} will be removed.', { filterNote })}</p>
           </div>
-          <button class="utility" data-delete-all-inbox-cancel aria-label="${escapeHtml(t('Close Needs Approval bulk deletion'))}">${escapeHtml(t('Close'))}</button>
+          <button class="utility" data-delete-all-inbox-cancel aria-label="${escapeHtml(t('Close Sign Approval bulk deletion'))}">${escapeHtml(t('Close'))}</button>
         </div>
         <div class="completed-delete-warning delete-confirmation-content">
           <strong>${escapeHtml(t('This cannot be undone.'))}</strong>
@@ -28300,12 +28617,12 @@ function generatedPlansEmptyState(oneTimeOnly = false, filterHasHiddenMatches = 
   const detail = filterHasHiddenMatches
     ? tf('No plans match this {brand} filter.', { brand: 'AI Connector' })
     : records.length === 0
-    ? t('Create a plan first. It stays here for checking, then moves to Needs Approval or Done.')
+    ? t('Create a plan first. It stays here for checking, then moves to Sign Approval or Done.')
     : activeCount === 0 && movedCount > 0
-      ? t('All active plans have moved forward. Open Needs Approval for queued work or Done for signed proofs and receipts.')
+      ? t('All active plans have moved forward. Open Sign Approval for queued work or Done for signed proofs and receipts.')
       : archivedCount > 0
         ? t('Archived plans are hidden. Show archived to inspect or restore them.')
-        : t('Create another plan or check Needs Approval and Done for work that already moved forward.');
+        : t('Create another plan or check Sign Approval and Done for work that already moved forward.');
   return signaturePlaceholder(t('No plans visible'), detail);
 }
 
@@ -28762,7 +29079,7 @@ function aiRailIdentity(
     identity.statusTitle = `${connectorPlanNote(connector)} - ${aiConfirmationLabel()}`;
     identity.logoHint = connectorRailLogoHint(connector);
   }
-  if (IS_ANDROID_APP && !identity.configured && !identity.staged && !identity.inactive) {
+  if ((IS_ANDROID_APP || IS_IOS_APP) && !identity.configured && !identity.staged && !identity.inactive) {
     identity.provider = t('Not set up');
     identity.model = t('API key or Plan Connector');
     identity.detail = t('API key or Plan Connector');
@@ -30246,7 +30563,7 @@ function amountControlFieldInput(fieldDef: AgentPlanTemplateField, value: string
   const disabled = state.busy ? 'disabled' : '';
   const tokenNum = Number(value);
   const usdDisplay = (hasPrice && Number.isFinite(tokenNum) && tokenNum > 0)
-    ? (tokenNum * (asset!.priceUsd as number)).toFixed(2).replace(/\.?0+$/, '')
+    ? `$${(tokenNum * (asset!.priceUsd as number)).toFixed(2)}`
     : '';
   const display = mode === 'usd' ? usdDisplay : value;
   const unitPill = `
@@ -30693,13 +31010,16 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const confirmationLabel = aiConfirmationLabel();
   const confirmationDetail = aiConfirmationDetail();
   const hideKeyEntry = shouldHideAiKeyEntry(status);
+  const iosNativeSession = IS_IOS_APP || state.iosNativeEnvironment.isIosNative;
   const sessionKeyLabel = IS_TAURI_APP
     ? t('Desktop session key')
     : IS_ANDROID_APP
       ? t('Android session key')
-      : t('Browser session key');
-  const sessionScope = IS_TAURI_APP || IS_ANDROID_APP ? t('this app runtime') : t('this tab');
-  const sessionDescriptor = IS_TAURI_APP ? t('Desktop session') : IS_ANDROID_APP ? t('Android session') : t('Browser session');
+      : iosNativeSession
+        ? t('iOS session key')
+        : t('Browser session key');
+  const sessionScope = IS_TAURI_APP || IS_ANDROID_APP || iosNativeSession ? t('this app runtime') : t('this tab');
+  const sessionDescriptor = IS_TAURI_APP ? t('Desktop session') : IS_ANDROID_APP ? t('Android session') : iosNativeSession ? t('iOS session') : t('Browser session');
   const keyLabel = state.aiSettings.mode === 'bridge'
     ? t('AI provider key')
     : state.aiSettings.mode === 'device-agent'
@@ -30719,7 +31039,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
     : state.aiSettings.mode === 'device-agent'
       ? t('Device Agent stores the AI Connector route config in the selected runtime boundary. Queueing, repeat payments, approvals, submissions, and signatures remain separate workflow actions.')
     : state.aiSettings.mode === 'bridge'
-      ? t('Local Bridge AI uses your normal provider key from the local runtime. Needs Approval, repeat payments, proofs, and wallet signatures remain separate workflow actions.')
+      ? t('Local Bridge AI uses your normal provider key from the local runtime. Sign Approval, repeat payments, proofs, and wallet signatures remain separate workflow actions.')
         : tf('{descriptor} keys stay in {scope} and only help prepare or review requests. Queueing, repeat payments, approvals, submissions, and signatures use the active workflow, not the AI key.', { descriptor: sessionDescriptor, scope: sessionScope });
   const bridgeConfiguredDisplay = bridgeAiConfiguredDisplay(status);
   const deviceAgentConfiguredProvider = state.deviceAgentStatus?.provider
@@ -33039,13 +33359,13 @@ function inboxRefreshButton(id: string): string {
 
 function approvalInboxPanel(): string {
   if (!state.address) {
-    return guidedStartPanel(t('Needs Approval'), t('Connect a wallet before approving or denying queued requests.'));
+    return guidedStartPanel(t('Sign Approval'), t('Connect a wallet before approving or denying queued requests.'));
   }
   const actions = filteredPreparedActions();
   return `
     <section class="approval-object signature-stage stage-inbox stage-anchor ${actions.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
-        ${sectionTitleLine(t('Needs Approval'), approvalInboxDescription())}
+        ${sectionTitleLine(t('Sign Approval'), approvalInboxDescription())}
         <div class="inbox-toolbar signature-toolbar">
           <label class="inbox-filter-control filter-field" for="inboxFilter">
             <span class="filter-field-label">${escapeHtml(t('Filter'))}</span>
@@ -34940,7 +35260,7 @@ function contextPanel(): string {
           ${contextRow(t('Wallet'), state.address ? short(state.address) : t('Not connected'), state.address ? 'good' : '')}
           ${contextRow(t('Cluster'), titleCaseCluster(state.cluster), state.cluster === 'mainnet-beta' ? 'warn' : '')}
           ${contextRow(t('Bridge'), state.bridgeActive ? t('Ready') : t('Disconnected'), state.bridgeActive ? 'good' : '')}
-          ${contextRow(t('Needs Approval'), activeWorkflowPreparedActions().filter((action) => !action.archived).length === 1
+          ${contextRow(t('Sign Approval'), activeWorkflowPreparedActions().filter((action) => !action.archived).length === 1
             ? tf('{count} action', { count: activeWorkflowPreparedActions().filter((action) => !action.archived).length })
             : tf('{count} actions', { count: activeWorkflowPreparedActions().filter((action) => !action.archived).length }), activeWorkflowPreparedActions().length ? 'warn' : '')}
           ${contextRow(t('Agent proof'), state.agentSignature ? short(state.agentSignature) : t('Unsigned'))}
@@ -35003,7 +35323,7 @@ function bind(): void {
 
   const workspaceTabSelect = document.getElementById('workspaceTabMobile') as HTMLSelectElement | null;
   if (workspaceTabSelect) {
-    workspaceTabSelect.addEventListener('change', () => {
+    bindOnce(workspaceTabSelect, 'change', () => {
       const next = workspaceTabSelect.value as ActiveTab;
       if (!next || next === state.activeTab) return;
       if (next === 'chat' && !chatTabAiConnected()) {
@@ -35029,7 +35349,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-tab]')) {
-    button.addEventListener('click', (event) => {
+    bindOnce(button, 'click', (event) => {
       const tab = button.dataset.tab as ActiveTab;
       const spendOpen = button.dataset.spendOpen;
       if (tab === 'chat' && !chatTabAiConnected()) {
@@ -35065,7 +35385,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-spend-nav-filter]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const filter = button.dataset.spendNavFilter;
       if (!isSpendNavFilter(filter)) return;
       void openSpendFilter(filter);
@@ -35073,7 +35393,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-command-center-view]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const view = button.dataset.commandCenterView as CommandCenterView | undefined;
       if (view !== 'center' && view !== 'ai' && view !== 'storage') return;
       state.activeTab = 'overview';
@@ -35084,7 +35404,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-workspace-tab]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const tab = button.dataset.androidWorkspaceTab as AndroidWorkspaceTab | undefined;
       if (tab !== 'wallet' && tab !== 'approvals' && tab !== 'payments' && tab !== 'proof') return;
       if (state.androidWorkspaceTab === tab) return;
@@ -35094,7 +35414,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-setup-tab]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const tab = button.dataset.androidSetupTab as AndroidSetupTab | undefined;
       if (tab !== 'ai' && tab !== 'cloud' && tab !== 'connectors' && tab !== 'rules') return;
       if (state.androidSetupTab === tab) return;
@@ -35104,7 +35424,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-workspace-backup-tab]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const tab = button.dataset.androidWorkspaceBackupTab as AndroidWorkspaceBackupTab | undefined;
       if (tab !== 'pending' && tab !== 'unresolved' && tab !== 'sections') return;
       if (state.androidWorkspaceBackupTab === tab) return;
@@ -35114,7 +35434,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recurring-flip-id]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const id = button.dataset.recurringFlipId;
       if (!id || state.activeRecurringCardId === id) return;
       state.activeRecurringCardId = id;
@@ -35125,7 +35445,7 @@ function bind(): void {
   // Positions tab: "Manage" routes to the action's New Request form (where the cancel/withdraw/repay
   // sub-actions live, re-entering Needs Approval); "Move to Done" closes the card and shows the receipt.
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-position-manage]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const id = button.dataset.positionManage;
       const position = id ? state.positions.find((p) => p.id === id) : undefined;
       if (!position) return;
@@ -35137,7 +35457,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-position-close]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const id = button.dataset.positionClose;
       const position = id ? state.positions.find((p) => p.id === id) : undefined;
       if (!position) return;
@@ -35153,7 +35473,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-positions-tab]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const id = button.dataset.positionsTab as PositionSectionId | undefined;
       if (!id || state.positionsCategory === id) return;
       state.positionsCategory = id;
@@ -35162,7 +35482,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-positions-refresh]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const id = button.dataset.positionsRefresh as PositionSectionId | undefined;
       if (!id) return;
       void fetchPositionCategory(id, true);
@@ -35172,7 +35492,7 @@ function bind(): void {
   // Cancel/withdraw/repay from a live position card → route to that action's form (where the manage
   // sub-action + order selection live), re-entering Needs Approval → sign.
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-position-cancel]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const kind = button.dataset.positionCancelKind;
       if (!kind) return;
       const orderId = button.dataset.positionCancelOrderId ?? '';
@@ -35202,7 +35522,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-trust-tab]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const tab = button.dataset.androidTrustTab as AndroidTrustTab | undefined;
       if (tab !== 'custody' && tab !== 'ai-checks' && tab !== 'receipts') return;
       if (state.androidTrustTab === tab) return;
@@ -35212,7 +35532,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-loop-tab]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const tab = button.dataset.androidLoopTab as AndroidLoopTab | undefined;
       if (tab !== 'draft' && tab !== 'check' && tab !== 'approve' && tab !== 'prove') return;
       if (state.androidLoopTab === tab) return;
@@ -35222,7 +35542,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-ai-route-tab]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const tab = button.dataset.androidAiRouteTab as AndroidAiRouteTab | undefined;
       if (tab !== 'hosted' && tab !== 'bridge' && tab !== 'session' && tab !== 'device-agent' && tab !== 'plan-connector') return;
       if (state.androidAiRouteTab === tab) return;
@@ -35232,7 +35552,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-ai-intro-tab]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const tab = button.dataset.androidAiIntroTab as AndroidAiIntroTab | undefined;
       if (tab !== 'benefits' && tab !== 'no-ai') return;
       if (state.androidAiIntroTab === tab) return;
@@ -35242,7 +35562,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-storage-tab]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const tab = button.dataset.androidStorageTab as AndroidStorageTab | undefined;
       if (tab !== 'local' && tab !== 'cloud' && tab !== 'bridge') return;
       if (state.androidStorageTab === tab) return;
@@ -35252,7 +35572,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-repeat-summary-tab]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const tab = button.dataset.androidRepeatSummaryTab as AndroidRepeatSummaryTab | undefined;
       if (tab !== 'asset' && tab !== 'recipient' && tab !== 'cadence' && tab !== 'end-condition') return;
       if (state.androidRepeatSummaryTab === tab) return;
@@ -35262,7 +35582,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-ai-info-tab]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const tab = button.dataset.androidAiInfoTab as AndroidAiInfoTab | undefined;
       if (tab !== 'no-ai' && tab !== 'hosted' && tab !== 'bridge' && tab !== 'session' && tab !== 'device-agent' && tab !== 'plan-connector') return;
       if (state.androidAiInfoTab === tab) return;
@@ -35272,10 +35592,10 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-ai-review-setup-tab]')) {
-    button.addEventListener('pointerdown', (event) => {
+    bindOnce(button, 'pointerdown', (event) => {
       event.stopPropagation();
     });
-    button.addEventListener('click', (event) => {
+    bindOnce(button, 'click', (event) => {
       event.preventDefault();
       event.stopPropagation();
       const tab = button.dataset.aiReviewSetupTab as AiReviewSetupTab | undefined;
@@ -35286,7 +35606,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-cloud-info-tab]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const tab = button.dataset.androidCloudInfoTab as AndroidCloudInfoTab | undefined;
       if (tab !== 'approval' && tab !== 'scheduler' && tab !== 'audit' && tab !== 'identity') return;
       if (state.androidCloudInfoTab === tab) return;
@@ -35299,7 +35619,7 @@ function bind(): void {
   // wires the click → setter → render dance. Sub-tab IDs are open string union
   // so Skills surfaces can self-register without editing this file.
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-skills-subtab]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const view = button.dataset.skillsSubtab;
       if (!view) return;
       void import('./devTabs/skills/subTabRegistry.js').then(({ findSkillsSubTab, setActiveSkillsSubTab }) => {
@@ -35311,7 +35631,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-one-time-view]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const view = button.dataset.oneTimeView as OneTimePlanView | undefined;
       if (!view) return;
       state.activeTab = 'agent';
@@ -35327,7 +35647,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recurring-view]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const view = button.dataset.recurringView as RecurringView | undefined;
       if (!view) return;
       state.activeTab = 'schedule';
@@ -35341,7 +35661,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-demo-scenario]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const scenario = guidedDemoScenarioById(button.dataset.demoScenario);
       const anchorTop = button.getBoundingClientRect().top;
       clearGuidedDemoSwapFlowTimer();
@@ -35356,7 +35676,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-demo-agent-plan]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const planIndex = Number(button.dataset.demoAgentPlan);
       if (!Number.isInteger(planIndex)) return;
       const anchorTop = button.getBoundingClientRect().top;
@@ -35370,7 +35690,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-demo-action]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const action = button.dataset.demoAction;
       if (!action) return;
       if (action === 'sign-receipt') {
@@ -35382,7 +35702,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-first-run-action]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const action = button.dataset.firstRunAction as FirstRunActionId | undefined;
       if (!action) return;
       void runFirstRunAction(action);
@@ -35390,7 +35710,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-preferences-view]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const view = button.dataset.preferencesView as PreferencesView | undefined;
       if (!view || !isPreferencesView(view)) return;
       setPreferencesView(view);
@@ -35398,7 +35718,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-preferences-access-tab]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const tab = button.dataset.preferencesAccessTab as PreferencesAccessMobileTab | undefined;
       if (!tab || !isPreferencesAccessMobileTab(tab) || state.preferencesAccessMobileTab === tab) return;
       state.preferencesAccessMobileTab = tab;
@@ -35407,7 +35727,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-preferences-rules-tab]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const tab = button.dataset.preferencesRulesTab as PreferencesRulesMobileTab | undefined;
       if (!tab || !isPreferencesRulesMobileTab(tab) || state.preferencesRulesMobileTab === tab) return;
       state.preferencesRulesMobileTab = tab;
@@ -35416,7 +35736,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-preferences-tokens-tab]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const tab = button.dataset.preferencesTokensTab as PreferencesTokensMobileTab | undefined;
       if (!tab || !isPreferencesTokensMobileTab(tab) || state.preferencesTokensMobileTab === tab) return;
       state.preferencesTokensMobileTab = tab;
@@ -35425,7 +35745,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-completed-filter]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const filter = button.dataset.completedFilter as CompletedPlanFilter | undefined;
       if (!filter) return;
       state.completedPlanFilter = filter;
@@ -35435,7 +35755,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-list-page-key]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const pageKey = button.dataset.listPageKey;
       const nextPage = Number(button.dataset.listPage);
       if (!isAppListPageKey(pageKey) || !Number.isFinite(nextPage)) return;
@@ -35445,40 +35765,40 @@ function bind(): void {
     });
   }
 
-  document.querySelector<HTMLButtonElement>('#discover')?.addEventListener('click', runDiscover);
-  document.querySelector<HTMLButtonElement>('#connect')?.addEventListener('click', () => {
+  bindOnce(document.querySelector<HTMLButtonElement>('#discover'), 'click', runDiscover);
+  bindOnce(document.querySelector<HTMLButtonElement>('#connect'), 'click', () => {
     void runConnect();
   });
-  document.querySelector<HTMLButtonElement>('#disconnect')?.addEventListener('click', runDisconnect);
+  bindOnce(document.querySelector<HTMLButtonElement>('#disconnect'), 'click', runDisconnect);
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-wallet-balance-action]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       runWalletBalanceAction(button.dataset.walletBalanceAction);
     });
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-cli-action="open-full"]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       exitCliView();
       render();
     });
   }
-  document.querySelector<HTMLButtonElement>('#tauriOpenCloudAppBtn')?.addEventListener('click', () => {
+  bindOnce(document.querySelector<HTMLButtonElement>('#tauriOpenCloudAppBtn'), 'click', () => {
     void tauriNativeOpenExternalUrl('https://agentic-signer.com/app');
   });
-  document.querySelector<HTMLButtonElement>('#androidReconnectCached')?.addEventListener('click', runReconnectAndroidCached);
-  document.querySelector<HTMLButtonElement>('#androidClearTransient')?.addEventListener('click', runClearAndroidTransient);
-  document.querySelector<HTMLButtonElement>('#androidFullReset')?.addEventListener('click', runClearAndroidFullReset);
-  document.querySelector<HTMLButtonElement>('#androidClearAllAccounts')?.addEventListener('click', runClearAndroidAllAccounts);
-  document.querySelector<HTMLButtonElement>('#iosReconnectCached')?.addEventListener('click', runReconnectIosCached);
-  document.querySelector<HTMLButtonElement>('#iosClearTransient')?.addEventListener('click', runClearIosTransient);
-  document.querySelector<HTMLButtonElement>('#iosFullReset')?.addEventListener('click', runClearIosFullReset);
-  document.querySelector<HTMLButtonElement>('#iosClearAllAccounts')?.addEventListener('click', runClearIosAllAccounts);
-  document.querySelector<HTMLButtonElement>('#signMessage')?.addEventListener('click', runSignMessage);
-  document.querySelector<HTMLButtonElement>('#airdrop')?.addEventListener('click', runAirdrop);
-  document.querySelector<HTMLButtonElement>('#createTx')?.addEventListener('click', runCreateDemoTransaction);
-  document.querySelector<HTMLButtonElement>('#signTx')?.addEventListener('click', runSignTransaction);
-  document.querySelector<HTMLButtonElement>('#sendTx')?.addEventListener('click', runSignAndSendTransaction);
-  document.querySelector<HTMLButtonElement>('#generatePlan')?.addEventListener('click', runGenerateAgentPlan);
-  document.querySelector<HTMLButtonElement>('[data-ai-draft-action="cancel"]')?.addEventListener('click', cancelActiveAiDraft);
+  bindOnce(document.querySelector<HTMLButtonElement>('#androidReconnectCached'), 'click', runReconnectAndroidCached);
+  bindOnce(document.querySelector<HTMLButtonElement>('#androidClearTransient'), 'click', runClearAndroidTransient);
+  bindOnce(document.querySelector<HTMLButtonElement>('#androidFullReset'), 'click', runClearAndroidFullReset);
+  bindOnce(document.querySelector<HTMLButtonElement>('#androidClearAllAccounts'), 'click', runClearAndroidAllAccounts);
+  bindOnce(document.querySelector<HTMLButtonElement>('#iosReconnectCached'), 'click', runReconnectIosCached);
+  bindOnce(document.querySelector<HTMLButtonElement>('#iosClearTransient'), 'click', runClearIosTransient);
+  bindOnce(document.querySelector<HTMLButtonElement>('#iosFullReset'), 'click', runClearIosFullReset);
+  bindOnce(document.querySelector<HTMLButtonElement>('#iosClearAllAccounts'), 'click', runClearIosAllAccounts);
+  bindOnce(document.querySelector<HTMLButtonElement>('#signMessage'), 'click', runSignMessage);
+  bindOnce(document.querySelector<HTMLButtonElement>('#airdrop'), 'click', runAirdrop);
+  bindOnce(document.querySelector<HTMLButtonElement>('#createTx'), 'click', runCreateDemoTransaction);
+  bindOnce(document.querySelector<HTMLButtonElement>('#signTx'), 'click', runSignTransaction);
+  bindOnce(document.querySelector<HTMLButtonElement>('#sendTx'), 'click', runSignAndSendTransaction);
+  bindOnce(document.querySelector<HTMLButtonElement>('#generatePlan'), 'click', runGenerateAgentPlan);
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-ai-draft-action="cancel"]'), 'click', cancelActiveAiDraft);
   // Drive the Ask Agent toggle from an explicit click on the label (both plan + repeat tabs).
   // The native label->checkbox `change` event is unreliable in the Android WebView / iOS
   // WKWebView, so we own the toggle in JS and preventDefault any native flip.
@@ -35489,16 +35809,16 @@ function bind(): void {
       state.askAgentAfterDraft = !state.askAgentAfterDraft;
       render();
     };
-    label.addEventListener('click', toggle);
-    label.addEventListener('keydown', (event) => {
+    bindOnce(label, 'click', toggle);
+    bindOnce(label, 'keydown', (event) => {
       if (event.key !== ' ' && event.key !== 'Enter') return;
       toggle(event);
     });
   });
-  document.querySelector<HTMLButtonElement>('#signAgentPlan')?.addEventListener('click', runSignAgentPlan);
-  document.querySelector<HTMLButtonElement>('#queueAgentPlan')?.addEventListener('click', runQueueAgentPlan);
-  document.querySelector<HTMLButtonElement>('#refreshCompletedPlans')?.addEventListener('click', runRefreshInbox);
-  document.querySelector<HTMLButtonElement>('#toggleArchivedGeneratedPlans')?.addEventListener('click', () => {
+  bindOnce(document.querySelector<HTMLButtonElement>('#signAgentPlan'), 'click', runSignAgentPlan);
+  bindOnce(document.querySelector<HTMLButtonElement>('#queueAgentPlan'), 'click', runQueueAgentPlan);
+  bindOnce(document.querySelector<HTMLButtonElement>('#refreshCompletedPlans'), 'click', runRefreshInbox);
+  bindOnce(document.querySelector<HTMLButtonElement>('#toggleArchivedGeneratedPlans'), 'click', () => {
     state.showArchivedGeneratedPlans = !state.showArchivedGeneratedPlans;
     state.listPages.review = 1;
     const auditRecord = generatedPlanById(state.generatedPlanAuditId);
@@ -35510,7 +35830,7 @@ function bind(): void {
     render();
   });
   for (const button of document.querySelectorAll<HTMLButtonElement>('button[data-generated-plan-action]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const action = button.dataset.generatedPlanAction;
       const planId = button.dataset.generatedPlanId;
       if (!action || !planId) return;
@@ -35518,20 +35838,20 @@ function bind(): void {
     });
   }
   for (const form of document.querySelectorAll<HTMLFormElement>('form.agent-review-questions')) {
-    form.addEventListener('submit', (event) => {
+    bindOnce(form, 'submit', (event) => {
       event.preventDefault();
       const planId = form.dataset.generatedPlanId;
       if (!planId) return;
       void runGeneratedPlanAction(planId, 'agent-answer');
     });
     for (const input of form.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-agent-review-answer-input]')) {
-      input.addEventListener('change', () => {
+      bindOnce(input, 'change', () => {
         cacheAgentReviewAnswerInputs(form);
       });
     }
   }
   for (const form of document.querySelectorAll<HTMLFormElement>('form[data-agent-ask-form]')) {
-    form.addEventListener('submit', (event) => {
+    bindOnce(form, 'submit', (event) => {
       event.preventDefault();
       const planId = form.dataset.generatedPlanId;
       if (!planId) return;
@@ -35543,66 +35863,66 @@ function bind(): void {
     });
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-completed-delete]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const completedId = button.dataset.completedDelete;
       if (!completedId) return;
       openCompletedDeleteModal(completedId);
     });
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-completed-delete-cancel]')) {
-    button.addEventListener('click', closeCompletedDeleteModal);
+    bindOnce(button, 'click', closeCompletedDeleteModal);
   }
-  document.querySelector<HTMLButtonElement>('[data-completed-delete-confirm]')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-completed-delete-confirm]'), 'click', (event) => {
     const completedId = (event.currentTarget as HTMLButtonElement).dataset.completedDeleteConfirm;
     if (!completedId) return;
     void runDeleteCompletedPlan(completedId);
   });
-  document.querySelector<HTMLElement>('.completed-delete-modal-backdrop')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLElement>('.completed-delete-modal-backdrop'), 'click', (event) => {
     if (event.target === event.currentTarget) {
       closeCompletedDeleteModal();
     }
   });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-generated-plan-delete-cancel]')) {
-    button.addEventListener('click', closeGeneratedPlanDeleteModal);
+    bindOnce(button, 'click', closeGeneratedPlanDeleteModal);
   }
-  document.querySelector<HTMLButtonElement>('[data-generated-plan-delete-confirm]')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-generated-plan-delete-confirm]'), 'click', (event) => {
     const planId = (event.currentTarget as HTMLButtonElement).dataset.generatedPlanDeleteConfirm;
     if (!planId) return;
     void runDeleteGeneratedPlan(planId);
   });
-  document.querySelector<HTMLElement>('.generated-plan-delete-modal-backdrop')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLElement>('.generated-plan-delete-modal-backdrop'), 'click', (event) => {
     if (event.target === event.currentTarget) {
       closeGeneratedPlanDeleteModal();
     }
   });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-inbox-delete]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const id = button.dataset.inboxDelete;
       if (!id) return;
       openInboxDeleteModal(id);
     });
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-inbox-delete-cancel]')) {
-    button.addEventListener('click', closeInboxDeleteModal);
+    bindOnce(button, 'click', closeInboxDeleteModal);
   }
-  document.querySelector<HTMLButtonElement>('[data-inbox-delete-confirm]')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-inbox-delete-confirm]'), 'click', (event) => {
     const id = (event.currentTarget as HTMLButtonElement).dataset.inboxDeleteConfirm;
     if (!id) return;
     closeInboxDeleteModal();
     void runPreparedActionOp(id, 'delete');
   });
-  document.querySelector<HTMLElement>('.inbox-delete-modal-backdrop')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLElement>('.inbox-delete-modal-backdrop'), 'click', (event) => {
     if (event.target === event.currentTarget) {
       closeInboxDeleteModal();
     }
   });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-delete-all-inbox-cancel]')) {
-    button.addEventListener('click', closeDeleteAllInboxModal);
+    bindOnce(button, 'click', closeDeleteAllInboxModal);
   }
-  document.querySelector<HTMLButtonElement>('[data-delete-all-inbox-confirm]')?.addEventListener('click', () => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-delete-all-inbox-confirm]'), 'click', () => {
     void runDeleteAllInbox();
   });
-  document.querySelector<HTMLElement>('.delete-all-modal-backdrop')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLElement>('.delete-all-modal-backdrop'), 'click', (event) => {
     if (event.target !== event.currentTarget) return;
     if (state.deleteAllInboxModalOpen) closeDeleteAllInboxModal();
     else if (state.deleteAllCheckModalOpen) closeDeleteAllCheckModal();
@@ -35610,27 +35930,27 @@ function bind(): void {
     else if (state.deleteAllDoneModalOpen) closeDeleteAllDoneModal();
   });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-delete-all-check-cancel]')) {
-    button.addEventListener('click', closeDeleteAllCheckModal);
+    bindOnce(button, 'click', closeDeleteAllCheckModal);
   }
-  document.querySelector<HTMLButtonElement>('[data-delete-all-check-confirm]')?.addEventListener('click', () => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-delete-all-check-confirm]'), 'click', () => {
     void runDeleteAllCheck();
   });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-delete-all-repeats-cancel]')) {
-    button.addEventListener('click', closeDeleteAllRepeatsModal);
+    bindOnce(button, 'click', closeDeleteAllRepeatsModal);
   }
-  document.querySelector<HTMLButtonElement>('[data-delete-all-repeats-confirm]')?.addEventListener('click', () => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-delete-all-repeats-confirm]'), 'click', () => {
     void runDeleteAllRepeats();
   });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-delete-all-done-cancel]')) {
-    button.addEventListener('click', closeDeleteAllDoneModal);
+    bindOnce(button, 'click', closeDeleteAllDoneModal);
   }
-  document.querySelector<HTMLButtonElement>('[data-delete-all-done-confirm]')?.addEventListener('click', () => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-delete-all-done-confirm]'), 'click', () => {
     void runDeleteAllDone();
   });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-generated-plan-modal-close]')) {
-    button.addEventListener('click', closeGeneratedPlanAuditModal);
+    bindOnce(button, 'click', closeGeneratedPlanAuditModal);
   }
-  document.querySelector<HTMLElement>('.generated-plan-audit-modal-backdrop')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLElement>('.generated-plan-audit-modal-backdrop'), 'click', (event) => {
     if (event.target === event.currentTarget) {
       closeGeneratedPlanAuditModal();
     }
@@ -35641,12 +35961,12 @@ function bind(): void {
         event.preventDefault();
         event.stopPropagation();
       };
-      button.addEventListener('pointerdown', blockPastePointerFocus);
-      button.addEventListener('touchstart', (event) => {
+      bindOnce(button, 'pointerdown', blockPastePointerFocus);
+      bindOnce(button, 'touchstart', (event) => {
         event.stopPropagation();
       }, { passive: true });
     }
-    button.addEventListener('click', (event) => {
+    bindOnce(button, 'click', (event) => {
       event.preventDefault();
       event.stopPropagation();
       switch (button.dataset.aiAction) {
@@ -35725,27 +36045,27 @@ function bind(): void {
     });
   }
   for (const details of document.querySelectorAll<HTMLDetailsElement>('.ai-settings-panel')) {
-    details.addEventListener('toggle', (event) => {
+    bindOnce(details, 'toggle', (event) => {
       state.aiSettingsPanelOpen = (event.currentTarget as HTMLDetailsElement).open;
     });
   }
   for (const details of document.querySelectorAll<HTMLDetailsElement>('.workspace-storage-panel')) {
-    details.addEventListener('toggle', (event) => {
+    bindOnce(details, 'toggle', (event) => {
       state.workspaceStoragePanelOpen = (event.currentTarget as HTMLDetailsElement).open;
     });
   }
-  document.querySelector<HTMLButtonElement>('#cloudSignIn')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('#cloudSignIn'), 'click', (event) => {
     event.preventDefault();
     event.stopPropagation();
     void runCloudSignIn();
   });
-  document.querySelector<HTMLButtonElement>('#cloudLogout')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('#cloudLogout'), 'click', (event) => {
     event.preventDefault();
     event.stopPropagation();
     void runCloudLogout();
   });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-cloud-action]')) {
-    button.addEventListener('click', (event) => {
+    bindOnce(button, 'click', (event) => {
       event.preventDefault();
       event.stopPropagation();
       if (button.dataset.cloudAction === 'sign-in') {
@@ -35766,42 +36086,42 @@ function bind(): void {
     });
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-cloud-delete-cancel]')) {
-    button.addEventListener('click', closeCloudWorkspaceDeleteModal);
+    bindOnce(button, 'click', closeCloudWorkspaceDeleteModal);
   }
-  document.querySelector<HTMLButtonElement>('[data-cloud-delete-confirm]')?.addEventListener('click', () => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-cloud-delete-confirm]'), 'click', () => {
     void runConfirmCloudWorkspaceDelete();
   });
-  document.querySelector<HTMLElement>('.cloud-delete-modal-backdrop')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLElement>('.cloud-delete-modal-backdrop'), 'click', (event) => {
     if (event.target === event.currentTarget) {
       closeCloudWorkspaceDeleteModal();
     }
   });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-workflow-mode]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const mode = button.dataset.workflowMode;
       if (!mode || !isWorkflowModePreference(mode)) return;
       void runSetWorkflowModePreference(mode);
     });
   }
-  document.querySelector<HTMLButtonElement>('#connectBridge')?.addEventListener('click', runConnectBridge);
+  bindOnce(document.querySelector<HTMLButtonElement>('#connectBridge'), 'click', runConnectBridge);
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-bridge-action="connect"]')) {
-    button.addEventListener('click', runConnectBridge);
+    bindOnce(button, 'click', runConnectBridge);
   }
-  document.querySelector<HTMLButtonElement>('#disconnectBridge')?.addEventListener('click', runDisconnectBridge);
+  bindOnce(document.querySelector<HTMLButtonElement>('#disconnectBridge'), 'click', runDisconnectBridge);
   for (const button of document.querySelectorAll<HTMLButtonElement>('#refreshInbox')) {
-    button.addEventListener('click', runRefreshInbox);
+    bindOnce(button, 'click', runRefreshInbox);
   }
-  document.querySelector<HTMLButtonElement>('#deleteAllInbox')?.addEventListener('click', openDeleteAllInboxModal);
-  document.querySelector<HTMLButtonElement>('#deleteAllCheck')?.addEventListener('click', openDeleteAllCheckModal);
-  document.querySelector<HTMLButtonElement>('#deleteAllRepeats')?.addEventListener('click', openDeleteAllRepeatsModal);
-  document.querySelector<HTMLButtonElement>('#deleteAllDone')?.addEventListener('click', openDeleteAllDoneModal);
-  document.querySelector<HTMLButtonElement>('#createRecurring')?.addEventListener('click', runCreateRecurring);
-  document.querySelector<HTMLButtonElement>('#createLabArtifact')?.addEventListener('click', runCreateLabArtifact);
-  document.querySelector<HTMLButtonElement>('#refreshLabArtifacts')?.addEventListener('click', runRefreshLabArtifacts);
-  document.querySelector<HTMLButtonElement>('#openAndroidMwaTest')?.addEventListener('click', openAndroidMwaTest);
+  bindOnce(document.querySelector<HTMLButtonElement>('#deleteAllInbox'), 'click', openDeleteAllInboxModal);
+  bindOnce(document.querySelector<HTMLButtonElement>('#deleteAllCheck'), 'click', openDeleteAllCheckModal);
+  bindOnce(document.querySelector<HTMLButtonElement>('#deleteAllRepeats'), 'click', openDeleteAllRepeatsModal);
+  bindOnce(document.querySelector<HTMLButtonElement>('#deleteAllDone'), 'click', openDeleteAllDoneModal);
+  bindOnce(document.querySelector<HTMLButtonElement>('#createRecurring'), 'click', runCreateRecurring);
+  bindOnce(document.querySelector<HTMLButtonElement>('#createLabArtifact'), 'click', runCreateLabArtifact);
+  bindOnce(document.querySelector<HTMLButtonElement>('#refreshLabArtifacts'), 'click', runRefreshLabArtifacts);
+  bindOnce(document.querySelector<HTMLButtonElement>('#openAndroidMwaTest'), 'click', openAndroidMwaTest);
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-start-action]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       if (button.dataset.startAction === 'discover') {
         void (multiPathWalletFlowAvailable() ? runDesktopDiscover() : runDiscover());
       }
@@ -35815,7 +36135,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-demo-tab]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const tab = button.dataset.demoTab as ActiveTab | undefined;
       if (!tab) return;
       trackNavClick(`/demo#${tab}`, 'demo_guide');
@@ -35831,7 +36151,7 @@ function bind(): void {
     });
   }
 
-  document.querySelector<HTMLSelectElement>('#clusterSelect')?.addEventListener('change', (event) => {
+  bindOnce(document.querySelector<HTMLSelectElement>('#clusterSelect'), 'change', (event) => {
     const cluster = (event.currentTarget as HTMLSelectElement).value;
     // Mainnet-only: the dropdown offers no other network, but hard-block anyway.
     if (cluster !== 'mainnet-beta') return;
@@ -35853,27 +36173,27 @@ function bind(): void {
   });
 
   for (const select of document.querySelectorAll<HTMLSelectElement>(`#walletSelect, #${BROWSER_EXTENSION_WALLET_SELECT_ID}`)) {
-    select.addEventListener('change', (event) => {
+    bindOnce(select, 'change', (event) => {
       handleBrowserWalletSelectChange(event.currentTarget as HTMLSelectElement);
     });
   }
 
-  document.querySelector<HTMLSelectElement>('#iosWalletSelect')?.addEventListener('change', (event) => {
+  bindOnce(document.querySelector<HTMLSelectElement>('#iosWalletSelect'), 'change', (event) => {
     void handleIosWalletSelectChange(event.currentTarget as HTMLSelectElement);
   });
 
-  document.querySelector<HTMLInputElement>('#bridgeUrl')?.addEventListener('input', (event) => {
+  bindOnce(document.querySelector<HTMLInputElement>('#bridgeUrl'), 'input', (event) => {
     state.bridgeUrl = (event.currentTarget as HTMLInputElement).value.trim();
     savePersistedState();
   });
 
-  document.querySelector<HTMLInputElement>('#bridgeToken')?.addEventListener('input', (event) => {
+  bindOnce(document.querySelector<HTMLInputElement>('#bridgeToken'), 'input', (event) => {
     state.bridgeToken = (event.currentTarget as HTMLInputElement).value.trim();
     saveSessionBridgeToken(state.bridgeToken);
     savePersistedState();
   });
 
-  document.querySelector<HTMLTextAreaElement>('#agentPrompt')?.addEventListener('input', (event) => {
+  bindOnce(document.querySelector<HTMLTextAreaElement>('#agentPrompt'), 'input', (event) => {
     state.agentPrompt = (event.currentTarget as HTMLTextAreaElement).value;
     delete state.templateFieldErrors.__notes;
     state.agentPlan = null;
@@ -35882,12 +36202,12 @@ function bind(): void {
   });
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-create-action]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       selectCreateAction(button.dataset.createAction as ActionCategory);
     });
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recurring-action-tab]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       selectRecurringAction(button.dataset.recurringActionTab as ActionCategory);
     });
   }
@@ -35896,17 +36216,17 @@ function bind(): void {
 
   // Bind BOTH pickers (new-request + chat surface) so connect-on-select works in every surface.
   document.querySelectorAll<HTMLSelectElement>('[data-connector-create-picker]').forEach((picker) => {
-    picker.addEventListener('input', (event) => {
+    bindOnce(picker, 'input', (event) => {
       selectConnectorForCreate((event.currentTarget as HTMLSelectElement).value);
     });
   });
 
-  document.querySelector<HTMLSelectElement>('[data-connector-create-action]')?.addEventListener('input', (event) => {
+  bindOnce(document.querySelector<HTMLSelectElement>('[data-connector-create-action]'), 'input', (event) => {
     selectConnectorActionForCreate((event.currentTarget as HTMLSelectElement).value);
   });
 
   for (const fieldInput of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input[data-template-field], textarea[data-template-field], select[data-template-field]')) {
-    fieldInput.addEventListener('input', () => {
+    bindOnce(fieldInput, 'input', () => {
       const fieldId = fieldInput.dataset.templateField;
       if (!fieldId) return;
       state.templateFields[fieldId] = syncTemplateFieldFromControl(fieldInput);
@@ -35922,7 +36242,7 @@ function bind(): void {
       scheduleRaydiumPairPreview(fieldId);
       if (shouldRerender || cascadingRerender || fieldId === 'dcaDirection') render();
     });
-    fieldInput.addEventListener('change', () => {
+    bindOnce(fieldInput, 'change', () => {
       const fieldId = fieldInput.dataset.templateField;
       if (!fieldId) return;
       state.templateFields[fieldId] = syncTemplateFieldFromControl(fieldInput);
@@ -35934,7 +36254,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('button[data-template-field-choice][data-template-field-value]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const fieldId = button.dataset.templateFieldChoice;
       const fieldValue = button.dataset.templateFieldValue;
       if (!fieldId || fieldValue === undefined) return;
@@ -35954,7 +36274,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('button[data-cascading-retry]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const cacheKey = button.dataset.cascadingRetry;
       if (!cacheKey) return;
       delete state.templateFieldOptionCache[cacheKey];
@@ -35963,12 +36283,12 @@ function bind(): void {
   }
 
   for (const input of document.querySelectorAll<HTMLInputElement>('[data-token-search-input]')) {
-    input.addEventListener('focus', () => {
+    bindOnce(input, 'focus', () => {
       const fieldId = input.dataset.tokenSearchInput;
       if (!fieldId) return;
       handleTokenSearchInput(fieldId, input.value);
     });
-    input.addEventListener('input', () => {
+    bindOnce(input, 'input', () => {
       const fieldId = input.dataset.tokenSearchInput;
       if (!fieldId) return;
       handleTokenSearchInput(fieldId, input.value);
@@ -35977,7 +36297,7 @@ function bind(): void {
   bindTokenSearchSelectButtons();
 
   for (const fieldInput of document.querySelectorAll<HTMLInputElement>('input[data-template-slippage-field]')) {
-    fieldInput.addEventListener('input', () => {
+    bindOnce(fieldInput, 'input', () => {
       const fieldId = fieldInput.dataset.templateSlippageField;
       if (!fieldId) return;
       state.templateFields[fieldId] = slippagePercentInputToBps(fieldInput.value);
@@ -35986,7 +36306,7 @@ function bind(): void {
       state.agentSignature = '';
       state.agentPreparedActionId = '';
     });
-    fieldInput.addEventListener('change', () => {
+    bindOnce(fieldInput, 'change', () => {
       const fieldId = fieldInput.dataset.templateSlippageField;
       if (!fieldId) return;
       state.templateFields[fieldId] = slippagePercentInputToBps(fieldInput.value);
@@ -35996,7 +36316,7 @@ function bind(): void {
   // Auto | Custom slippage pills: Auto clears the value (→ omit slippageBps, Jupiter dynamic);
   // Custom seeds the 0.5% (50 bps) default so the input is immediately editable.
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-template-slippage-mode]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const fieldId = button.dataset.templateSlippageField;
       if (!fieldId) return;
       state.templateFields[fieldId] = button.dataset.templateSlippageMode === 'custom'
@@ -36022,7 +36342,7 @@ function bind(): void {
     state.agentPreparedActionId = '';
   };
   for (const usdInput of document.querySelectorAll<HTMLInputElement>('[data-template-amount-usd]')) {
-    usdInput.addEventListener('input', () => {
+    bindOnce(usdInput, 'input', () => {
       const fieldId = usdInput.dataset.templateAmountUsd;
       if (!fieldId) return;
       const asset = plannerSpendTokenAsset();
@@ -36037,7 +36357,7 @@ function bind(): void {
     });
   }
   for (const unitBtn of document.querySelectorAll<HTMLButtonElement>('[data-template-amount-unit]')) {
-    unitBtn.addEventListener('click', () => {
+    bindOnce(unitBtn, 'click', () => {
       const fieldId = unitBtn.dataset.templateAmountField;
       if (!fieldId) return;
       templateAmountModes[fieldId] = unitBtn.dataset.templateAmountUnit === 'token' ? 'token' : 'usd';
@@ -36058,13 +36378,13 @@ function bind(): void {
     render();
   };
   for (const pctBtn of document.querySelectorAll<HTMLButtonElement>('[data-template-pct]')) {
-    pctBtn.addEventListener('click', () => {
+    bindOnce(pctBtn, 'click', () => {
       const fieldId = pctBtn.dataset.templateAmountField;
       if (fieldId) applyPlannerPercent(fieldId, Number(pctBtn.dataset.templatePct ?? ''));
     });
   }
   for (const applyBtn of document.querySelectorAll<HTMLButtonElement>('[data-template-pct-apply]')) {
-    applyBtn.addEventListener('click', () => {
+    bindOnce(applyBtn, 'click', () => {
       const fieldId = applyBtn.dataset.templatePctApply;
       if (!fieldId) return;
       const input = document.querySelector<HTMLInputElement>(`[data-template-pct-input="${cssEscape(fieldId)}"]`);
@@ -36074,7 +36394,7 @@ function bind(): void {
     });
   }
   for (const fieldInput of document.querySelectorAll<HTMLInputElement>('[data-template-interval-field]')) {
-    fieldInput.addEventListener('input', () => {
+    bindOnce(fieldInput, 'input', () => {
       const fieldId = fieldInput.dataset.templateIntervalField;
       if (!fieldId) return;
       syncTemplateIntervalField(fieldId);
@@ -36083,7 +36403,7 @@ function bind(): void {
       state.agentSignature = '';
       state.agentPreparedActionId = '';
     });
-    fieldInput.addEventListener('change', () => {
+    bindOnce(fieldInput, 'change', () => {
       const fieldId = fieldInput.dataset.templateIntervalField;
       if (!fieldId) return;
       syncTemplateIntervalField(fieldId);
@@ -36091,7 +36411,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-token-field-mode]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const fieldId = button.dataset.tokenFieldId;
       const mode = button.dataset.tokenFieldMode;
       const fieldDef = selectedTemplate().fields.find((field) => field.id === fieldId);
@@ -36121,7 +36441,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-ai-mode-choice]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const value = button.dataset.aiModeChoice;
       if (!value || !isAiMode(value)) return;
       const mode = value;
@@ -36130,7 +36450,7 @@ function bind(): void {
   }
 
   for (const control of document.querySelectorAll<HTMLSelectElement>('[data-ai-control="mode"]')) {
-    control.addEventListener('change', (event) => {
+    bindOnce(control, 'change', (event) => {
       const value = (event.currentTarget as HTMLSelectElement).value;
       if (!isAiMode(value)) return;
       const mode = value;
@@ -36139,7 +36459,7 @@ function bind(): void {
   }
 
   for (const control of document.querySelectorAll<HTMLSelectElement>('[data-ai-control="provider"]')) {
-    control.addEventListener('change', (event) => {
+    bindOnce(control, 'change', (event) => {
       const preset = aiProviderPresetById((event.currentTarget as HTMLSelectElement).value);
       if (aiProviderDisabledReason(preset.id)) {
         render();
@@ -36162,7 +36482,7 @@ function bind(): void {
   }
 
   for (const control of document.querySelectorAll<HTMLInputElement>('[data-ai-control="base-url"]')) {
-    control.addEventListener('input', (event) => {
+    bindOnce(control, 'input', (event) => {
       state.aiSettings.baseUrl = (event.currentTarget as HTMLInputElement).value.trim();
       resetAiPlannerConfirmation('Gateway changed. Confirm planner again if needed.');
       savePersistedState();
@@ -36173,7 +36493,7 @@ function bind(): void {
   }
 
   for (const control of document.querySelectorAll<HTMLSelectElement>('[data-ai-control="model-select"]')) {
-    control.addEventListener('change', (event) => {
+    bindOnce(control, 'change', (event) => {
       const value = (event.currentTarget as HTMLSelectElement).value;
       state.aiSettings.model = value === CUSTOM_AI_MODEL_VALUE ? '' : value;
       resetAiPlannerConfirmation('Model changed. Confirm planner again if needed.');
@@ -36186,7 +36506,7 @@ function bind(): void {
   }
 
   for (const control of document.querySelectorAll<HTMLSelectElement>('[data-ai-control="reasoning-select"]')) {
-    control.addEventListener('change', (event) => {
+    bindOnce(control, 'change', (event) => {
       const value = (event.currentTarget as HTMLSelectElement).value;
       if (value === 'minimal' || value === 'low' || value === 'medium' || value === 'high') {
         state.aiSettings.reasoningEffort = value;
@@ -36199,7 +36519,7 @@ function bind(): void {
   }
 
   for (const control of document.querySelectorAll<HTMLInputElement>('[data-ai-control="model-custom"]')) {
-    control.addEventListener('input', (event) => {
+    bindOnce(control, 'input', (event) => {
       state.aiSettings.model = (event.currentTarget as HTMLInputElement).value.trim();
       resetAiPlannerConfirmation('Model changed. Confirm planner again if needed.');
       savePersistedState();
@@ -36210,7 +36530,7 @@ function bind(): void {
   }
 
   for (const control of document.querySelectorAll<HTMLInputElement>('[data-ai-control="api-key"]')) {
-    control.addEventListener('input', (event) => {
+    bindOnce(control, 'input', (event) => {
       state.aiSettings.apiKey = (event.currentTarget as HTMLInputElement).value;
       saveCurrentSessionAiApiKey();
       resetAiPlannerConfirmation('AI key changed. Confirm planner again if needed.');
@@ -36223,7 +36543,7 @@ function bind(): void {
     // (which also re-syncs the keyboard-aware viewport vars), so skip them here to avoid a
     // double scrollIntoView; this handler still covers the non-rail planner/panel inputs.
     if (control.closest('[data-mobile-rail-sheet-root]')) continue;
-    control.addEventListener('focus', (event) => {
+    bindOnce(control, 'focus', (event) => {
       const target = event.currentTarget as HTMLInputElement;
       window.setTimeout(() => {
         try {
@@ -36236,7 +36556,7 @@ function bind(): void {
   }
 
   for (const control of document.querySelectorAll<HTMLSelectElement>('[data-ai-control="plan-connector-connector"]')) {
-    control.addEventListener('change', (event) => {
+    bindOnce(control, 'change', (event) => {
       const connector = normalizeWebConnector((event.currentTarget as HTMLSelectElement).value);
       if (!connector) {
         render();
@@ -36257,7 +36577,7 @@ function bind(): void {
   }
 
   for (const control of document.querySelectorAll<HTMLSelectElement>('[data-ai-control="device-agent-secret-store-mode"]')) {
-    control.addEventListener('change', (event) => {
+    bindOnce(control, 'change', (event) => {
       const mode = (event.currentTarget as HTMLSelectElement).value;
       if (!isBrowserDeviceAgentSecretStoreMode(mode)) return;
       void runSetBrowserDeviceAgentSecretStoreMode(mode);
@@ -36265,7 +36585,7 @@ function bind(): void {
   }
 
   for (const control of document.querySelectorAll<HTMLInputElement>('[data-ai-toggle="multiReviewer"]')) {
-    control.addEventListener('change', (event) => {
+    bindOnce(control, 'change', (event) => {
       state.aiSettings.multiReviewer = (event.currentTarget as HTMLInputElement).checked;
       savePersistedState();
       void syncCloudPreference('ai-settings');
@@ -36274,7 +36594,7 @@ function bind(): void {
   }
 
   for (const control of document.querySelectorAll<HTMLInputElement>('[data-ai-toggle="autoBackgroundWatch"]')) {
-    control.addEventListener('change', (event) => {
+    bindOnce(control, 'change', (event) => {
       const checked = (event.currentTarget as HTMLInputElement).checked;
       state.aiSettings.autoBackgroundWatch = checked;
       savePersistedState();
@@ -36288,25 +36608,25 @@ function bind(): void {
     });
   }
 
-  document.querySelector<HTMLTextAreaElement>('#labInput')?.addEventListener('input', (event) => {
+  bindOnce(document.querySelector<HTMLTextAreaElement>('#labInput'), 'input', (event) => {
     state.labInputs[state.activeLab] = (event.currentTarget as HTMLTextAreaElement).value;
     delete state.labFieldErrors[receiptFieldErrorKey(state.activeLab, '__advanced')];
     syncLabActionButton();
   });
 
-  document.querySelector<HTMLSelectElement>('#labSelect')?.addEventListener('change', (event) => {
+  bindOnce(document.querySelector<HTMLSelectElement>('#labSelect'), 'change', (event) => {
     state.activeLab = (event.currentTarget as HTMLSelectElement).value;
     state.error = '';
     render();
   });
 
   for (const field of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('[data-lab-field]')) {
-    field.addEventListener('input', () => updateLabFieldValue(field));
-    field.addEventListener('change', () => updateLabFieldValue(field));
+    bindOnce(field, 'input', () => updateLabFieldValue(field));
+    bindOnce(field, 'change', () => updateLabFieldValue(field));
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-lab-action]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       if (button.dataset.labAction !== 'create-another') return;
       clearActiveLabDraft();
       state.error = '';
@@ -36315,7 +36635,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-artifact-view]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const view = button.dataset.artifactView;
       if (view !== 'create' && view !== 'signed') return;
       const previous = state.artifactView;
@@ -36335,7 +36655,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-artifact-proof-group]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const group = button.dataset.artifactProofGroup as ArtifactProofGroup | undefined;
       if (group !== 'common' && group !== 'advanced') return;
       if (artifactProofGroupForLab(activeLab()) === group) return;
@@ -36347,7 +36667,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-artifact-filter]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const filter = button.dataset.artifactFilter as ArtifactFilter | undefined;
       if (!filter) return;
       state.artifactFilter = filter;
@@ -36357,19 +36677,19 @@ function bind(): void {
     });
   }
 
-  document.querySelector<HTMLSelectElement>('#artifactTypeFilter')?.addEventListener('change', (event) => {
+  bindOnce(document.querySelector<HTMLSelectElement>('#artifactTypeFilter'), 'change', (event) => {
     state.artifactTypeFilter = (event.currentTarget as HTMLSelectElement).value;
     state.listPages.receiptArchive = 1;
     state.error = '';
     render();
   });
 
-  document.querySelector<HTMLInputElement>('#artifactSearch')?.addEventListener('input', (event) => {
+  bindOnce(document.querySelector<HTMLInputElement>('#artifactSearch'), 'input', (event) => {
     state.artifactSearch = (event.currentTarget as HTMLInputElement).value;
     state.listPages.receiptArchive = 1;
     syncArtifactSearchResults();
   });
-  document.querySelector<HTMLInputElement>('#artifactSearch')?.addEventListener('change', (event) => {
+  bindOnce(document.querySelector<HTMLInputElement>('#artifactSearch'), 'change', (event) => {
     state.artifactSearch = (event.currentTarget as HTMLInputElement).value;
     state.listPages.receiptArchive = 1;
     state.error = '';
@@ -36377,7 +36697,7 @@ function bind(): void {
   });
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-artifact-delete]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const artifactId = button.dataset.artifactDelete;
       if (!artifactId) return;
       void runDeleteLabArtifact(artifactId);
@@ -36385,7 +36705,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-share-receipt]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const artifactId = button.dataset.shareReceipt;
       if (!artifactId) return;
       void runShareLabArtifact(artifactId);
@@ -36393,26 +36713,26 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-artifact-retry-cloud]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const artifactId = button.dataset.artifactRetryCloud;
       if (!artifactId) return;
       void runRetryCloudArtifact(artifactId);
     });
   }
 
-  document.querySelector<HTMLTextAreaElement>('#txInput')?.addEventListener('input', (event) => {
+  bindOnce(document.querySelector<HTMLTextAreaElement>('#txInput'), 'input', (event) => {
     state.customTransactionBase64 = (event.currentTarget as HTMLTextAreaElement).value.trim();
     state.txSignature = '';
     state.txid = '';
   });
 
-  document.querySelector<HTMLSelectElement>('#inboxFilter')?.addEventListener('change', (event) => {
+  bindOnce(document.querySelector<HTMLSelectElement>('#inboxFilter'), 'change', (event) => {
     state.inboxFilter = (event.currentTarget as HTMLSelectElement).value as InboxFilter;
     state.listPages.inbox = 1;
     render();
   });
 
-  document.querySelector<HTMLSelectElement>('#completedFilter')?.addEventListener('change', (event) => {
+  bindOnce(document.querySelector<HTMLSelectElement>('#completedFilter'), 'change', (event) => {
     const filter = (event.currentTarget as HTMLSelectElement).value;
     if (!isCompletedPlanFilter(filter)) return;
     state.completedPlanFilter = filter;
@@ -36420,7 +36740,7 @@ function bind(): void {
     render();
   });
 
-  document.querySelector<HTMLSelectElement>('#generatedPlanAgentReviewFilter')?.addEventListener('change', (event) => {
+  bindOnce(document.querySelector<HTMLSelectElement>('#generatedPlanAgentReviewFilter'), 'change', (event) => {
     const filter = (event.currentTarget as HTMLSelectElement).value;
     if (!isAgentReviewFilter(filter)) return;
     state.generatedPlanAgentReviewFilter = filter;
@@ -36430,7 +36750,7 @@ function bind(): void {
     render();
   });
 
-  document.querySelector<HTMLSelectElement>('#recurringAgentReviewFilter')?.addEventListener('change', (event) => {
+  bindOnce(document.querySelector<HTMLSelectElement>('#recurringAgentReviewFilter'), 'change', (event) => {
     const filter = (event.currentTarget as HTMLSelectElement).value;
     if (!isAgentReviewFilter(filter)) return;
     state.recurringAgentReviewFilter = filter;
@@ -36439,7 +36759,7 @@ function bind(): void {
     render();
   });
 
-  document.querySelector<HTMLSelectElement>('#recurringPresetPicker')?.addEventListener('change', (event) => {
+  bindOnce(document.querySelector<HTMLSelectElement>('#recurringPresetPicker'), 'change', (event) => {
     const value = (event.currentTarget as HTMLSelectElement).value;
     const preset = RECURRING_PRESETS.find((candidate) => candidate.id === value);
     if (!preset) return;
@@ -36448,7 +36768,7 @@ function bind(): void {
   });
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recurring-action]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       if (button.dataset.recurringAction === 'dca-proof') {
         openDcaReviewProofTemplate();
       }
@@ -36456,7 +36776,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recurring-token-mode]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const mode = button.dataset.recurringTokenMode;
       const field = recurringTokenFieldFromDataset(button.dataset.recurringTokenField);
       state.recurringDraft = readRecurringDraft();
@@ -36481,7 +36801,7 @@ function bind(): void {
 
   // Recurring Auto | Custom slippage pills (Auto clears the value → backend safe-cap default).
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recurring-slippage-mode]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       state.recurringDraft = readRecurringDraft();
       state.recurringDraft.slippageBps = button.dataset.recurringSlippageMode === 'custom'
         ? (state.recurringDraft.slippageBps?.trim() || '50')
@@ -36494,7 +36814,7 @@ function bind(): void {
   }
 
   for (const recurringInput of document.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('[data-recurring-field]')) {
-    recurringInput.addEventListener('input', () => {
+    bindOnce(recurringInput, 'input', () => {
       const field = recurringInput.dataset.recurringField;
       syncRecurringTokenFieldFromControl(recurringInput);
       state.recurringDraft = readRecurringDraft();
@@ -36503,7 +36823,7 @@ function bind(): void {
       }
       syncRecurringPreview();
     });
-    recurringInput.addEventListener('change', () => {
+    bindOnce(recurringInput, 'change', () => {
       const field = recurringInput.dataset.recurringField;
       syncRecurringTokenFieldFromControl(recurringInput);
       state.recurringDraft = readRecurringDraft();
@@ -36518,7 +36838,7 @@ function bind(): void {
   // unit pill + % quick-fills compute a concrete token amount of the spend balance.
   const usdAmountInput = document.querySelector<HTMLInputElement>('[data-recurring-amount-usd]');
   if (usdAmountInput) {
-    usdAmountInput.addEventListener('input', () => {
+    bindOnce(usdAmountInput, 'input', () => {
       const asset = recurringSpendTokenAsset();
       const price = asset?.priceUsd;
       const usd = Number((usdAmountInput.value || '').replace(/[^\d.]/g, ''));
@@ -36532,7 +36852,7 @@ function bind(): void {
     });
   }
   for (const unitBtn of document.querySelectorAll<HTMLButtonElement>('[data-recurring-amount-unit]')) {
-    unitBtn.addEventListener('click', () => {
+    bindOnce(unitBtn, 'click', () => {
       recurringAmountMode = unitBtn.dataset.recurringAmountUnit === 'token' ? 'token' : 'usd';
       // Don't replay the chat rail-sheet slide on an in-sheet toggle (the recurring inputs have
       // stable ids so the focus snapshot re-targets them after the re-render).
@@ -36551,9 +36871,9 @@ function bind(): void {
     render();
   };
   for (const pctBtn of document.querySelectorAll<HTMLButtonElement>('[data-recurring-pct]')) {
-    pctBtn.addEventListener('click', () => applyRecurringPercent(Number(pctBtn.dataset.recurringPct ?? '')));
+    bindOnce(pctBtn, 'click', () => applyRecurringPercent(Number(pctBtn.dataset.recurringPct ?? '')));
   }
-  document.querySelector<HTMLButtonElement>('[data-recurring-pct-apply]')?.addEventListener('click', () => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-recurring-pct-apply]'), 'click', () => {
     const input = document.querySelector<HTMLInputElement>('[data-recurring-pct-input]');
     const pct = Number((input?.value ?? '').replace(/[^\d.]/g, ''));
     if (!Number.isFinite(pct) || pct <= 0 || pct > 100) { pushToast('error', t('Invalid percent'), t('Enter a percent between 0 and 100.')); return; }
@@ -36561,7 +36881,7 @@ function bind(): void {
   });
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recipient-toggle]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const key = button.dataset.recipientToggle;
       if (key !== 'enabled' && key !== 'allowListEnabled' && key !== 'blockListEnabled') return;
       state.recipientRules[key] = !state.recipientRules[key];
@@ -36574,100 +36894,100 @@ function bind(): void {
   }
 
   for (const field of document.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-recipient-field]')) {
-    field.addEventListener('input', () => updateRecipientDraftField(field));
-    field.addEventListener('change', () => updateRecipientDraftField(field));
+    bindOnce(field, 'input', () => updateRecipientDraftField(field));
+    bindOnce(field, 'change', () => updateRecipientDraftField(field));
   }
 
   for (const select of document.querySelectorAll<HTMLSelectElement>('[data-recipient-select]')) {
-    select.addEventListener('input', () => applyRecipientSelection(select));
-    select.addEventListener('change', () => applyRecipientSelection(select));
+    bindOnce(select, 'input', () => applyRecipientSelection(select));
+    bindOnce(select, 'change', () => applyRecipientSelection(select));
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recipient-action]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       handleRecipientAction(button);
     });
   }
 
   for (const field of document.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-agent-policy-field]')) {
-    field.addEventListener('input', () => updateAgentPolicyDraftField(field));
-    field.addEventListener('change', () => updateAgentPolicyDraftField(field));
+    bindOnce(field, 'input', () => updateAgentPolicyDraftField(field));
+    bindOnce(field, 'change', () => updateAgentPolicyDraftField(field));
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-agent-policy-action]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       handleAgentPolicyAction(button);
     });
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-connected-dapp-action]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       handleConnectedDappAction(button);
     });
   }
 
   for (const field of document.querySelectorAll<HTMLInputElement>('[data-protocol-connector-pref]')) {
-    field.addEventListener('input', () => updateProtocolConnectorPref(field));
-    field.addEventListener('change', () => updateProtocolConnectorPref(field));
+    bindOnce(field, 'input', () => updateProtocolConnectorPref(field));
+    bindOnce(field, 'change', () => updateProtocolConnectorPref(field));
   }
 
   for (const field of document.querySelectorAll<HTMLInputElement>('[data-custom-token-field]')) {
-    field.addEventListener('input', () => updateCustomTokenDraftField(field));
-    field.addEventListener('change', () => updateCustomTokenDraftField(field));
+    bindOnce(field, 'input', () => updateCustomTokenDraftField(field));
+    bindOnce(field, 'change', () => updateCustomTokenDraftField(field));
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-custom-token-action]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       handleCustomTokenAction(button);
     });
   }
 
   for (const field of document.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-agent-field]')) {
-    field.addEventListener('input', () => updateAgentDraftField(field));
-    field.addEventListener('change', () => updateAgentDraftField(field));
+    bindOnce(field, 'input', () => updateAgentDraftField(field));
+    bindOnce(field, 'change', () => updateAgentDraftField(field));
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-agent-action]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       handleAgentAction(button);
     });
   }
 
   for (const textarea of document.querySelectorAll<HTMLTextAreaElement>('textarea[data-planner-pref="houseRules"]')) {
-    textarea.addEventListener('input', () => updateHouseRules(textarea.value));
-    textarea.addEventListener('change', () => updateHouseRules(textarea.value));
+    bindOnce(textarea, 'input', () => updateHouseRules(textarea.value));
+    bindOnce(textarea, 'change', () => updateHouseRules(textarea.value));
   }
 
   for (const field of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('[data-saved-prompt-field]')) {
-    field.addEventListener('input', () => updateSavedPromptDraftField(field));
-    field.addEventListener('change', () => updateSavedPromptDraftField(field));
+    bindOnce(field, 'input', () => updateSavedPromptDraftField(field));
+    bindOnce(field, 'change', () => updateSavedPromptDraftField(field));
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-saved-prompt-action]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       handleSavedPromptAction(button);
     });
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-failure-policy-action]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       handleFailurePolicyAction(button);
     });
   }
 
   for (const field of document.querySelectorAll<HTMLInputElement>('[data-failure-policy-field]')) {
-    field.addEventListener('change', () => handleFailurePolicyFieldChange(field));
-    field.addEventListener('blur', () => handleFailurePolicyFieldChange(field));
+    bindOnce(field, 'change', () => handleFailurePolicyFieldChange(field));
+    bindOnce(field, 'blur', () => handleFailurePolicyFieldChange(field));
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-template-action]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       handleTemplateAction(button);
     });
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-action-op]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const actionId = button.dataset.actionId;
       const op = button.dataset.actionOp;
       if (!actionId || !op) return;
@@ -36691,7 +37011,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-inline-receipt-kind]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const actionId = button.dataset.inlineReceiptActionId;
       const proofKind = button.dataset.inlineReceiptKind as InlineReceiptKind | undefined;
       if (!actionId || !proofKind) return;
@@ -36702,7 +37022,7 @@ function bind(): void {
   for (const details of document.querySelectorAll<HTMLDetailsElement>('[data-audit-record-type][data-audit-record-id]')) {
     const recordType = details.dataset.auditRecordType as AuditRecordType | undefined;
     const recordId = details.dataset.auditRecordId;
-    details.addEventListener('toggle', () => {
+    bindOnce(details, 'toggle', () => {
       if (!recordType || !recordId) return;
       const key = auditActivityKey(recordType, recordId);
       state.auditOpen[key] = details.open;
@@ -36716,7 +37036,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-audit-refresh-record-type][data-audit-refresh-record-id]')) {
-    button.addEventListener('click', (event) => {
+    bindOnce(button, 'click', (event) => {
       event.preventDefault();
       event.stopPropagation();
       const recordType = button.dataset.auditRefreshRecordType as AuditRecordType | undefined;
@@ -36728,7 +37048,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recurring-op]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const recurringId = button.dataset.recurringId;
       const op = button.dataset.recurringOp;
       if (!recurringId || !op) return;
@@ -36737,7 +37057,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-lab]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       state.activeLab = button.dataset.lab ?? LABS[0]!.id;
       state.error = '';
       render();
@@ -36745,7 +37065,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-runtime-path]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const runtimePath = runtimePathById(button.dataset.runtimePath);
       if (!runtimePath) return;
       state.selectedRuntimePath = runtimePath.id;
@@ -36756,7 +37076,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-copy]')) {
-    button.addEventListener('click', async () => {
+    bindOnce(button, 'click', async () => {
       const value = button.dataset.copy ?? '';
       const rawLabel = button.dataset.copyName ?? t('Value');
       const label = t(rawLabel);
@@ -36784,7 +37104,7 @@ function bind(): void {
   }
 
   for (const control of document.querySelectorAll<HTMLSelectElement>('[data-ai-connectors-control="connector"]')) {
-    control.addEventListener('change', (event) => {
+    bindOnce(control, 'change', (event) => {
       const connector = normalizeWebConnector((event.currentTarget as HTMLSelectElement).value);
       if (!connector) {
         render();
@@ -36795,7 +37115,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-ai-connectors-action]')) {
-    button.addEventListener('click', (event) => {
+    bindOnce(button, 'click', (event) => {
       event.preventDefault();
       const action = button.dataset.aiConnectorsAction;
       if (action === 'start-pairing') {
@@ -36816,31 +37136,10 @@ function bind(): void {
     });
   }
 
-  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-toast-dismiss]')) {
-    button.addEventListener('click', () => dismissToast(Number(button.dataset.toastDismiss)));
-  }
-
-  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-toast-action-url]')) {
-    button.addEventListener('click', (event) => {
-      event.preventDefault();
-      const url = button.dataset.toastActionUrl;
-      // Jupiter approval toasts: force-re-foreground Jupiter for the pending
-      // connect/sign (re-fires the proper jupiter://wc?uri=… we retained), which
-      // is what actually shows the request. Only fall back to opening the raw
-      // actionUrl when there's nothing pending to re-foreground.
-      if (button.dataset.toastActionReforeground === '1') {
-        void iosNativeReForegroundJupiter().then((handled) => {
-          if (!handled && url) void iosNativeOpenExternalUrl(url);
-        });
-        return;
-      }
-      if (!url) return;
-      void iosNativeOpenExternalUrl(url);
-    });
-  }
+  bindToastButtons();
 
   for (const link of document.querySelectorAll<HTMLAnchorElement>('[data-download-asset]')) {
-    link.addEventListener('click', () => {
+    bindOnce(link, 'click', () => {
       trackDownloadClick(
         link.dataset.downloadKind ?? 'download',
         link.dataset.downloadPlatform ?? 'unknown',
@@ -36850,7 +37149,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLElement>('[data-health-action]')) {
-    button.addEventListener('click', (event) => {
+    bindOnce(button, 'click', (event) => {
       event.preventDefault();
       const action = button.dataset.healthAction;
       if (!action) return;
@@ -36859,7 +37158,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-workspace-backup-action]')) {
-    button.addEventListener('click', (event) => {
+    bindOnce(button, 'click', (event) => {
       event.preventDefault();
       const op = button.dataset.workspaceBackupAction;
       if (!op) return;
@@ -36868,7 +37167,7 @@ function bind(): void {
   }
 
   for (const input of document.querySelectorAll<HTMLInputElement>('[data-workspace-backup-file]')) {
-    input.addEventListener('change', () => {
+    bindOnce(input, 'change', () => {
       const file = input.files?.[0];
       if (!file) return;
       void handleWorkspaceBackupFile(file);
@@ -36877,7 +37176,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-preflight-action]')) {
-    button.addEventListener('click', (event) => {
+    bindOnce(button, 'click', (event) => {
       event.preventDefault();
       const op = button.dataset.preflightAction;
       const actionId = button.dataset.actionId;
@@ -36887,7 +37186,7 @@ function bind(): void {
   }
 
   for (const el of document.querySelectorAll<HTMLElement>('[data-safety-rails-action]')) {
-    el.addEventListener('click', (event) => {
+    bindOnce(el, 'click', (event) => {
       event.preventDefault();
       const op = el.dataset.safetyRailsAction;
       if (!op) return;
@@ -36896,7 +37195,7 @@ function bind(): void {
   }
 
   for (const el of document.querySelectorAll<HTMLElement>('[data-attach-tx-action]')) {
-    el.addEventListener('click', (event) => {
+    bindOnce(el, 'click', (event) => {
       event.preventDefault();
       const op = el.dataset.attachTxAction;
       if (!op) return;
@@ -36905,11 +37204,11 @@ function bind(): void {
   }
 
   for (const input of document.querySelectorAll<HTMLInputElement>('[data-attach-tx-input]')) {
-    input.addEventListener('input', () => {
+    bindOnce(input, 'input', () => {
       if (!state.attachTxModal) return;
       state.attachTxModal = { ...state.attachTxModal, txidInput: input.value };
     });
-    input.addEventListener('keydown', (event) => {
+    bindOnce(input, 'keydown', (event) => {
       if (event.key === 'Enter') {
         event.preventDefault();
         void handleAttachTxAction('lookup', input.dataset);
@@ -36918,7 +37217,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-notification-action]')) {
-    button.addEventListener('click', (event) => {
+    bindOnce(button, 'click', (event) => {
       event.preventDefault();
       const op = button.dataset.notificationAction;
       if (!op) return;
@@ -36927,7 +37226,7 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-debug-export]')) {
-    button.addEventListener('click', (event) => {
+    bindOnce(button, 'click', (event) => {
       event.preventDefault();
       const actionId = button.dataset.actionId;
       void copyDiagnosticBundle(actionId || undefined);
@@ -36943,7 +37242,7 @@ function bind(): void {
   if (agenticLoginButtonRaw) {
     const fresh = agenticLoginButtonRaw.cloneNode(true) as HTMLButtonElement;
     agenticLoginButtonRaw.parentNode?.replaceChild(fresh, agenticLoginButtonRaw);
-    fresh.addEventListener('click', () => {
+    bindOnce(fresh, 'click', () => {
       void completeAgenticLogin();
     });
   }
@@ -37250,7 +37549,7 @@ function restoreGuidedDemoScenarioAnchor(scenarioId: string, previousTop: number
 
 function bindRouteLinks(): void {
   for (const link of document.querySelectorAll<HTMLAnchorElement>('a[href]')) {
-    link.addEventListener('click', (event) => {
+    bindOnce(link, 'click', (event) => {
       if (
         event.defaultPrevented ||
         event.button !== 0 ||
@@ -37284,7 +37583,7 @@ function bindExternalLinks(): void {
   for (const link of document.querySelectorAll<HTMLAnchorElement>('a[href]')) {
     const href = link.dataset.externalUrl ?? link.getAttribute('href') ?? '';
     if (!shouldInterceptExternalLink(href, window.location.href)) continue;
-    link.addEventListener('click', (event) => {
+    bindOnce(link, 'click', (event) => {
       if (
         event.defaultPrevented ||
         event.button !== 0 ||
@@ -37379,13 +37678,13 @@ function bindActionDropdowns(): void {
       window.visualViewport?.addEventListener('resize', () => positionTemplatePickerMenu(trigger, menu), { signal });
     };
 
-    trigger.addEventListener('click', (event) => {
+    bindOnce(trigger, 'click', (event) => {
       event.stopPropagation();
       if (menu.hidden) openMenu();
       else closeMenu(false);
     });
     for (const option of options) {
-      option.addEventListener('click', () => {
+      bindOnce(option, 'click', () => {
         const category = option.dataset.actionOption as ActionCategory | undefined;
         if (!category) return;
         closeMenu(false);
@@ -37443,7 +37742,7 @@ function bindSlippagePickers(): void {
       window.visualViewport?.addEventListener('resize', () => positionTemplatePickerMenu(trigger, menu), { signal });
     };
 
-    trigger.addEventListener('click', (event) => {
+    bindOnce(trigger, 'click', (event) => {
       event.stopPropagation();
       if (menu.hidden) openMenu(false);
       else closeMenu(false);
@@ -37513,7 +37812,7 @@ function bindTemplatePicker(): void {
     }
   };
 
-  trigger.addEventListener('click', (event) => {
+  bindOnce(trigger, 'click', (event) => {
     event.stopPropagation();
     if (menu.hidden) {
       openPicker(false);
@@ -37522,7 +37821,7 @@ function bindTemplatePicker(): void {
     }
   });
 
-  trigger.addEventListener('keydown', (event) => {
+  bindOnce(trigger, 'keydown', (event) => {
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       openPicker('selected');
@@ -37539,7 +37838,7 @@ function bindTemplatePicker(): void {
     }
   });
 
-  menu.addEventListener('keydown', (event) => {
+  bindOnce(menu, 'keydown', (event) => {
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       focusAdjacentTemplateOption(options, 1);
@@ -37570,14 +37869,14 @@ function bindTemplatePicker(): void {
   });
 
   for (const option of options) {
-    option.addEventListener('click', () => {
+    bindOnce(option, 'click', () => {
       const templateId = option.dataset.templateOption;
       if (!templateId) return;
       if (!selectAgentTemplate(templateId)) {
         closePicker(true);
       }
     });
-    option.addEventListener('pointermove', () => setActiveTemplateOption(options, option, false));
+    bindOnce(option, 'pointermove', () => setActiveTemplateOption(options, option, false));
   }
 }
 
@@ -37637,7 +37936,7 @@ function bindArtifactPicker(): void {
     }
   };
 
-  trigger.addEventListener('click', (event) => {
+  bindOnce(trigger, 'click', (event) => {
     event.stopPropagation();
     if (menu.hidden) {
       openPicker(false);
@@ -37646,7 +37945,7 @@ function bindArtifactPicker(): void {
     }
   });
 
-  trigger.addEventListener('keydown', (event) => {
+  bindOnce(trigger, 'keydown', (event) => {
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       openPicker('selected');
@@ -37663,7 +37962,7 @@ function bindArtifactPicker(): void {
     }
   });
 
-  menu.addEventListener('keydown', (event) => {
+  bindOnce(menu, 'keydown', (event) => {
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       focusAdjacentTemplateOption(options, 1);
@@ -37694,14 +37993,14 @@ function bindArtifactPicker(): void {
   });
 
   for (const option of options) {
-    option.addEventListener('click', () => {
+    bindOnce(option, 'click', () => {
       const labId = option.dataset.artifactOption;
       if (!labId) return;
       if (!selectArtifactLab(labId)) {
         closePicker(true);
       }
     });
-    option.addEventListener('pointermove', () => setActiveTemplateOption(options, option, false));
+    bindOnce(option, 'pointermove', () => setActiveTemplateOption(options, option, false));
   }
 }
 
@@ -37807,7 +38106,7 @@ function bindSelectPickers(): void {
       }
     };
 
-    trigger.addEventListener('click', (event) => {
+    bindOnce(trigger, 'click', (event) => {
       event.stopPropagation();
       if (menu.hidden) {
         openPicker(false);
@@ -37818,7 +38117,7 @@ function bindSelectPickers(): void {
       }
     });
 
-    trigger.addEventListener('keydown', (event) => {
+    bindOnce(trigger, 'keydown', (event) => {
       if (event.key === 'ArrowDown') {
         event.preventDefault();
         openPicker('selected');
@@ -37837,7 +38136,7 @@ function bindSelectPickers(): void {
       }
     });
 
-    menu.addEventListener('keydown', (event) => {
+    bindOnce(menu, 'keydown', (event) => {
       if (event.key === 'ArrowDown') {
         event.preventDefault();
         focusAdjacentTemplateOption(enabledOptions, 1);
@@ -37864,8 +38163,8 @@ function bindSelectPickers(): void {
     });
 
     for (const option of enabledOptions) {
-      option.addEventListener('click', () => chooseOption(option));
-      option.addEventListener('pointermove', () => setActiveTemplateOption(enabledOptions, option, false));
+      bindOnce(option, 'click', () => chooseOption(option));
+      bindOnce(option, 'pointermove', () => setActiveTemplateOption(enabledOptions, option, false));
     }
   }
 }
@@ -37937,7 +38236,7 @@ function bindPreferencesMobilePicker(): void {
     }
   };
 
-  trigger.addEventListener('click', (event) => {
+  bindOnce(trigger, 'click', (event) => {
     event.stopPropagation();
     if (menu.hidden) {
       openPicker(false);
@@ -37946,7 +38245,7 @@ function bindPreferencesMobilePicker(): void {
     }
   });
 
-  trigger.addEventListener('keydown', (event) => {
+  bindOnce(trigger, 'keydown', (event) => {
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       openPicker('selected');
@@ -37963,7 +38262,7 @@ function bindPreferencesMobilePicker(): void {
     }
   });
 
-  menu.addEventListener('keydown', (event) => {
+  bindOnce(menu, 'keydown', (event) => {
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       focusAdjacentTemplateOption(options, 1);
@@ -37990,8 +38289,8 @@ function bindPreferencesMobilePicker(): void {
   });
 
   for (const option of options) {
-    option.addEventListener('click', () => chooseOption(option));
-    option.addEventListener('pointermove', () => setActiveTemplateOption(options, option, false));
+    bindOnce(option, 'click', () => chooseOption(option));
+    bindOnce(option, 'pointermove', () => setActiveTemplateOption(options, option, false));
   }
 }
 
@@ -38146,6 +38445,11 @@ function recordMobileRailStableViewportHeight(): void {
 function mobileRailFocusedControlFallbackInset(): number {
   if (!(IS_ANDROID_APP || IS_IOS_APP) || !isMobileAppViewport()) return 0;
   if (!focusedMobileRailTextControl()) return 0;
+  // Once a real keyboard metric has reported (or the bridge window elapsed), stop inferring
+  // an inset purely from focus — otherwise dismissing the keyboard while the field keeps focus
+  // would leave the sheet stuck up, since a control is still focused.
+  if (mobileRailKeyboardMetricSeenVisible) return 0;
+  if (Date.now() - lastMobileRailFocusAt > MOBILE_RAIL_FOCUS_FALLBACK_WINDOW_MS) return 0;
   return inferMobileRailFocusedKeyboardInset(window.innerHeight);
 }
 
@@ -38170,6 +38474,11 @@ function syncMobileRailSheetViewport(): void {
     nativeKeyboardVisible: measuredKeyboardVisible,
     focusedControlFallbackInset,
   });
+  // A real keyboard metric won this measurement → the focus-only fallback is no longer needed
+  // and must stop firing so a later dismiss (focus retained) can settle the sheet back down.
+  if (source === 'native' || source === 'visual-viewport' || source === 'layout-viewport-resize') {
+    mobileRailKeyboardMetricSeenVisible = true;
+  }
   sheet.style.setProperty('--mobile-rail-vvh', `${vvh}px`);
   sheet.style.setProperty('--mobile-rail-keyboard-inset', `${keyboardInset}px`);
   sheet.dataset.keyboardOpen = keyboardOpen ? 'true' : 'false';
@@ -38241,7 +38550,15 @@ function scrollFocusedMobileRailControlIntoView(target: HTMLElement): void {
   // Skip programmatic focus restores (background re-renders): those pass preventScroll
   // deliberately and should not trigger an animated re-center.
   if (restoringMobileRailFocus) return;
+  // Start a fresh focus->keyboard bridge: time-stamp it and re-arm the focus-only fallback
+  // (it'll defer to the real metric the moment one arrives — see mobileRailFocusedControlFallbackInset).
+  lastMobileRailFocusAt = Date.now();
+  mobileRailKeyboardMetricSeenVisible = false;
   scheduleMobileRailViewportSyncs();
+  // Backstop re-measure just after the bridge window: if no real metric ever appeared (or the
+  // keyboard was dismissed while the field kept focus), the fallback has now expired so this
+  // settles the sheet back down instead of leaving it raised.
+  window.setTimeout(syncMobileRailSheetViewport, MOBILE_RAIL_FOCUS_FALLBACK_WINDOW_MS + 60);
   window.setTimeout(() => {
     syncMobileRailSheetViewport();
     try {
@@ -38277,11 +38594,11 @@ function bindMobileRailSheet(): void {
     openMobileRailSheet(sheet);
   };
   for (const trigger of document.querySelectorAll<HTMLElement>('[data-mobile-rail-sheet]')) {
-    trigger.addEventListener('click', (event) => {
+    bindOnce(trigger, 'click', (event) => {
       openFromTrigger(event, trigger);
     });
     if (trigger instanceof HTMLButtonElement) continue;
-    trigger.addEventListener('keydown', (event) => {
+    bindOnce(trigger, 'keydown', (event) => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
       if (eventStartedOnNestedInteractive(event, trigger)) return;
       event.preventDefault();
@@ -38349,7 +38666,7 @@ function bindMobileMoreMenu(): void {
     if (state.moreMenuOpen) state.moreMenuOpen = false;
     return;
   }
-  trigger.addEventListener('click', (event) => {
+  bindOnce(trigger, 'click', (event) => {
     event.preventDefault();
     event.stopPropagation();
     state.moreMenuOpen = !state.moreMenuOpen;
@@ -38419,7 +38736,7 @@ function closeWalletBalanceOverlayInteractions(): void {
 
 function bindExpandNoteSheet(): void {
   for (const trigger of document.querySelectorAll<HTMLButtonElement>('[data-expand-note]')) {
-    trigger.addEventListener('click', () => {
+    bindOnce(trigger, 'click', () => {
       const ref = expandNoteRefFromAttr(trigger.getAttribute('data-expand-note'));
       if (!ref) return;
       openExpandNoteSheet(ref);
@@ -38432,12 +38749,12 @@ function bindExpandNoteSheet(): void {
   if (!sheetRoot) return;
 
   for (const closeControl of document.querySelectorAll<HTMLElement>('[data-expand-note-close]')) {
-    closeControl.addEventListener('click', () => closeExpandNoteSheet());
+    bindOnce(closeControl, 'click', () => closeExpandNoteSheet());
   }
 
   const textarea = document.querySelector<HTMLTextAreaElement>('[data-expand-note-input]');
   if (textarea) {
-    textarea.addEventListener('input', () => {
+    bindOnce(textarea, 'input', () => {
       const ref = state.activeExpandNoteField;
       if (!ref) return;
       setExpandNoteValue(ref, textarea.value);
@@ -38446,7 +38763,7 @@ function bindExpandNoteSheet(): void {
   }
 
   const confirmBtn = document.querySelector<HTMLButtonElement>('[data-expand-note-confirm]');
-  confirmBtn?.addEventListener('click', () => {
+  bindOnce(confirmBtn, 'click', () => {
     closeExpandNoteSheet();
   });
 
@@ -40380,7 +40697,7 @@ async function runQueueAgentPlan(): Promise<void> {
       plan.actionType === 'recurring_payment'
         ? response.mode === 'browser-workflow'
           ? t('Created one local approval now. Saved-on-device workflow does not run background repeats after this tab closes.')
-          : t('Future payments will appear in Needs Approval.')
+          : t('Future payments will appear in Sign Approval.')
         : response.mode === 'agentic-cloud'
           ? t('Saved to Agentic Cloud. No localhost required.')
           : response.mode === 'browser-workflow'
@@ -41221,7 +41538,7 @@ async function deletePreparedActionWithoutReceipt(action: PreparedAction): Promi
   if (source === 'cloud') {
     await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/cancel`, {
       method: 'POST',
-      body: JSON.stringify({ note: 'Deleted from Needs Approval inbox.' }),
+      body: JSON.stringify({ note: 'Deleted from Sign Approval inbox.' }),
     });
     await refreshCloudWorkspaceData();
     const receipt = state.cloudCompletedPlans.find((record) => record.actionId === action.id);
@@ -41274,7 +41591,7 @@ async function runDeleteAllInbox(): Promise<void> {
     }
     pushToast(
       failed ? 'pending' : 'success',
-      failed ? t('Needs Approval partially cleared') : t('Needs Approval cleared'),
+      failed ? t('Sign Approval partially cleared') : t('Sign Approval cleared'),
       failed ? tf('{ok} deleted, {failed} failed.', { ok, failed }) : tf('{ok} deleted.', { ok }),
     );
   });
@@ -41591,7 +41908,7 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
       plan.actionType === 'recurring_payment'
         ? response.mode === 'browser-workflow'
           ? t('Created one local approval now. Saved-on-device workflow does not run background repeats after this tab closes.')
-          : t('Future payments will appear in Needs Approval.')
+          : t('Future payments will appear in Sign Approval.')
         : response.mode === 'agentic-cloud'
           ? t('Saved to Agentic Cloud. No localhost required.')
           : response.mode === 'browser-workflow'
@@ -41890,7 +42207,7 @@ function openDcaReviewProofTemplate(): void {
   pushToast(
     'success',
     t('DCA review proof selected'),
-    t('This creates evidence only. Active repeat payments use the selected workflow and each run still returns to Needs Approval.'),
+    t('This creates evidence only. Active repeat payments use the selected workflow and each run still returns to Sign Approval.'),
   );
   render();
 }
@@ -43188,18 +43505,18 @@ function generatedQueuePlanTitle(record: GeneratedPlanRecord): string {
   if (connectorError) return connectorError;
   const mode = activeWorkflowMode();
   if (record.plan.actionType === 'recurring_payment') {
-    if (mode === 'agentic-cloud') return 'Create an Agentic Cloud repeat payment. Each due payment appears in Needs Approval.';
+    if (mode === 'agentic-cloud') return 'Create an Agentic Cloud repeat payment. Each due payment appears in Sign Approval.';
     return mode === 'local-bridge'
-      ? 'Create a local repeat payment. Each due payment appears in Needs Approval.'
+      ? 'Create a local repeat payment. Each due payment appears in Sign Approval.'
       : 'Create one browser-local repeat approval now. Background repeats need Agentic Cloud or Private local mode.';
   }
   if (record.plan.actionType === 'blink_action') {
     return 'Resolve the Blink/Solana Action into a browser-local transaction draft before wallet approval.';
   }
-  if (mode === 'agentic-cloud') return 'Send this plan to Agentic Cloud Needs Approval for wallet review.';
+  if (mode === 'agentic-cloud') return 'Send this plan to Agentic Cloud Sign Approval for wallet review.';
   return mode === 'local-bridge'
-    ? 'Send this plan to local Needs Approval for wallet review.'
-    : 'Send this plan to browser Needs Approval. It stays local to this device.';
+    ? 'Send this plan to local Sign Approval for wallet review.'
+    : 'Send this plan to browser Sign Approval. It stays local to this device.';
 }
 
 function samePlan(left: AgentPlan, right: AgentPlan): boolean {
@@ -47096,14 +47413,16 @@ async function saveDirectAiKeyCore(options: { toast?: boolean } = {}): Promise<v
           ? t('Desktop session key entered')
         : IS_ANDROID_APP
           ? t('Android session key entered')
+        : (IS_IOS_APP || state.iosNativeEnvironment.isIosNative)
+          ? t('iOS session key entered')
           : t('Browser session key entered'),
       state.aiSettings.mode === 'hosted'
         ? t('Hosted BYOK will relay only submitted AI Connector requests. Queueing, schedules, and signing stay in the active workflow.')
         : state.aiSettings.mode === 'device-agent'
           ? t('Device Agent config was staged for the gated runtime. Queueing, schedules, and signing stay in the active workflow.')
         : tf('{route} AI can review requests in {where}. Queueing, schedules, and signing stay in the active workflow.', {
-            route: IS_ANDROID_APP ? t('Android session') : t('Browser session'),
-            where: IS_ANDROID_APP ? t('this app runtime') : t('this tab'),
+            route: IS_ANDROID_APP ? t('Android session') : (IS_IOS_APP || state.iosNativeEnvironment.isIosNative) ? t('iOS session') : t('Browser session'),
+            where: (IS_ANDROID_APP || IS_IOS_APP || state.iosNativeEnvironment.isIosNative) ? t('this app runtime') : t('this tab'),
           }),
     );
   }
@@ -47707,6 +48026,8 @@ function aiClearMessage(mode: AiSettings['mode'] = state.aiSettings.mode): strin
       ? t('Desktop session key removed from this app.')
       : IS_ANDROID_APP
         ? t('Android session key removed from this app.')
+      : (IS_IOS_APP || state.iosNativeEnvironment.isIosNative)
+        ? t('iOS session key removed from this app.')
         : t('Browser session key removed from this app.');
   }
   return t('Session-memory provider key removed from this app and local bridge memory. Env-backed bridge keys are managed in Preferences.');
@@ -47724,7 +48045,9 @@ function aiModeToastMessage(mode: AiSettings['mode']): string {
   }
   return IS_ANDROID_APP
     ? t('Android session AI Connector reviews requests only and keeps the key in this app runtime.')
-    : t('Browser session AI Connector reviews requests only and keeps the key in this tab.');
+    : (IS_IOS_APP || state.iosNativeEnvironment.isIosNative)
+      ? t('iOS session AI Connector reviews requests only and keeps the key in this app runtime.')
+      : t('Browser session AI Connector reviews requests only and keeps the key in this tab.');
 }
 
 function setAiPlannerMode(mode: AiSettings['mode']): void {
@@ -48607,10 +48930,15 @@ function resetCloudWorkspaceState(): void {
   // can't drain later (the drain also wallet-scopes — defence in depth).
   state.pendingCloudSyncs = state.pendingCloudSyncs.filter((e) => !e.kind.startsWith('chat-'));
   chatCloudHydrated = false;
-  state.chat = loadChatHistoryState(state.address);
-  // Defensive: the reload from localStorage already excludes cloud stubs, but strip
-  // any that linger from a fast sign-out/switch so another wallet's stub can't show.
+  // MERGE (not destructive reload): preserve in-memory threads + any in-flight streamed tokens
+  // (a pending stream checkpoint can fire after this and must not persist a disk-only snapshot),
+  // while the merge's carry filter still drops unloaded cloud stubs so sign-out leaves only the
+  // on-device threads. Then persist so the merged set lands on this wallet's scoped key.
+  state.chat = loadChatHistoryMergingMemory();
+  // Defensive: the merge already excludes cloud stubs, but strip any that linger from a fast
+  // sign-out/switch so another wallet's stub can't show.
   state.chat.sessions = state.chat.sessions.filter((s) => !chatSessionIsCloudStub(s));
+  saveChatHistoryState();
 }
 
 async function runSetWorkflowModePreference(preference: WorkflowModePreference): Promise<void> {
@@ -48670,8 +48998,13 @@ function refreshBrowserWorkflowData(): void {
   state.materializedActions = browserWorkflow.preparedActions;
   state.recurringPayments = browserWorkflow.recurringPayments;
   state.receipts = browserWorkflow.receipts;
-  state.chat = loadChatHistoryState(state.address);
+  // Merge (not overwrite) so a refresh can't drop in-memory chats and a first connect adopts
+  // the pre-connect unscoped sessions; then persist so the adopted/merged set lands on the
+  // scoped key. teardownChatRuntimeForWalletBoundary() above already dropped any other wallet's
+  // sessions on a switch, so the merge only carries this scope's chats.
+  state.chat = loadChatHistoryMergingMemory();
   state.chatInitialized = true;
+  saveChatHistoryState();
 }
 
 async function refreshCloudWorkspaceData(): Promise<void> {
@@ -50024,7 +50357,7 @@ function recurringCreateToastDetail(
     return compactSentence(`${review.reason || review.summary || t('Agent review recorded.')} ${walletBoundary}`, 360);
   }
   if (createMode === 'local-bridge') {
-    return t('Future payments will appear in Needs Approval. Every due occurrence still requires wallet approval before signing.');
+    return t('Future payments will appear in Sign Approval. Every due occurrence still requires wallet approval before signing.');
   }
   if (createMode === 'agentic-cloud') {
     return t('Each run returns to your wallet for review. Every due occurrence still requires wallet approval before signing.');
@@ -50234,7 +50567,7 @@ function recurringDraftToAgentPlan(draft: RecurringDraft, source: AgentPlan['sou
     risk: isSwap
       ? `Recurring swap risk: route, liquidity, output token, slippage cap, cadence, and future market conditions must be reviewed at each due approval.`
       : `Repeat payment risk: recipient, amount, token, cadence, and caps must remain expected before each approval.`,
-    approval: 'Creating this schedule does not sign a transaction. Each due payment still returns to Needs Approval before wallet signing.',
+    approval: 'Creating this schedule does not sign a transaction. Each due payment still returns to Sign Approval before wallet signing.',
     source,
     category: 'recurring',
     actionType: 'recurring_payment',
@@ -56133,7 +56466,9 @@ function runWalletBalanceAction(action: string | undefined): void {
       startWalletBalanceSummaryLoad();
       return;
     case 'retry-full':
-      startWalletBalanceFullLoad(true, { openOverlay: state.activeMobileRailSheet !== 'wallet-balances' });
+      startWalletBalanceFullLoad(true, {
+        openOverlay: state.activeMobileRailSheet !== 'wallet-balances' && state.activeMobileRailSheet !== 'chat-wallet-balances',
+      });
       return;
   }
 }
@@ -56257,6 +56592,14 @@ async function loadWalletBalanceFull(address: string, cluster: Cluster, scopeKey
       fullError: '',
     };
     render();
+    // If a balance surface is open, lazily enrich rows with logos/names/24h change (repaint-once).
+    if (
+      state.activeMobileRailSheet === 'wallet-balances' ||
+      state.activeMobileRailSheet === 'chat-wallet-balances' ||
+      state.walletBalance.overlayOpen
+    ) {
+      ensureWalletBalanceSheetMarket();
+    }
   } catch (err) {
     if (requestId !== walletBalanceFullRequestId || state.walletBalance.scopeKey !== scopeKey || walletBalanceScopeKey() !== scopeKey) return;
     state.walletBalance = {
@@ -57652,21 +57995,21 @@ function queuePlanTitle(): string {
   const mode = activeWorkflowMode();
   if (mode === 'agentic-cloud') {
     const unsupported = cloudQueueUnsupportedReason(state.agentPlan);
-    if (unsupported) return t('Send this plan to browser-local Needs Approval for wallet review. Agentic Cloud does not finalize this action type yet.');
+    if (unsupported) return t('Send this plan to browser-local Sign Approval for wallet review. Agentic Cloud does not finalize this action type yet.');
   }
   if (state.agentPlan.actionType === 'recurring_payment') {
-    if (mode === 'agentic-cloud') return t('Create an Agentic Cloud repeat payment. Each due payment appears in Needs Approval.');
+    if (mode === 'agentic-cloud') return t('Create an Agentic Cloud repeat payment. Each due payment appears in Sign Approval.');
     return mode === 'local-bridge'
-      ? t('Create a local repeat payment. Each due payment appears in Needs Approval.')
+      ? t('Create a local repeat payment. Each due payment appears in Sign Approval.')
       : t('Create one browser-local repeat approval now. Background repeats need Agentic Cloud or Private local mode.');
   }
   if (state.agentPlan.actionType === 'blink_action') {
     return t('Resolve the Blink/Solana Action into a browser-local transaction draft before wallet approval.');
   }
-  if (mode === 'agentic-cloud') return t('Send this plan to Agentic Cloud Needs Approval for wallet review.');
+  if (mode === 'agentic-cloud') return t('Send this plan to Agentic Cloud Sign Approval for wallet review.');
   return mode === 'local-bridge'
-    ? t('Send this plan to local Needs Approval for wallet review.')
-    : t('Send this plan to browser Needs Approval. It stays local to this device.');
+    ? t('Send this plan to local Sign Approval for wallet review.')
+    : t('Send this plan to browser Sign Approval. It stays local to this device.');
 }
 
 async function queuePlanThroughBridge(plan: AgentPlan, sourceRecord?: GeneratedPlanRecord): Promise<{ id: string }> {
@@ -57794,7 +58137,7 @@ async function queuePlanThroughActiveWorkflow(
 
 async function queuePlanThroughCloud(plan: AgentPlan, sourceRecord?: GeneratedPlanRecord): Promise<{ id: string; planRecordId: string }> {
   if (!cloudSessionMatchesWallet()) {
-    throw new Error(t('Sign in to Agentic Cloud with the connected wallet before sending to Cloud Needs Approval.'));
+    throw new Error(t('Sign in to Agentic Cloud with the connected wallet before sending to Cloud Sign Approval.'));
   }
   const unsupported = cloudQueueUnsupportedReason(plan);
   if (unsupported) throw new Error(unsupported);
@@ -59620,9 +59963,8 @@ function lockedTabReason(tab: ActiveTab): string {
 }
 
 function workspaceTabSelectMobile(): string {
-  const approvalLabel = isAndroidAppShellSurface()
-    ? t('Sign Approval')
-    : t('Needs Approval');
+  // "Sign Approval" on every shell (was Android-only; iOS/web/desktop showed "Needs Approval").
+  const approvalLabel = t('Sign Approval');
   return `
     <nav class="workspace-tabs-mobile workspace-bottom-tabs" aria-label="${escapeHtml(t('Workspace navigation'))}" data-layout="app-mobile-tabs">
       ${mobileDockTabButton('overview', t('Home'))}
@@ -59833,7 +60175,7 @@ function positionsPanel(): string {
   return `
     <section class="approval-object signature-stage stage-anchor positions-stage ${mobile ? 'mobile-positions-stage' : ''} ${open.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
-        ${sectionTitleLine(t('Positions'), t('Monitor and manage everything you have open — orders, lending, borrowing, staking, liquidity, and perps. A manage action returns to Needs Approval to sign.'))}
+        ${sectionTitleLine(t('Positions'), t('Monitor and manage everything you have open — orders, lending, borrowing, staking, liquidity, and perps. A manage action returns to Sign Approval to sign.'))}
         <div class="generated-plans-toolbar signature-toolbar">
           <span class="signature-state">${escapeHtml(tf('{n} open in {section}', { n: positionsSectionCount(section, open), section: positionsSectionTitle(section.id) }))}</span>
         </div>
@@ -60145,7 +60487,7 @@ function preparedActionsList(actions = filteredPreparedActions()): string {
     <div class="inbox-list">
       ${paginatedActions.items.map(preparedActionCard).join('')}
     </div>
-    ${listPagination('inbox', paginatedActions, t('Needs Approval requests'))}
+    ${listPagination('inbox', paginatedActions, t('Sign Approval requests'))}
   `;
 }
 
@@ -60491,7 +60833,7 @@ function preparedActionCard(action: PreparedAction): string {
           ${clearablePending ? `<button class="utility inbox-footer-action" data-action-op="clear-pending" data-action-id="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''} title="${escapeHtml(t('Checks chain status first, then restores this approval if no confirmed or failed transaction is found.'))}">${escapeHtml(t('Clear stale pending'))}</button>` : ''}
           ${hasPendingExecutionLedgerEntry(action) || action.txid || action.status === 'failed' ? `<button class="utility inbox-footer-action" data-attach-tx-action="open" data-action-id="${escapeHtml(action.id)}">${escapeHtml(t('Attach existing transaction'))}</button>` : ''}
           ${action.status === 'failed' || action.txError ? `<button class="utility inbox-footer-action" data-debug-export data-action-id="${escapeHtml(action.id)}">${escapeHtml(t('Copy debug log'))}</button>` : ''}
-          <button class="utility inbox-footer-action" data-action-op="archive" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''} title="${escapeHtml(t('Remove from Needs Approval without signing a denial proof.'))}">${escapeHtml(t('Archive'))}</button>
+          <button class="utility inbox-footer-action" data-action-op="archive" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''} title="${escapeHtml(t('Remove from Sign Approval without signing a denial proof.'))}">${escapeHtml(t('Archive'))}</button>
           <button class="utility danger inbox-footer-action" data-action-op="reject" data-action-id="${action.id}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
           <button class="utility danger recurring-delete-mini" data-inbox-delete="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Delete'))}</button>
           <div class="mobile-card-footer-actions inbox-approval-mobile-actions" aria-label="${escapeHtml(t('Mobile approval actions'))}">
@@ -60501,7 +60843,7 @@ function preparedActionCard(action: PreparedAction): string {
                 ${clearablePending ? `<button class="utility inbox-footer-action" data-action-op="clear-pending" data-action-id="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''} title="${escapeHtml(t('Checks chain status first, then restores this approval if no confirmed or failed transaction is found.'))}">${escapeHtml(t('Clear stale pending'))}</button>` : ''}
                 ${hasPendingExecutionLedgerEntry(action) || action.txid || action.status === 'failed' ? `<button class="utility inbox-footer-action" data-attach-tx-action="open" data-action-id="${escapeHtml(action.id)}">${escapeHtml(t('Attach existing transaction'))}</button>` : ''}
                 ${action.status === 'failed' || action.txError ? `<button class="utility inbox-footer-action" data-debug-export data-action-id="${escapeHtml(action.id)}">${escapeHtml(t('Copy debug log'))}</button>` : ''}
-                <button class="utility inbox-footer-action" data-action-op="archive" data-action-id="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''} title="${escapeHtml(t('Remove from Needs Approval without signing a denial proof.'))}">${escapeHtml(t('Archive'))}</button>
+                <button class="utility inbox-footer-action" data-action-op="archive" data-action-id="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''} title="${escapeHtml(t('Remove from Sign Approval without signing a denial proof.'))}">${escapeHtml(t('Archive'))}</button>
                 <button class="utility danger inbox-footer-action" data-action-op="reject" data-action-id="${escapeHtml(action.id)}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
                 <button class="utility danger recurring-delete-mini" data-inbox-delete="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Delete'))}</button>
               </div>
@@ -62442,10 +62784,10 @@ function recurringComposer(): string {
   const recurringHelp = isSwap
     ? browserWorkflow
       ? t('Prepares the first swap now. Only Cloud or Plan Connector run the repeat schedule automatically.')
-      : t('Every due swap returns to Needs Approval before wallet signing.')
+      : t('Every due swap returns to Sign Approval before wallet signing.')
     : browserWorkflow
       ? t('Prepares the first payment now. Only Cloud or Plan Connector run the repeat schedule automatically.')
-      : t('Every payment returns to Needs Approval before wallet signing.');
+      : t('Every payment returns to Sign Approval before wallet signing.');
   // In browser-only mode there is no background scheduler: creating a repeat
   // prepares the first occurrence and stores the schedule, but later occurrences
   // are not auto-generated until the wallet is on Cloud or a Plan Connector. Be
@@ -62455,8 +62797,8 @@ function recurringComposer(): string {
     : browserWorkflow
       ? t('Saved on this device — sign in to Cloud or connect Plan Connector to run it on schedule.')
       : isSwap
-        ? t('Future swaps will appear in Needs Approval.')
-        : t('Future payments will appear in Needs Approval.');
+        ? t('Future swaps will appear in Sign Approval.')
+        : t('Future payments will appear in Sign Approval.');
   return `
     <div class="recurring-panel recurring-contract ${mobile ? 'mobile-recurring-contract' : ''}">
       ${mobile ? '' : `<div class="contract-head app-inline-head recurring-composer-head">
@@ -62647,7 +62989,7 @@ function recurringConnectorPlannerContext(draft: RecurringDraft): Array<Record<s
     selectedTemplateId: form?.templateId ?? '',
     approvalBoundary: 'review_context_only',
     strictInstruction:
-      'Use this protocol connector only as review/planning context for the repeat. Do not switch protocols. Do not claim protocol automation is enabled. Every repeat occurrence still requires Agentic Needs Approval and wallet approval before signing.',
+      'Use this protocol connector only as review/planning context for the repeat. Do not switch protocols. Do not claim protocol automation is enabled. Every repeat occurrence still requires Agentic Sign Approval and wallet approval before signing.',
   }];
 }
 
@@ -63964,7 +64306,7 @@ function recurringAmountControlHtml(value: string, label: string): string {
   const mode: ChatAmountMode = (recurringAmountMode === 'usd' && hasPrice) ? 'usd' : 'token';
   const tokenNum = Number(value);
   const usdDisplay = (hasPrice && Number.isFinite(tokenNum) && tokenNum > 0)
-    ? (tokenNum * (asset!.priceUsd as number)).toFixed(2).replace(/\.?0+$/, '')
+    ? `$${(tokenNum * (asset!.priceUsd as number)).toFixed(2)}`
     : '';
   const display = mode === 'usd' ? usdDisplay : value;
   const disabled = state.busy ? 'disabled' : '';
@@ -64455,7 +64797,7 @@ function surfaceTitle(): string {
     case 'generated':
       return t('Review');
     case 'inbox':
-      return t('Needs Approval');
+      return t('Sign Approval');
     case 'completed':
       return t('Done');
     case 'schedule':
@@ -65858,7 +66200,12 @@ function readRecurringDraft(): RecurringDraft {
     inputToken,
     outputToken,
     recipient: inputValue('#recurringRecipient') || state.recurringDraft.recipient,
-    amount: inputValue('#recurringAmount') || state.recurringDraft.amount,
+    // In USD mode #recurringAmount shows the dollar read-back (e.g. "$0.50"), NOT the token
+    // amount — read the already-converted token amount the USD input handler stored in state.
+    // Token mode reads the field directly.
+    amount: recurringAmountMode === 'usd'
+      ? (state.recurringDraft.amount || inputValue('#recurringAmount'))
+      : (inputValue('#recurringAmount') || state.recurringDraft.amount),
     slippageBps: slippageInput ? slippagePercentInputToBps(slippageInput) : state.recurringDraft.slippageBps,
     cadence: (inputValue('#recurringCadence') || state.recurringDraft.cadence) as RecurringCadence,
     localTime: readRecurringLocalTime(),
@@ -67184,7 +67531,7 @@ function toastStack(): string {
       ${state.toasts
         .map(
           (toast) => `
-            <div class="toast ${toast.kind}">
+            <div class="toast ${toast.kind}" id="toast-${toast.id}">
               <span class="toast-icon" aria-hidden="true">${toastIcon(toast.kind)}</span>
               <div>
                 <strong>${escapeHtml(toast.title)}</strong>
@@ -67262,6 +67609,31 @@ function replaceToastWithoutRender(
   options: ToastOptions = {},
 ): void {
   replaceToastState(id, kind, title, message, options);
+}
+
+// Bind toast dismiss / action-url buttons within `root`. Idempotent (bindOnce) so it is safe to
+// call from BOTH the full render path (bind) and the Chat morph path (renderChat morphs the toast
+// stack in place, so freshly-added toast nodes get wired without duplicating handlers).
+function bindToastButtons(root: ParentNode = document): void {
+  for (const button of root.querySelectorAll<HTMLButtonElement>('[data-toast-dismiss]')) {
+    bindOnce(button, 'click', () => dismissToast(Number(button.dataset.toastDismiss)));
+  }
+  for (const button of root.querySelectorAll<HTMLButtonElement>('[data-toast-action-url]')) {
+    bindOnce(button, 'click', (event: Event) => {
+      event.preventDefault();
+      const url = button.dataset.toastActionUrl;
+      // Jupiter approval toasts: force-re-foreground Jupiter for the pending connect/sign (re-fires
+      // the proper jupiter://wc?uri=… we retained). Only fall back to the raw actionUrl otherwise.
+      if (button.dataset.toastActionReforeground === '1') {
+        void iosNativeReForegroundJupiter().then((handled) => {
+          if (!handled && url) void iosNativeOpenExternalUrl(url);
+        });
+        return;
+      }
+      if (!url) return;
+      void iosNativeOpenExternalUrl(url);
+    });
+  }
 }
 
 function dismissToast(id: number): void {
@@ -68989,6 +69361,8 @@ function writeChatHistoryWithEviction(key: string, history: ChatHistoryState): v
       try { window.localStorage.setItem(key, serializeChatHistory(working)); } catch { /* drop */ }
       return;
     }
+    // Storage-pressure eviction is real chat loss — tell the user once instead of dropping silently.
+    notifyChatHistoryEvictedOnce();
     working = { ...working, sessions: working.sessions.filter((s) => s.id !== drop.id) };
   }
 }
@@ -69025,6 +69399,14 @@ function notifyChatStorageUnavailableOnce(): void {
   if (chatStorageUnavailableNotified || typeof window === 'undefined') return;
   chatStorageUnavailableNotified = true;
   pushToast('info', t('Chat is not being saved'), t('This browser is blocking local storage (e.g. private mode), so chats will be lost when you close the tab.'));
+}
+
+// Surface the byte-budget eviction so storage-pressure chat loss is never silent (the count
+// limit is enforced separately at "New chat"). Once per session to avoid toast spam.
+function notifyChatHistoryEvictedOnce(): void {
+  if (chatHistoryEvictedNotified || typeof window === 'undefined') return;
+  chatHistoryEvictedNotified = true;
+  pushToast('info', t('Chat storage is full'), t('The oldest chats were removed to free space. Delete chats you no longer need to keep new ones.'));
 }
 
 function saveChatHistoryState(): void {
@@ -69078,6 +69460,47 @@ function mergeChatSessionsFromOtherTab(): void {
     sessions: [...merged.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
   };
   if (state.activeTab === 'chat') render();
+}
+
+// Load this wallet's on-disk chat history and merge the in-memory sessions OVER it so a
+// workflow refresh never DROPS chats. Two cases this fixes:
+//   - same-wallet refresh: keep in-memory sessions not yet flushed to disk (no destructive
+//     reload clobbering a just-created card/message).
+//   - first connect ('' -> address): ADOPT the unscoped sessions the user built before
+//     connecting — otherwise the scoped reload returns empty and they appear deleted.
+// Sessions belonging to a DIFFERENT wallet are NOT carried (no cross-wallet leak on a switch;
+// teardownChatRuntimeForWalletBoundary already ran). recordMatchesWalletScope = same-wallet OR
+// unscoped. Cloud stubs are excluded (re-hydrated from the server on sign-in).
+function loadChatHistoryMergingMemory(): ChatHistoryState {
+  const addr = state.address;
+  const disk = loadChatHistoryState(addr);
+  const carry = state.chat.sessions.filter(
+    (s) => !chatSessionIsCloudStub(s) && recordMatchesWalletScope(s, addr),
+  );
+  const merged = new Map<string, ChatSession>();
+  for (const s of disk.sessions) merged.set(s.id, s);
+  for (const s of carry) {
+    // Stamp adopted unscoped sessions with the now-connected wallet so they persist scoped.
+    const stamped = addr && !s.walletAddress ? { ...s, walletAddress: addr } : s;
+    const existing = merged.get(stamped.id);
+    if (!existing || stamped.updatedAt.localeCompare(existing.updatedAt) >= 0) merged.set(stamped.id, stamped);
+  }
+  const sorted = [...merged.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  // Resolve the active session BEFORE capping. Switching to an older chat doesn't bump its
+  // updatedAt, so a naive slice(0, MAX) could prune the currently-open session and silently
+  // jump the user to sessions[0] — the exact "my chat changed by itself" bug this merge guards
+  // against. So pin the active session into the capped list (dropping the least-recent instead).
+  const activeSessionId = sorted.some((s) => s.id === state.chat.activeSessionId)
+    ? state.chat.activeSessionId
+    : sorted.some((s) => s.id === disk.activeSessionId)
+      ? disk.activeSessionId
+      : (sorted[0]?.id ?? '');
+  let sessions = sorted.slice(0, MAX_CHAT_SESSIONS);
+  if (activeSessionId && !sessions.some((s) => s.id === activeSessionId)) {
+    const active = sorted.find((s) => s.id === activeSessionId);
+    if (active) sessions = [...sorted.slice(0, MAX_CHAT_SESSIONS - 1), active];
+  }
+  return { schemaVersion: CHAT_HISTORY_SCHEMA_VERSION, sessions, activeSessionId };
 }
 
 function createChatSession(): ChatSession {

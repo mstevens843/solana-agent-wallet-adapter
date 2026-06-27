@@ -429,8 +429,8 @@ export function handleStreamingApprovalStatus(input: StreamingApprovalCompletedD
     state.notice = {
       tone: 'pending',
       message: input.operation === 'grant'
-        ? 'Grant transaction is ready in Needs Approval.'
-        : 'Revoke transaction is ready in Needs Approval.',
+        ? 'Grant transaction is ready in Sign Approval.'
+        : 'Revoke transaction is ready in Sign Approval.',
     };
   } else {
     state.notice = {

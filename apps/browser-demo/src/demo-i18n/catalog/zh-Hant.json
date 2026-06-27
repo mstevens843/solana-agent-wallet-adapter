@@ -5494,6 +5494,14 @@
     "Unknown": "未知",
     "Withdraw funds": "提領資金",
     "Marinade staked": "Marinade 已質押",
-    "OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.": "在瀏覽器工作階段模式下無法直接呼叫 OpenAI 金鑰。請選擇 Hosted BYOK 或 Local bridge。"
+    "OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.": "在瀏覽器工作階段模式下無法直接呼叫 OpenAI 金鑰。請選擇 Hosted BYOK 或 Local bridge。",
+    "View wallet portfolio": "檢視錢包資產組合",
+    "Chat storage is full": "聊天儲存空間已滿",
+    "The oldest chats were removed to free space. Delete chats you no longer need to keep new ones.": "已刪除最舊的聊天以釋放空間。請刪除不再需要的聊天以保留新的聊天。",
+    "Copy message": "複製訊息",
+    "Copied message": "已複製訊息",
+    "Delete this chat?": "刪除此聊天？",
+    "Chat limit reached": "已達到聊天上限",
+    "You've reached the max of {max} saved chats. Delete some to start a new one.": "您已達到最多 {max} 個已儲存聊天的上限。請刪除一些以開始新聊天。"
   }
 }

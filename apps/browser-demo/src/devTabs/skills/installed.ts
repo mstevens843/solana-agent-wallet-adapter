@@ -336,7 +336,7 @@ function rowScheduleLine(row: InstallRow, nowMs: number): string {
 function rowRunBoundaryLine(row: InstallRow): string {
   switch (row.install.status) {
     case 'active':
-      return t('When due, this creates a Needs Approval item.');
+      return t('When due, this creates a Sign Approval item.');
     case 'paused':
       return t('Paused; no new approval items will be created.');
     case 'expired':
@@ -435,7 +435,7 @@ function rowOneTimePendingBanner(row: InstallRow): string {
   if (typeof approvalId !== 'string' || !approvalId) return '';
   return `
     <p class="skills-installed-row-banner">
-      ${t('Pending initial approval — review the one-time payment in your Needs Approval inbox.')}
+      ${t('Pending initial approval — review the one-time payment in your Sign Approval inbox.')}
     </p>
   `;
 }

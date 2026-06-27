@@ -98,7 +98,7 @@ function renderSkillsGuide(): string {
         </div>
         <div>
           <strong>${escapeHtmlLocal(t('Run'))}</strong>
-          <span>${escapeHtmlLocal(t('The scheduler creates a Needs Approval item when due; your wallet signs each action.'))}</span>
+          <span>${escapeHtmlLocal(t('The scheduler creates a Sign Approval item when due; your wallet signs each action.'))}</span>
         </div>
         <div>
           <strong>${escapeHtmlLocal(t('Share'))}</strong>
