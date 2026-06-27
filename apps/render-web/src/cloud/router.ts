@@ -4214,6 +4214,19 @@ function validatePreferencePayload(namespace: CloudPreferenceNamespace, payload:
     validateMppConfigPreferencePayload(payload);
     return;
   }
+  if (namespace === 'recipient-rules') {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new ApiError(400, 'Recipient rules preference must be a JSON object.');
+    }
+    const recipients = (payload as Record<string, unknown>).recipients;
+    if (recipients !== undefined && !Array.isArray(recipients)) {
+      throw new ApiError(400, 'Recipient rules "recipients" must be an array.');
+    }
+    if (Array.isArray(recipients) && recipients.length > 500) {
+      throw new ApiError(400, 'Too many saved recipients. Limit is 500.');
+    }
+    return;
+  }
   if (!payload || typeof payload !== 'object') {
     throw new ApiError(400, 'Preference payload must be a JSON object or array.');
   }

@@ -780,7 +780,10 @@ function manualRequestPanel(draft: PayOutDraft, disabled: string): string {
         </label>
         <label class="pay-out-field pay-out-field--recipient">
           <span>${t('Recipient wallet')}</span>
-          <input class="pay-out-input" name="recipient" value="${escapeHtml(draft.recipient)}" placeholder="${t('Merchant Solana address')}" ${disabled}>
+          <div class="ai-key-input-wrap recipient-input-wrap">
+            <input class="pay-out-input" name="recipient" value="${escapeHtml(draft.recipient)}" placeholder="${t('Merchant Solana address')}" ${disabled}>
+            <button type="button" class="ai-key-paste-btn" data-recipient-paste title="${t('Paste from clipboard')}" aria-label="${t('Paste address from clipboard')}" ${disabled}>${t('Paste')}</button>
+          </div>
         </label>
         <label class="pay-out-field pay-out-field--token">
           <span>${t('Payment token')}</span>
@@ -1661,7 +1664,7 @@ async function runConfirm(): Promise<void> {
   }
   panelState.busy = false;
   if (result.kind === 'ok') {
-    showToast(tf('Approval ready · {id} — review in Sign Approval', { id: shortAddress(result.value.approvalId) }));
+    showToast(tf('Approval ready · {id} - review in Sign Approval', { id: shortAddress(result.value.approvalId) }));
     const dispatched = dispatchPayOutApprovalCreated({
       source: 'acp_outbound',
       approvalId: result.value.approvalId,

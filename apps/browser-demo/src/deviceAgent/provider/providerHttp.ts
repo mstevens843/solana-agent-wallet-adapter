@@ -81,7 +81,7 @@ export function effectiveMaxOutputTokens(model: string, requested: number): numb
 // (and that the budget was already raised) instead of the opaque "Provider response was empty."
 export function emptyModelTextMessage(model: string, truncated: boolean): string {
   if (truncated && isReasoningModel(model)) {
-    return 'The model used its entire token budget on internal reasoning before producing an answer. The Device Agent already requests a larger budget for reasoning models — try again, or switch to a non-reasoning model.';
+    return 'The model used its entire token budget on internal reasoning before producing an answer. The Device Agent already requests a larger budget for reasoning models. Try again, or switch to a non-reasoning model.';
   }
   return 'Provider response was empty.';
 }
@@ -122,9 +122,9 @@ export function browserNetworkErrorGuidance(
   const ending = base.endsWith('.') ? base : `${base}.`;
   if (hostBlocksBrowserCors(baseUrl)) {
     const host = hostOf(baseUrl);
-    return `${ending} ${host} blocks in-browser (Device Agent) calls via CORS. Use a CORS-enabled gateway such as OpenRouter, Cloudflare AI Gateway, or Vercel AI Gateway, or switch to Local Bridge or Hosted BYOK — both call the provider server-side.`;
+    return `${ending} ${host} blocks in-browser (Device Agent) calls via CORS. Use a CORS-enabled gateway such as OpenRouter, Cloudflare AI Gateway, or Vercel AI Gateway, or switch to Local Bridge or Hosted BYOK. Both call the provider server-side.`;
   }
-  return `${ending} The browser blocked the request before it completed (provider CORS or, on desktop, the app CSP) — not a key or quota problem. Check your connection and the browser devtools Network tab; if it persists, use Local Bridge or Hosted BYOK.`;
+  return `${ending} The browser blocked the request before it completed (provider CORS or, on desktop, the app CSP), not a key or quota problem. Check your connection and the browser devtools Network tab; if it persists, use Local Bridge or Hosted BYOK.`;
 }
 
 export function assertApiKeyHeaderSafe(value: string): void {

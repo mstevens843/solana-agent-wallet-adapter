@@ -120,9 +120,9 @@ describe('pure helpers', () => {
   });
 
   it('formatRecentCount handles missing, zero, one, many', () => {
-    expect(formatRecentCount(undefined)).toBe('7d: —');
-    expect(formatRecentCount(null as unknown as undefined)).toBe('7d: —');
-    expect(formatRecentCount(Number.NaN)).toBe('7d: —');
+    expect(formatRecentCount(undefined)).toBe('7d: -');
+    expect(formatRecentCount(null as unknown as undefined)).toBe('7d: -');
+    expect(formatRecentCount(Number.NaN)).toBe('7d: -');
     expect(formatRecentCount(0)).toBe('7d: 0 runs');
     expect(formatRecentCount(1)).toBe('7d: 1 run');
     expect(formatRecentCount(12)).toBe('7d: 12 runs');
@@ -185,9 +185,9 @@ describe('humanizeSeconds', () => {
   });
 
   it('returns dash for non-positive', () => {
-    expect(humanizeSeconds(0)).toBe('—');
-    expect(humanizeSeconds(-5)).toBe('—');
-    expect(humanizeSeconds(Number.NaN)).toBe('—');
+    expect(humanizeSeconds(0)).toBe('-');
+    expect(humanizeSeconds(-5)).toBe('-');
+    expect(humanizeSeconds(Number.NaN)).toBe('-');
   });
 });
 
@@ -350,7 +350,7 @@ describe('renderRow specifics', () => {
     const html = renderRow(row, defaultRowOpts());
     expect(html).toContain('Skill ');
     expect(html).toContain('Schedule unavailable');
-    expect(html).toContain('7d: —');
+    expect(html).toContain('7d: -');
   });
 
   it('toggle button reads "Resume" when status=paused', () => {

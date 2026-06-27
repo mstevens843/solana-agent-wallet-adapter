@@ -117,7 +117,7 @@ export async function checkRpc(rpcUrl: string, signal?: AbortSignal): Promise<He
       label: 'RPC',
       status: latencyMs > SLOW_LATENCY_MS ? 'warn' : 'ok',
       message: latencyMs > SLOW_LATENCY_MS ? 'RPC slow' : 'RPC reachable',
-      detail: `${latencyMs}ms · slot ${blockhash.lastValidBlockHeight ?? '—'}`,
+      detail: `${latencyMs}ms · slot ${blockhash.lastValidBlockHeight ?? '-'}`,
       latencyMs,
       checkedAt,
     };

@@ -40,7 +40,7 @@ interface FieldDef {
 const FIELDS: ReadonlyArray<FieldDef> = [
   { key: 'SOLANA_RPC_URL', label: 'Solana RPC URL', detail: 'Helius or any Solana mainnet RPC. The bridge falls back to public RPC if blank.', placeholder: 'https://mainnet.helius-rpc.com/?api-key=...', isUrl: true },
   { key: 'HELIUS_API_KEY', label: 'Helius API key', detail: 'Used for parsed transaction history and enhanced reads (optional).', placeholder: 'helius-…' },
-  { key: 'JUPITER_API_KEY', label: 'Jupiter API key', detail: 'Optional — speeds up swap-quote requests and unlocks higher rate limits.', placeholder: 'jup-…' },
+  { key: 'JUPITER_API_KEY', label: 'Jupiter API key', detail: 'Optional. Speeds up swap-quote requests and unlocks higher rate limits.', placeholder: 'jup-…' },
   { key: 'BIRDEYE_API_KEY', label: 'Birdeye API key', detail: 'Used for token evidence (price, holders, security).', placeholder: 'birdeye-…' },
   { key: 'COINGECKO_API_KEY', label: 'CoinGecko API key', detail: 'Used for token price evidence when Birdeye is unavailable.', placeholder: 'CG-…' },
   { key: 'MAGICEDEN_API_KEY', label: 'Magic Eden API key', detail: 'Required for Magic Eden first-class NFT actions on the local bridge.', placeholder: 'me-…' },
@@ -324,7 +324,7 @@ function render(): void {
     <section class="connector-keys-panel tauri-local-runtime-panel" aria-labelledby="tauri-local-runtime-title">
       <header>
         <h3 id="tauri-local-runtime-title">Local runtime keys (Desktop)</h3>
-        <p>All fields below are optional. Agentic Desktop picks the right agent automatically — Hosted (when signed in to Agentic Cloud) or on-device — and both run policy gates against the operator's market-data APIs. Fill in market-data keys, choose a subscription connector, or add your own AI provider key only if you want the local bridge to run those calls on this machine. Settings saved here are written to the local bridge's .env file and never leave your machine.</p>
+        <p>All fields below are optional. Agentic Desktop picks the right agent automatically: Hosted (when signed in to Agentic Cloud) or on-device, and both run policy gates against the operator's market-data APIs. Fill in market-data keys, choose a subscription connector, or add your own AI provider key only if you want the local bridge to run those calls on this machine. Settings saved here are written to the local bridge's .env file and never leave your machine.</p>
       </header>
       ${state.loading ? '<p class="connector-keys-status">Loading…</p>' : ''}
       ${noticeHtml}
@@ -436,7 +436,7 @@ function bridgePanelInnerHtml(): string {
     <section class="connector-keys-panel tauri-bridge-panel" aria-labelledby="tauri-bridge-title">
       <header>
         <h3 id="tauri-bridge-title">Local bridge</h3>
-        <p>Local MCP bridge sidecar — required for offline / cloud-less operation and to back the "Local Bridge" AI mode.</p>
+        <p>Local MCP bridge sidecar, required for offline / cloud-less operation and to back the "Local Bridge" AI mode.</p>
       </header>
       <p class="tauri-bridge-status">
         <span aria-hidden="true" class="tauri-bridge-dot tauri-bridge-dot-${dotTone}"></span>

@@ -1,6 +1,9 @@
 {
   "language": "zh-Hant",
   "entries": {
+    "Amount exceeds your balance.": "金額超過您的餘額。",
+    "Enter an amount or shares.": "請輸入金額或份額。",
+    "Health factor is too low.": "健康係數過低。",
     "(max {amount} {symbol} with slippage)": "（含滑點最高 {amount} {symbol}）",
     "Add note": "新增備註",
     "Advanced: paste value": "進階：貼上數值",
@@ -5502,6 +5505,19 @@
     "Copied message": "已複製訊息",
     "Delete this chat?": "刪除此聊天？",
     "Chat limit reached": "已達到聊天上限",
-    "You've reached the max of {max} saved chats. Delete some to start a new one.": "您已達到最多 {max} 個已儲存聊天的上限。請刪除一些以開始新聊天。"
+    "You've reached the max of {max} saved chats. Delete some to start a new one.": "您已達到最多 {max} 個已儲存聊天的上限。請刪除一些以開始新聊天。",
+    "Add recipient": "新增收款人",
+    "Address Book": "通訊錄",
+    "Clipboard access is unavailable here. Type the address or use your keyboard paste.": "此處無法存取剪貼簿。請輸入地址或使用鍵盤貼上。",
+    "Clipboard empty": "剪貼簿為空",
+    "Copy an address first, then tap Paste.": "請先複製地址，然後點按貼上。",
+    "No saved recipients yet.": "尚無已儲存的收款人。",
+    "Open Address Book": "開啟通訊錄",
+    "Paste address from clipboard": "從剪貼簿貼上地址",
+    "Paste unavailable": "無法貼上",
+    "Recipient input mode": "收款人輸入模式",
+    "Save recipients by name, then pick them in any send form.": "依名稱儲存收款人，即可在任何傳送表單中選擇。",
+    "Saved on this device. Sign in to sync across your devices.": "已儲存至此裝置。登入後可在多台裝置間同步。",
+    "Synced to your cloud account.": "已同步至你的雲端帳戶。"
   }
 }

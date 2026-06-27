@@ -67,7 +67,7 @@ async function showProfile(options: GlobalOptions): Promise<void> {
 
 async function payMerchant(options: GlobalOptions): Promise<void> {
   console.log();
-  console.log(header('Pay merchant — sign an ACP cart'));
+  console.log(header('Pay merchant - sign an ACP cart'));
   const filePath = await input({
     message: 'Path to cart JSON',
     default: './cart.json',

@@ -253,7 +253,7 @@ describe('buildSendPreSignReview', () => {
       for (const row of section.rows) {
         expect(row.value).not.toMatch(/^n\/a$/i);
         expect(row.value).not.toBe('');
-        expect(row.value).not.toBe('—');
+        expect(row.value).not.toBe('-');
       }
     }
   });
@@ -422,11 +422,12 @@ describe('buildSwapPreSignReview', () => {
       for (const row of section.rows) {
         expect(row.value).not.toMatch(/^n\/a$/i);
         expect(row.value).not.toBe('');
-        expect(row.value).not.toBe('—');
+        expect(row.value).not.toBe('-');
       }
     }
     const swap = model.sections.find((section) => section.title === 'Swap');
-    expect(swap?.rows.some((row) => row.label === 'Slippage')).toBe(false);
+    // Auto (no slippageBps) renders an explicit "Auto" row rather than being omitted.
+    expect(swap?.rows.find((row) => row.label === 'Slippage')?.value).toBe('Auto');
     expect(swap?.rows.some((row) => row.label === 'Price impact')).toBe(false);
     expect(swap?.rows.some((row) => row.label === 'Expected out')).toBe(false);
     expect(swap?.rows.some((row) => row.label === 'Min received')).toBe(false);
@@ -567,7 +568,7 @@ describe('buildCustomTransactionPreSignReview', () => {
       for (const row of section.rows) {
         expect(row.value).not.toMatch(/^n\/a$/i);
         expect(row.value).not.toBe('');
-        expect(row.value).not.toBe('—');
+        expect(row.value).not.toBe('-');
       }
     }
   });
@@ -747,7 +748,7 @@ describe('shared invariants', () => {
           expect(row.label.trim()).not.toBe('');
           expect(row.value).not.toMatch(/^n\/a$/i);
           expect(row.value).not.toBe('');
-          expect(row.value).not.toBe('—');
+          expect(row.value).not.toBe('-');
         }
       }
     }

@@ -47,7 +47,7 @@ export async function pickPendingAction(options: GlobalOptions, mode: PickMode):
   }
 
   console.log();
-  console.log(header(`${MODE_LABELS[mode]} — pick an action`));
+  console.log(header(`${MODE_LABELS[mode]} - pick an action`));
 
   return select<string>({
     message: `Which action?`,

@@ -1,6 +1,9 @@
 {
   "language": "ko",
   "entries": {
+    "Amount exceeds your balance.": "금액이 잔액을 초과합니다.",
+    "Enter an amount or shares.": "금액 또는 셰어를 입력하세요.",
+    "Health factor is too low.": "헬스 팩터가 너무 낮습니다.",
     "Guided demo": "가이드 데모",
     "Preview wallet approval without connecting a wallet.": "지갑을 연결하지 않고 지갑 승인 과정을 미리 살펴보세요.",
     "Pick a practical Solana request and watch Agentic turn it into a bounded wallet review. This demo simulates the approval flow, does not move funds, and never asks you to start the local bridge.": "실용적인 Solana 요청을 선택하고 Agentic이 이를 제한된 지갑 검토로 바꾸는 과정을 확인하세요. 이 데모는 승인 흐름을 시뮬레이션하며, 자금을 이동하지 않고, 로컬 브리지를 시작하라고 요구하지 않습니다.",
@@ -5502,6 +5505,19 @@
     "Copied message": "메시지를 복사함",
     "Delete this chat?": "이 채팅을 삭제할까요?",
     "Chat limit reached": "채팅 한도에 도달했습니다",
-    "You've reached the max of {max} saved chats. Delete some to start a new one.": "저장된 채팅이 최대 {max}개에 도달했습니다. 새로 시작하려면 일부를 삭제하세요."
+    "You've reached the max of {max} saved chats. Delete some to start a new one.": "저장된 채팅이 최대 {max}개에 도달했습니다. 새로 시작하려면 일부를 삭제하세요.",
+    "Add recipient": "수신자 추가",
+    "Address Book": "주소록",
+    "Clipboard access is unavailable here. Type the address or use your keyboard paste.": "여기서는 클립보드에 접근할 수 없습니다. 주소를 입력하거나 키보드로 붙여넣으세요.",
+    "Clipboard empty": "클립보드가 비어 있음",
+    "Copy an address first, then tap Paste.": "먼저 주소를 복사한 다음 붙여넣기를 누르세요.",
+    "No saved recipients yet.": "저장된 수신자가 아직 없습니다.",
+    "Open Address Book": "주소록 열기",
+    "Paste address from clipboard": "클립보드에서 주소 붙여넣기",
+    "Paste unavailable": "붙여넣기를 사용할 수 없음",
+    "Recipient input mode": "수신자 입력 모드",
+    "Save recipients by name, then pick them in any send form.": "수신자를 이름으로 저장하면 모든 보내기 양식에서 선택할 수 있습니다.",
+    "Saved on this device. Sign in to sync across your devices.": "이 기기에 저장됨. 로그인하면 여러 기기에서 동기화됩니다.",
+    "Synced to your cloud account.": "클라우드 계정에 동기화됨."
   }
 }

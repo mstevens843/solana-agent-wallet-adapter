@@ -1,6 +1,9 @@
 {
   "language": "en",
   "entries": {
+    "Amount exceeds your balance.": "Amount exceeds your balance.",
+    "Enter an amount or shares.": "Enter an amount or shares.",
+    "Health factor is too low.": "Health factor is too low.",
     " · {remaining} left": " · {remaining} left",
     " → your wallet": " → your wallet",
     " +{n} more": " +{n} more",
@@ -5502,6 +5505,19 @@
     "Copied message": "Copied message",
     "Delete this chat?": "Delete this chat?",
     "Chat limit reached": "Chat limit reached",
-    "You've reached the max of {max} saved chats. Delete some to start a new one.": "You've reached the max of {max} saved chats. Delete some to start a new one."
+    "You've reached the max of {max} saved chats. Delete some to start a new one.": "You've reached the max of {max} saved chats. Delete some to start a new one.",
+    "Add recipient": "Add recipient",
+    "Address Book": "Address Book",
+    "Clipboard access is unavailable here. Type the address or use your keyboard paste.": "Clipboard access is unavailable here. Type the address or use your keyboard paste.",
+    "Clipboard empty": "Clipboard empty",
+    "Copy an address first, then tap Paste.": "Copy an address first, then tap Paste.",
+    "No saved recipients yet.": "No saved recipients yet.",
+    "Open Address Book": "Open Address Book",
+    "Paste address from clipboard": "Paste address from clipboard",
+    "Paste unavailable": "Paste unavailable",
+    "Recipient input mode": "Recipient input mode",
+    "Save recipients by name, then pick them in any send form.": "Save recipients by name, then pick them in any send form.",
+    "Saved on this device. Sign in to sync across your devices.": "Saved on this device. Sign in to sync across your devices.",
+    "Synced to your cloud account.": "Synced to your cloud account."
   }
 }

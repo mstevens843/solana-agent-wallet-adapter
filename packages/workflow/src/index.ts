@@ -2840,7 +2840,9 @@ function requiredConstraintGroups(actionType: string): Array<{ label: string; ke
       { label: 'Input token', keys: ['inputToken', 'inputMint'] },
       { label: 'Output token', keys: ['outputToken', 'outputMint'] },
       { label: 'Amount', keys: ['amount', 'inputAmount'] },
-      { label: 'Slippage cap', keys: ['slippageBps'] },
+      // Slippage cap is intentionally NOT required: Auto (empty slippageBps) lets Jupiter
+      // apply its own dynamic slippage; a Custom value is range-validated downstream by
+      // actionService (range + maxSlippageBps). Requiring it here wrongly blocked Auto plans.
     ];
   }
   if (actionType === 'recurring_payment') {

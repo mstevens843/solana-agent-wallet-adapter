@@ -161,7 +161,7 @@ function toneMark(tone: EvidenceTone): string {
     case 'fail': return badge('✗', 'err');
     case 'warn': return badge('⚠', 'warn');
     case 'neutral':
-    default: return badge('—', 'muted');
+    default: return badge('-', 'muted');
   }
 }
 

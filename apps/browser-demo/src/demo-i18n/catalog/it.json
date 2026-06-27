@@ -1,6 +1,9 @@
 {
   "language": "it",
   "entries": {
+    "Amount exceeds your balance.": "L'importo supera il tuo saldo.",
+    "Enter an amount or shares.": "Inserisci un importo o quote.",
+    "Health factor is too low.": "Il fattore di salute è troppo basso.",
     "Guided demo": "Demo guidata",
     "Preview wallet approval without connecting a wallet.": "Visualizza in anteprima l'approvazione del wallet senza collegare un wallet.",
     "Pick a practical Solana request and watch Agentic turn it into a bounded wallet review. This demo simulates the approval flow, does not move funds, and never asks you to start the local bridge.": "Scegli una richiesta pratica su Solana e osserva come Agentic la trasforma in una revisione del wallet con limiti precisi. Questa demo simula il flusso di approvazione, non sposta fondi e non ti chiede mai di avviare il bridge locale.",
@@ -5502,6 +5505,19 @@
     "Copied message": "Messaggio copiato",
     "Delete this chat?": "Eliminare questa chat?",
     "Chat limit reached": "Limite di chat raggiunto",
-    "You've reached the max of {max} saved chats. Delete some to start a new one.": "Hai raggiunto il massimo di {max} chat salvate. Eliminane alcune per iniziarne una nuova."
+    "You've reached the max of {max} saved chats. Delete some to start a new one.": "Hai raggiunto il massimo di {max} chat salvate. Eliminane alcune per iniziarne una nuova.",
+    "Add recipient": "Aggiungi destinatario",
+    "Address Book": "Rubrica",
+    "Clipboard access is unavailable here. Type the address or use your keyboard paste.": "L'accesso agli appunti non è disponibile qui. Digita l'indirizzo o incollalo dalla tastiera.",
+    "Clipboard empty": "Appunti vuoti",
+    "Copy an address first, then tap Paste.": "Copia prima un indirizzo, poi tocca Incolla.",
+    "No saved recipients yet.": "Nessun destinatario salvato.",
+    "Open Address Book": "Apri rubrica",
+    "Paste address from clipboard": "Incolla l'indirizzo dagli appunti",
+    "Paste unavailable": "Incolla non disponibile",
+    "Recipient input mode": "Modalità di inserimento del destinatario",
+    "Save recipients by name, then pick them in any send form.": "Salva i destinatari per nome, poi selezionali in qualsiasi modulo di invio.",
+    "Saved on this device. Sign in to sync across your devices.": "Salvato su questo dispositivo. Accedi per sincronizzare tra i tuoi dispositivi.",
+    "Synced to your cloud account.": "Sincronizzato con il tuo account cloud."
   }
 }

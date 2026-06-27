@@ -33,7 +33,7 @@ export function removeUndefined<T extends Record<string, unknown>>(record: T): T
 
 export function printQueuedAction(title: string, result: unknown): void {
   console.log();
-  console.log(header(`Queued — ${title}`));
+  console.log(header(`Queued - ${title}`));
   const r = (result && typeof result === 'object' ? result : {}) as PreparedActionResult;
   const rows: Array<[string, string]> = [];
   if (r.id) rows.push(['ID', r.id]);

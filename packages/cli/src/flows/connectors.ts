@@ -126,7 +126,7 @@ async function manageConnector(
   if (action === 'view') {
     const actions = listActions(connector.id);
     console.log();
-    console.log(header(`${connector.name} — implemented actions`));
+    console.log(header(`${connector.name} - implemented actions`));
     for (const a of actions) {
       console.log(`  · ${humanizeActionKind(a.actionKind, connector.id)}  ${badge(a.actionKind, 'muted')}`);
     }
@@ -199,7 +199,7 @@ async function setApiKey(options: GlobalOptions, connector: ConnectorSummary): P
     ? process.env[connector.envVar]!
     : await password({ message: `${label}:` });
   if (!apiKey.trim()) {
-    console.log(badge('Aborted — empty credential.', 'warn'));
+    console.log(badge('Aborted - empty credential.', 'warn'));
     return false;
   }
   const labelInput = await input({

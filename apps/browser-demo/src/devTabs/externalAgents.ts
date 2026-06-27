@@ -398,7 +398,7 @@ export function rowHtml(item: NormalizedApproval): string {
       ? `${escapeHtml(item.amount)} ${escapeHtml(item.token)}`
       : item.amount
         ? escapeHtml(item.amount)
-        : '—';
+        : '-';
   const recipientHtml = item.recipient
     ? `<span class="external-agents-row-recipient">${tf('to {recipient}', { recipient: escapeHtml(shortAddress(item.recipient)) })}</span>`
     : '';

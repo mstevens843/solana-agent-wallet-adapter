@@ -112,3 +112,33 @@ describe('AgentWalletActionService recipient caps', () => {
     });
   });
 });
+
+describe('AgentWalletActionService prepare-time hardening', () => {
+  it('rejects an invalid recipient address with a clear error at prepare (not a raw PublicKey throw)', async () => {
+    const path = await tempPath();
+    const service = new AgentWalletActionService({
+      backend: createMockBackend(),
+      config: configWithCap(),
+      preparedActions: new JsonPreparedActionStore(path),
+    });
+    await expect(
+      service.prepareTransferSol({ recipient: 'not-a-real-address', amountSol: '0.01' }),
+    ).rejects.toMatchObject({ code: 'invalid_request', message: expect.stringContaining('valid Solana address') });
+  });
+
+  it('enforces the mainnet transfer cap at prepare time, not only at execute', async () => {
+    const path = await tempPath();
+    const service = new AgentWalletActionService({
+      backend: createMockBackend(),
+      config: {
+        ...DEFAULT_CONFIG,
+        cluster: 'mainnet-beta',
+        mainnet: { ...DEFAULT_CONFIG.mainnet, enabled: true, maxSolTransfer: '0.05', allowArbitraryTransactions: true },
+      },
+      preparedActions: new JsonPreparedActionStore(path),
+    });
+    await expect(
+      service.prepareTransferSol({ recipient: TREASURY, amountSol: '1' }),
+    ).rejects.toMatchObject({ code: 'unauthorized', message: expect.stringContaining('exceeds the configured mainnet cap') });
+  });
+});

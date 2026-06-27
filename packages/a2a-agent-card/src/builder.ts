@@ -11,7 +11,7 @@ const DEFAULT_PROTOCOL_VERSION = '0.2.5';
 const DEFAULT_VERSION = '0.0.1-dev';
 const DEFAULT_NAME = 'Agentic Wallet';
 const DEFAULT_DESCRIPTION =
-  'Solana-native A2A-compatible wallet adapter. Receives AP2 mandates, pays ACP carts, and signs every action through explicit user approval — no auto-signing.';
+  'Solana-native A2A-compatible wallet adapter. Receives AP2 mandates, pays ACP carts, and signs every action through explicit user approval. No auto-signing.';
 const DEFAULT_SUPPORTED_PROTOCOLS: ReadonlyArray<AgenticProtocol> = ['ap2', 'acp', 'a2a'];
 const DEFAULT_INPUT_MODES: ReadonlyArray<string> = ['application/json', 'text/plain'];
 const DEFAULT_OUTPUT_MODES: ReadonlyArray<string> = ['application/json'];

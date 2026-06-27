@@ -674,7 +674,7 @@ function normalizeScheduledCadence(value: string | undefined): ScheduledTransfer
 // Legacy plan-first body retained for tests and future direct-plan entrypoints.
 // The public /agent command now starts in chat mode above.
 async function runAgentPlanFirst(options: GlobalOptions, signPlanFn?: SignPlanFn): Promise<void> {
-  console.log(header('Agent — natural language to wallet plan'));
+  console.log(header('Agent - natural language to wallet plan'));
 
   const session = await loadSession(options).catch(() => null);
   const auth = sessionStatusSummary(session);
@@ -691,12 +691,12 @@ async function runAgentPlanFirst(options: GlobalOptions, signPlanFn?: SignPlanFn
     message: 'What should the wallet do? (e.g. "stake 0.01 SOL on Marinade")',
   });
   if (!prompt.trim()) {
-    console.log(badge('Empty intent — try again, or Ctrl+C to cancel.', 'muted'));
+    console.log(badge('Empty intent - try again, or Ctrl+C to cancel.', 'muted'));
     prompt = await multilineInput({
       message: 'What should the wallet do?',
     });
     if (!prompt.trim()) {
-      console.log(badge('Still empty — aborted.', 'warn'));
+      console.log(badge('Still empty - aborted.', 'warn'));
       return;
     }
   }
@@ -752,15 +752,15 @@ async function runAgentPlanFirst(options: GlobalOptions, signPlanFn?: SignPlanFn
   if (blocked) {
     console.log();
     console.log(badge('Plan was denied by policy review.', 'err'));
-    console.log(badge('You can still send it to the approval inbox if you want to proceed — an override entry will be saved in the note.', 'muted'));
+    console.log(badge('You can still send it to the approval inbox if you want to proceed - an override entry will be saved in the note.', 'muted'));
   } else if (needsInput) {
     console.log();
     console.log(badge('Agent review did not reach a conclusive verdict.', 'warn'));
-    console.log(badge('You can still send it to the approval inbox if you want to proceed — an override entry will be saved in the note.', 'muted'));
+    console.log(badge('You can still send it to the approval inbox if you want to proceed - an override entry will be saved in the note.', 'muted'));
   } else if (reviewIndeterminate) {
     console.log();
-    console.log(badge("Policy review didn't finish — verdict unknown.", 'warn'));
-    console.log(badge('You can still send it to the approval inbox if you want to proceed — an override entry will be saved in the note.', 'muted'));
+    console.log(badge("Policy review didn't finish - verdict unknown.", 'warn'));
+    console.log(badge('You can still send it to the approval inbox if you want to proceed - an override entry will be saved in the note.', 'muted'));
   }
 
   const choices = buildAgentActionChoices({ blocked, needsInput, reviewIndeterminate });
@@ -850,7 +850,7 @@ export function buildAgentActionChoices(
     },
     {
       name: requiresOverride
-        ? `Queue anyway — send to /inbox (overrides agent ${overrideKind})`
+        ? `Queue anyway - send to /inbox (overrides agent ${overrideKind})`
         : 'Queue as a prepared approval (sends to /inbox)',
       value: 'queue',
       description: requiresOverride
@@ -859,12 +859,12 @@ export function buildAgentActionChoices(
     },
     {
       name: requiresOverride
-        ? 'Both — sign the off-chain proof first, then queue anyway (override)'
-        : 'Both — sign the off-chain proof first, then queue the prepared approval',
+        ? 'Both - sign the off-chain proof first, then queue anyway (override)'
+        : 'Both - sign the off-chain proof first, then queue the prepared approval',
       value: 'both',
     },
     {
-      name: 'Done — keep the plan locally',
+      name: 'Done - keep the plan locally',
       value: 'done',
       description: 'Use /ask <question> to drill in, or /agent to refine.',
     },
@@ -915,7 +915,7 @@ export async function runAsk(options: GlobalOptions, question?: string): Promise
     message: 'What do you want to ask about the last plan?',
   })).trim();
   if (!q) {
-    console.log(badge('Empty question — aborted.', 'muted'));
+    console.log(badge('Empty question - aborted.', 'muted'));
     return;
   }
   const spin = spinner('Thinking…');
@@ -1003,7 +1003,7 @@ async function runReviewLoop(options: GlobalOptions, route: AgentAiRoute, plan: 
       if (value.trim()) answers[key] = value.trim();
     }
   }
-  console.log(badge('Review loop exceeded 5 attempts — stopping.', 'warn'));
+  console.log(badge('Review loop exceeded 5 attempts - stopping.', 'warn'));
   return null;
 }
 

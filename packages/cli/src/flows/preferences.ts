@@ -72,7 +72,7 @@ async function fetchSummary(options: GlobalOptions): Promise<Summary> {
   const aiMode = aiModeLabel(ai);
 
   return {
-    workspace: `${auth.authenticated ? badge('signed in', 'ok') : badge('local only', 'muted')} · ${auth.walletAddress ?? '—'}`,
+    workspace: `${auth.authenticated ? badge('signed in', 'ok') : badge('local only', 'muted')} · ${auth.walletAddress ?? '-'}`,
     ai: `${aiMode}`,
     access: `${connectorCount} connectors enabled`,
     rules: `${policyCount} policies · ${railCount} safety rails`,
@@ -90,11 +90,11 @@ async function openWorkspace(options: GlobalOptions): Promise<void> {
   const auth = sessionStatusSummary(session);
   console.log(kv([
     ['Signed in',     auth.authenticated ? badge('yes', 'ok') : badge('no', 'muted')],
-    ['Wallet',        auth.walletAddress ?? '—'],
-    ['Expires',       auth.expiresAt ?? '—'],
+    ['Wallet',        auth.walletAddress ?? '-'],
+    ['Expires',       auth.expiresAt ?? '-'],
     ['Cloud sync',    auth.authenticated ? badge('active', 'ok') : badge('paused (sign in to sync)', 'muted')],
     ['Bridge',        health.ok ? badge('online', 'ok') : badge('offline', 'err')],
-    ['Network',       health.ok ? health.value.cluster ?? 'unknown' : '—'],
+    ['Network',       health.ok ? health.value.cluster ?? 'unknown' : '-'],
   ]));
   console.log(divider());
   console.log(badge('To clear local + cloud workspace data, run /cloud-workspace delete.', 'muted'));
@@ -258,9 +258,9 @@ async function pickAiMode(): Promise<string> {
   return select<string>({
     message: 'AI mode',
     choices: [
-      { name: 'bridge — local bridge AI (default)',     value: 'bridge' },
-      { name: 'device-agent — on-device LLM',           value: 'device-agent' },
-      { name: 'hosted — cloud AI (render-web)',         value: 'hosted' },
+      { name: 'bridge - local bridge AI (default)',     value: 'bridge' },
+      { name: 'device-agent - on-device LLM',           value: 'device-agent' },
+      { name: 'hosted - cloud AI (render-web)',         value: 'hosted' },
     ],
   });
 }

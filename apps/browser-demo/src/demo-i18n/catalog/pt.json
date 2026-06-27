@@ -1,6 +1,9 @@
 {
   "language": "pt",
   "entries": {
+    "Amount exceeds your balance.": "O valor excede o seu saldo.",
+    "Enter an amount or shares.": "Insira um valor ou cotas.",
+    "Health factor is too low.": "O fator de saúde está muito baixo.",
     "Guided demo": "Demonstração guiada",
     "Preview wallet approval without connecting a wallet.": "Visualize a aprovação da carteira sem conectar uma carteira.",
     "Pick a practical Solana request and watch Agentic turn it into a bounded wallet review. This demo simulates the approval flow, does not move funds, and never asks you to start the local bridge.": "Escolha uma solicitação prática na Solana e veja a Agentic transformá-la em uma revisão de carteira delimitada. Esta demonstração simula o fluxo de aprovação, não movimenta fundos e nunca pede para você iniciar a ponte local.",
@@ -5502,6 +5505,19 @@
     "Copied message": "Mensagem copiada",
     "Delete this chat?": "Excluir esta conversa?",
     "Chat limit reached": "Limite de conversas atingido",
-    "You've reached the max of {max} saved chats. Delete some to start a new one.": "Você atingiu o máximo de {max} conversas salvas. Exclua algumas para iniciar uma nova."
+    "You've reached the max of {max} saved chats. Delete some to start a new one.": "Você atingiu o máximo de {max} conversas salvas. Exclua algumas para iniciar uma nova.",
+    "Add recipient": "Adicionar destinatário",
+    "Address Book": "Catálogo de endereços",
+    "Clipboard access is unavailable here. Type the address or use your keyboard paste.": "O acesso à área de transferência não está disponível aqui. Digite o endereço ou cole-o pelo teclado.",
+    "Clipboard empty": "Área de transferência vazia",
+    "Copy an address first, then tap Paste.": "Copie um endereço primeiro e depois toque em Colar.",
+    "No saved recipients yet.": "Ainda não há destinatários salvos.",
+    "Open Address Book": "Abrir catálogo de endereços",
+    "Paste address from clipboard": "Colar endereço da área de transferência",
+    "Paste unavailable": "Colar indisponível",
+    "Recipient input mode": "Modo de entrada do destinatário",
+    "Save recipients by name, then pick them in any send form.": "Salve destinatários por nome e escolha-os em qualquer formulário de envio.",
+    "Saved on this device. Sign in to sync across your devices.": "Salvo neste dispositivo. Faça login para sincronizar entre seus dispositivos.",
+    "Synced to your cloud account.": "Sincronizado com sua conta na nuvem."
   }
 }

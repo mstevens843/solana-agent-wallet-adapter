@@ -90,7 +90,7 @@ export interface AiConnectorPreset {
 export const AI_CONNECTORS: AiConnectorPreset[] = [
   { id: 'codex', label: 'Codex (ChatGPT plan)', billingNote: 'Uses your ChatGPT plan (within plan limits).' },
   { id: 'gemini', label: 'Gemini (Google AI Pro/Ultra)', billingNote: 'Uses your Google AI Pro/Ultra plan.' },
-  { id: 'claude', label: 'Claude (Agent-SDK credits)', billingNote: 'Uses your Claude Agent-SDK credits ($20–$200/mo) — caps out, then stops.' },
+  { id: 'claude', label: 'Claude (Agent-SDK credits)', billingNote: 'Uses your Claude Agent-SDK credits ($20-$200/mo). Caps out, then stops.' },
   { id: 'antigravity', label: 'Antigravity (Google AI)', billingNote: 'Uses your Google AI Pro/Ultra plan via the Antigravity CLI (Gemini CLI successor).' },
 ];
 

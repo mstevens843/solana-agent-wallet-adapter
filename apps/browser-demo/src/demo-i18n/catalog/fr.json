@@ -1,6 +1,9 @@
 {
   "language": "fr",
   "entries": {
+    "Amount exceeds your balance.": "Le montant dépasse votre solde.",
+    "Enter an amount or shares.": "Saisissez un montant ou des parts.",
+    "Health factor is too low.": "Le facteur de santé est trop faible.",
     "Guided demo": "Démo guidée",
     "Preview wallet approval without connecting a wallet.": "Prévisualisez l'approbation du portefeuille sans connecter de portefeuille.",
     "Pick a practical Solana request and watch Agentic turn it into a bounded wallet review. This demo simulates the approval flow, does not move funds, and never asks you to start the local bridge.": "Choisissez une requête Solana concrète et voyez Agentic la transformer en une revue de portefeuille encadrée. Cette démo simule le flux d'approbation, ne déplace aucun fonds et ne vous demande jamais de démarrer le pont local.",
@@ -5502,6 +5505,19 @@
     "Copied message": "Message copié",
     "Delete this chat?": "Supprimer ce chat ?",
     "Chat limit reached": "Limite de chats atteinte",
-    "You've reached the max of {max} saved chats. Delete some to start a new one.": "Vous avez atteint le maximum de {max} chats enregistrés. Supprimez-en pour en démarrer un nouveau."
+    "You've reached the max of {max} saved chats. Delete some to start a new one.": "Vous avez atteint le maximum de {max} chats enregistrés. Supprimez-en pour en démarrer un nouveau.",
+    "Add recipient": "Ajouter un destinataire",
+    "Address Book": "Carnet d'adresses",
+    "Clipboard access is unavailable here. Type the address or use your keyboard paste.": "L'accès au presse-papiers n'est pas disponible ici. Saisissez l'adresse ou collez-la avec le clavier.",
+    "Clipboard empty": "Presse-papiers vide",
+    "Copy an address first, then tap Paste.": "Copiez d'abord une adresse, puis appuyez sur Coller.",
+    "No saved recipients yet.": "Aucun destinataire enregistré pour le moment.",
+    "Open Address Book": "Ouvrir le carnet d'adresses",
+    "Paste address from clipboard": "Coller l'adresse depuis le presse-papiers",
+    "Paste unavailable": "Collage indisponible",
+    "Recipient input mode": "Mode de saisie du destinataire",
+    "Save recipients by name, then pick them in any send form.": "Enregistrez des destinataires par leur nom, puis sélectionnez-les dans n'importe quel formulaire d'envoi.",
+    "Saved on this device. Sign in to sync across your devices.": "Enregistré sur cet appareil. Connectez-vous pour synchroniser sur tous vos appareils.",
+    "Synced to your cloud account.": "Synchronisé avec votre compte cloud."
   }
 }

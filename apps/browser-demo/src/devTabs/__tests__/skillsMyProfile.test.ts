@@ -81,15 +81,15 @@ describe('pure helpers', () => {
     expect(formatSuccessRate(0)).toBe('0%');
     expect(formatSuccessRate(1.2)).toBe('100%');
     expect(formatSuccessRate(-0.1)).toBe('0%');
-    expect(formatSuccessRate(Number.NaN)).toBe('—');
+    expect(formatSuccessRate(Number.NaN)).toBe('-');
   });
 
   it('formatUsd renders numeric strings and returns em-dash for missing values', () => {
     expect(formatUsd('1234.5')).toBe('$1,234.50');
     expect(formatUsd('0')).toBe('$0.00');
-    expect(formatUsd(undefined)).toBe('—');
-    expect(formatUsd('')).toBe('—');
-    expect(formatUsd('not-a-number')).toBe('—');
+    expect(formatUsd(undefined)).toBe('-');
+    expect(formatUsd('')).toBe('-');
+    expect(formatUsd('not-a-number')).toBe('-');
   });
 
   it('formatRelativeTime returns human deltas with a stable reference now', () => {

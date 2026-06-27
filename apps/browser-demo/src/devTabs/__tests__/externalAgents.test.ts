@@ -181,7 +181,7 @@ describe('rowHtml', () => {
 
   it('renders em-dash when amount is missing', () => {
     const html = rowHtml(makeApproval({ amount: null, token: null }));
-    expect(html).toContain('external-agents-row-amount">—');
+    expect(html).toContain('external-agents-row-amount">-');
   });
 
   it('renders the MPP badge in the row head when metadata.connectorId is "mpp" (P4.3)', () => {

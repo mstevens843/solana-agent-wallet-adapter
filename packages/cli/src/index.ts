@@ -2131,7 +2131,7 @@ async function runAgentSetup(
   choices.push({ name: 'Back', value: 'back' });
 
   const choice = await tuiSelect<AgentSetupChoice>({
-    message: 'Choose how /agent thinks — an API key, or a subscription connector',
+    message: 'Choose how /agent thinks - an API key, or a subscription connector',
     choices,
     default: 'anthropic',
   });
@@ -2250,8 +2250,8 @@ async function configureAgentConnector(
     const notInstalled = detection?.authStatus === 'binary-not-found';
     const action = await tuiSelect<'connect' | 'manual' | 'save' | 'back'>({
       message: notInstalled
-        ? `${connectorLabel(connector)} CLI was not found on PATH — how do you want to proceed?`
-        : `${connectorLabel(connector)} is not signed in — connect now?`,
+        ? `${connectorLabel(connector)} CLI was not found on PATH - how do you want to proceed?`
+        : `${connectorLabel(connector)} is not signed in - connect now?`,
       default: notInstalled ? 'save' : 'connect',
       choices: [
         { name: 'Connect now (opens sign-in)', value: 'connect', description: 'Launch the CLI’s own login in your browser, then wait for it.' },
@@ -2320,7 +2320,7 @@ async function connectConnectorViaBridge(
       return detection;
     }
   }
-  console.log(tuiBadge('Still waiting on sign-in — saving the connector. Run /agent once you finish signing in.', 'warn'));
+  console.log(tuiBadge('Still waiting on sign-in - saving the connector. Run /agent once you finish signing in.', 'warn'));
   return null;
 }
 
@@ -3516,7 +3516,7 @@ function printRecurringPaymentDetail(payment: RecurringPayment): void {
     ['Occurrences', payment.maxOccurrences ? `${payment.occurrencesCreated ?? 0} / ${payment.maxOccurrences}` : `${payment.occurrencesCreated ?? 0} (unlimited)`],
     ['Wallet', payment.walletAddress],
     ['Network', payment.cluster],
-    ['Note', payment.note ?? '—'],
+    ['Note', payment.note ?? '-'],
   ]));
 }
 
@@ -3578,7 +3578,7 @@ async function approvePreparedAction(state: TerminalAppState, idOrIndex: string 
   } else if (tx === 'failed') {
     printError(state.options, 'On-chain: failed.');
   } else if (tx === 'timeout') {
-    printMuted(state.options, 'Still pending — re-run /inbox to refresh status.');
+    printMuted(state.options, 'Still pending - re-run /inbox to refresh status.');
   }
 }
 
@@ -3998,13 +3998,13 @@ async function runApiKeysMenu(state: TerminalAppState): Promise<void> {
 
     console.log();
     console.log(`${colorize(state.options, 'API keys', 'green')}  ·  ${colorize(state.options, state.options.envPath, 'muted')}`);
-    console.log(colorize(state.options, 'Missing keys are fine — the agent falls back to web search for that tier.', 'muted'));
+    console.log(colorize(state.options, 'Missing keys are fine - the agent falls back to web search for that tier.', 'muted'));
     console.log();
 
     const choices: Array<{ name: string; value: string }> = rows.map((row, i) => {
       const value = env.values[row.envKey] ?? '';
       const status = value ? colorize(state.options, '● set', 'green') : colorize(state.options, '○ missing', 'yellow');
-      const preview = value ? maskedPreview(value, row.secret) : '—';
+      const preview = value ? maskedPreview(value, row.secret) : '-';
       return { name: `${String(i + 1).padStart(2, ' ')}.  ${status}  ${row.label.padEnd(18)} ${preview}`, value: row.id };
     });
     choices.push({ name: '← Back to main menu', value: '__back__' });
@@ -4080,7 +4080,7 @@ async function manageApiKey(
     ? await tuiPassword({ message: `${row.label} value:` })
     : await tuiInput({ message: `${row.label} value:`, default: current });
   if (!rawNext.trim()) {
-    console.log(tuiBadge('Empty input — no change.', 'muted'));
+    console.log(tuiBadge('Empty input - no change.', 'muted'));
     return;
   }
   let next = rawNext.trim();
@@ -4131,7 +4131,7 @@ async function testRpc(options: GlobalOptions): Promise<TestResult> {
     const health = await bridgeRequest<BridgeHealth>(options, '/bridge/action/health');
     const cluster = health.cluster ?? 'unknown';
     const ok = Boolean(health.bridgeConnected ?? true);
-    return { ok, kind: ok ? 'ok' : 'network', detail: `Reachable — cluster ${cluster}` };
+    return { ok, kind: ok ? 'ok' : 'network', detail: `Reachable - cluster ${cluster}` };
   } catch (err) {
     const { kind, detail } = categorizeError(err);
     return { ok: false, kind, detail };
@@ -4233,8 +4233,8 @@ async function newProofFlow(state: TerminalAppState, args: string[]): Promise<vo
     const category = await tuiSelect<'common' | 'advanced'>({
       message: 'Which proof tier?',
       choices: [
-        { name: 'Common Proofs (5) — guided forms',         value: 'common',   description: 'Intent · Policy · Risk · Rejection · Tool Trace' },
-        { name: 'Advanced Proofs (15) — single-text labs',   value: 'advanced', description: 'Flight Recorder · Intent Auctions · Risk Co-Signers · …' },
+        { name: 'Common Proofs (5) - guided forms',         value: 'common',   description: 'Intent · Policy · Risk · Rejection · Tool Trace' },
+        { name: 'Advanced Proofs (15) - single-text labs',   value: 'advanced', description: 'Flight Recorder · Intent Auctions · Risk Co-Signers · …' },
       ],
     });
     const candidates = listProofSpecs(category);
@@ -4266,7 +4266,7 @@ async function newProofFlow(state: TerminalAppState, args: string[]): Promise<vo
     ['Title',   spec.title],
     ['Tier',    spec.category === 'common' ? tuiBadge('Common', 'ok') : tuiBadge('Advanced', 'warn')],
     ['Kind',    spec.kind],
-    ['Wallet',  artifact.walletAddress ?? '—'],
+    ['Wallet',  artifact.walletAddress ?? '-'],
     ['Network', artifact.cluster],
     ['Hash',    artifact.payloadHash.slice(0, 16) + '…'],
   ]));
@@ -4286,7 +4286,7 @@ async function newProofFlow(state: TerminalAppState, args: string[]): Promise<vo
   console.log(tuiBadge('Proof saved', 'ok') + `  ${spec.title}`);
   console.log(tuiKv([
     ['ID',        artifact.id],
-    ['Signature', artifact.signature ? `${artifact.signature.slice(0, 22)}…` : '—'],
+    ['Signature', artifact.signature ? `${artifact.signature.slice(0, 22)}…` : '-'],
   ]));
 }
 
@@ -4324,11 +4324,11 @@ async function showProof(state: TerminalAppState, id: string): Promise<void> {
     ['ID',         found.id],
     ['Kind',       found.kind],
     ['Tier',       artifactCategory(found) === 'common' ? tuiBadge('Common', 'ok') : tuiBadge('Advanced', 'warn')],
-    ['Wallet',     found.walletAddress ?? '—'],
+    ['Wallet',     found.walletAddress ?? '-'],
     ['Network',    found.cluster],
     ['Created',    found.createdAt],
     ['Hash',       found.payloadHash],
-    ['Signature',  found.signature ?? '—'],
+    ['Signature',  found.signature ?? '-'],
   ]));
   if (found.fields && Object.keys(found.fields).length > 0) {
     console.log('');
@@ -4415,7 +4415,7 @@ async function signPlanAsProof(
 ): Promise<{ id: string; payloadHash: string } | null> {
   // Refuse empty / null plans — nothing useful to sign.
   if (!plan || typeof plan !== 'object' || Object.keys(plan as Record<string, unknown>).length === 0) {
-    printWarn(state.options, 'Plan is empty — nothing to sign as proof.');
+    printWarn(state.options, 'Plan is empty - nothing to sign as proof.');
     return null;
   }
   await requireWalletConnected(state);
@@ -4473,7 +4473,7 @@ async function printVersionInfo(state: TerminalAppState): Promise<void> {
   console.log(`Wallet host: ${state.options.walletHostUrl}`);
   console.log(`Render-web: ${state.options.renderWebUrl}`);
   console.log(`Wallet:     ${status.ok && status.value.connected ? status.value.address : colorize(state.options, 'not connected', 'yellow')}`);
-  console.log(`Network:    ${health.ok ? health.value.cluster ?? 'unknown' : '—'}`);
+  console.log(`Network:    ${health.ok ? health.value.cluster ?? 'unknown' : '-'}`);
   console.log(`Cloud APIs: Agentic hosted default`);
   console.log(`BYOK keys:  RPC ${keyOk('SOLANA_RPC_URL') || keyOk('HELIUS_RPC_URL') ? '✓' : '○'} · Jup ${keyOk('JUPITER_API_KEY') || keyOk('JUP_API_KEY') ? '✓' : '○'} · Birdeye ${keyOk('BIRDEYE_API_KEY') ? '✓' : '○'} · Helius ${keyOk('HELIUS_API_KEY') ? '✓' : '○'}`);
   console.log(`Env file:   ${state.options.envPath}${env.found ? '' : colorize(state.options, '  (not found)', 'muted')}`);
@@ -4613,7 +4613,7 @@ async function renderDashboard(state: TerminalAppState): Promise<void> {
 
   const cluster = health.ok ? health.value.cluster ?? 'unknown' : 'unreachable';
   const networkLabel = isMainnetCluster(cluster)
-    ? `${cluster}  ${colorize(state.options, '[MAINNET — real money]', 'red')}`
+    ? `${cluster}  ${colorize(state.options, '[MAINNET - real money]', 'red')}`
     : cluster;
 
   printSection('Setup');
@@ -7069,7 +7069,7 @@ function printDoctor(options: GlobalOptions, doctor: JsonRecord): void {
   console.log(`Device Agent: ${deviceAgent.reachable ? 'reachable (cloud)' : 'offline (cloud)'}`);
   console.log(`Render-web: ${renderWeb.reachable ? `reachable${renderWeb.authenticated ? ' (signed in)' : ''}` : 'offline'}`);
   const cliWallet = typeof cliSession.walletAddress === 'string' ? short(cliSession.walletAddress, 12) : '';
-  console.log(`CLI session: ${cliSession.authenticated ? `signed in${cliWallet ? ` (${cliWallet})` : ''}${cliSession.staleSoon ? ' — token expires soon' : ''}` : 'signed out — run "solana-agent-wallet auth login"'}`);
+  console.log(`CLI session: ${cliSession.authenticated ? `signed in${cliWallet ? ` (${cliWallet})` : ''}${cliSession.staleSoon ? ' - token expires soon' : ''}` : 'signed out - run "solana-agent-wallet auth login"'}`);
   // v1.1 — optional BYOK overrides. Hosted APIs are the default, so missing
   // local keys are not an error.
   const apiKeys = isRecord(doctor.apiKeys) ? doctor.apiKeys : {};
@@ -7207,10 +7207,10 @@ function printFullCommandMenu(): void {
   console.log('/connectors        Manage 19 protocol connectors + BYO API keys');
   console.log('                   /new-connector now uses live catalog pickers (vaults, pools, banks…)');
   console.log('                   Read-only actions sign as evidence (no approval queue).');
-  console.log('/proof             Save Proof — Common (5) + Advanced (15) wallet-signed records');
+  console.log('/proof             Save Proof - Common (5) + Advanced (15) wallet-signed records');
   console.log('/agent-payments    Profile · Pay merchant · Incoming MPP requests');
-  console.log('/skills            Skills hub — Browse · Installed · My Profile · Publish');
-  console.log('/preferences       5-card preferences — Workspace · AI · Agents · Rules · Tokens');
+  console.log('/skills            Skills hub - Browse · Installed · My Profile · Publish');
+  console.log('/preferences       5-card preferences - Workspace · AI · Agents · Rules · Tokens');
   console.log('');
   printSection('Direct flows');
   console.log('/new-send          Send tokens (SOL default)');
@@ -7354,7 +7354,7 @@ More:
 
   console.log(`Solana Agent Wallet CLI
 
-Flow-first commands (recommended — run with no command or "app" for the interactive REPL):
+Flow-first commands (recommended - run with no command or "app" for the interactive REPL):
   solana-agent-wallet                                    # interactive REPL with all flows
   solana-agent-wallet app                                # same interactive REPL
   solana-agent-wallet sign-in                            # SIWS into cloud workspace
@@ -7376,7 +7376,7 @@ Flow-first commands (recommended — run with no command or "app" for the intera
   solana-agent-wallet repeat-manage                      # pause / resume / delete active schedules
   solana-agent-wallet connectors                         # manage 19 connectors + BYO API keys + enable/disable
   solana-agent-wallet sessions                           # streaming payment sessions (revoke / settle)
-  solana-agent-wallet proof [new|list|show <id>|delete <id>]   # Save Proof — Common (5) + Advanced (15)
+  solana-agent-wallet proof [new|list|show <id>|delete <id>]   # Save Proof - Common (5) + Advanced (15)
   solana-agent-wallet agent-payments                     # Profile · Pay merchant · Incoming requests
   solana-agent-wallet skills                             # Browse · Installed · My Profile · Publish
   solana-agent-wallet preferences                        # 5-card preferences (Workspace · AI · Agents · Rules · Tokens)

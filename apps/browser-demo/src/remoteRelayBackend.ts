@@ -66,7 +66,7 @@ export class RemoteRelayBackend implements WalletBackend {
     if (!capabilities.address) {
       throw new ProtocolError(
         'unauthorized',
-        'No wallet address on the pairing record — open the wallet host on your phone first.',
+        'No wallet address on the pairing record. Open the wallet host on your phone first.',
       );
     }
     return capabilities.address;

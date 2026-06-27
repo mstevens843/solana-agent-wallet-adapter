@@ -85,13 +85,13 @@ export function escapeHtml(value: string): string {
 }
 
 export function formatSuccessRate(rate: number | undefined | null): string {
-  if (rate === undefined || rate === null || Number.isNaN(rate)) return '—';
+  if (rate === undefined || rate === null || Number.isNaN(rate)) return '-';
   const pct = Math.max(0, Math.min(1, rate)) * 100;
   return `${Math.round(pct)}%`;
 }
 
 export function formatInstalls(n: number | undefined | null): string {
-  if (n === undefined || n === null || !Number.isFinite(n)) return '—';
+  if (n === undefined || n === null || !Number.isFinite(n)) return '-';
   const rounded = Math.max(0, Math.round(n));
   return rounded === 1 ? tf('{n} install', { n: rounded }) : tf('{n} installs', { n: rounded });
 }
@@ -458,7 +458,7 @@ export function renderBrowsePanel(): string {
       <header class="skills-browse-header">
         <div>
           <h2>${escapeHtml(t('Browse skills'))}</h2>
-          <p>${escapeHtml(t('Installable strategy recipes. Each run still proposes an approval — skills never move funds on their own.'))}</p>
+          <p>${escapeHtml(t('Installable strategy recipes. Each run still proposes an approval. Skills never move funds on their own.'))}</p>
         </div>
         <div class="skills-browse-header-actions">
           <button type="button" class="skills-browse-button refresh" data-skills-browse-action="refresh">${escapeHtml(t('Refresh'))}</button>

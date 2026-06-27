@@ -1,6 +1,9 @@
 {
   "language": "ru",
   "entries": {
+    "Amount exceeds your balance.": "Сумма превышает ваш баланс.",
+    "Enter an amount or shares.": "Введите сумму или доли.",
+    "Health factor is too low.": "Коэффициент здоровья слишком низкий.",
     "Guided demo": "Демонстрация с подсказками",
     "Preview wallet approval without connecting a wallet.": "Посмотрите, как работает одобрение в кошельке, не подключая его.",
     "Pick a practical Solana request and watch Agentic turn it into a bounded wallet review. This demo simulates the approval flow, does not move funds, and never asks you to start the local bridge.": "Выберите реальный запрос для Solana и посмотрите, как Agentic превращает его в ограниченную проверку в кошельке. Эта демонстрация имитирует процесс одобрения, не перемещает средства и никогда не просит запускать локальный мост.",
@@ -5502,6 +5505,19 @@
     "Copied message": "Сообщение скопировано",
     "Delete this chat?": "Удалить этот чат?",
     "Chat limit reached": "Достигнут лимит чатов",
-    "You've reached the max of {max} saved chats. Delete some to start a new one.": "Вы достигли максимума в {max} сохранённых чатов. Удалите некоторые, чтобы начать новый."
+    "You've reached the max of {max} saved chats. Delete some to start a new one.": "Вы достигли максимума в {max} сохранённых чатов. Удалите некоторые, чтобы начать новый.",
+    "Add recipient": "Добавить получателя",
+    "Address Book": "Адресная книга",
+    "Clipboard access is unavailable here. Type the address or use your keyboard paste.": "Доступ к буферу обмена здесь недоступен. Введите адрес или вставьте его с клавиатуры.",
+    "Clipboard empty": "Буфер обмена пуст",
+    "Copy an address first, then tap Paste.": "Сначала скопируйте адрес, затем нажмите «Вставить».",
+    "No saved recipients yet.": "Сохранённых получателей пока нет.",
+    "Open Address Book": "Открыть адресную книгу",
+    "Paste address from clipboard": "Вставить адрес из буфера обмена",
+    "Paste unavailable": "Вставка недоступна",
+    "Recipient input mode": "Режим ввода получателя",
+    "Save recipients by name, then pick them in any send form.": "Сохраняйте получателей по имени и выбирайте их в любой форме отправки.",
+    "Saved on this device. Sign in to sync across your devices.": "Сохранено на этом устройстве. Войдите, чтобы синхронизировать между устройствами.",
+    "Synced to your cloud account.": "Синхронизировано с вашим облачным аккаунтом."
   }
 }

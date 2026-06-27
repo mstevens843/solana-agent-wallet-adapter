@@ -11613,8 +11613,20 @@ button.danger:hover:not(:disabled) {
 }
 .action-picker-value { overflow: hidden; text-overflow: ellipsis; }
 .action-picker .template-picker-caret { color: inherit; flex: 0 0 auto; opacity: 0.8; }
-/* Right-align the menu to the trigger (it's the rightmost segment) so a wide label can't overflow. */
-.action-picker-menu { left: auto; right: 0; min-width: 100%; width: max-content; max-width: min(var(--template-menu-max-width, 260px), 84vw); }
+/* Right-align the menu to the trigger (it's the rightmost segment) so a wide label can't overflow.
+   Use higher specificity (.action-picker .action-picker-menu = 0,2,0) so these win over the later,
+   equal-specificity base .template-picker-menu (which sets width:100% and would otherwise clamp the
+   menu to the narrow trigger, wrapping labels like "Limit / TP-SL" / "Liquidity" mid-word). Right
+   anchor + max-content makes the menu grow LEFTWARD to fit the longest label on one line, capped to
+   the viewport so it stays on-screen. The trigger width is unchanged. */
+.action-picker .action-picker-menu {
+  left: auto;
+  right: 0;
+  min-width: 100%;
+  width: max-content;
+  max-width: min(var(--template-menu-max-width, 320px), 92vw);
+}
+.action-picker .action-picker-menu .template-picker-option strong { white-space: nowrap; }
 .action-picker-menu .template-picker-option { padding: 9px 12px; }
 .action-picker-menu .template-picker-option strong { font-size: 0.84rem; }
 
@@ -16310,6 +16322,142 @@ button.danger:hover:not(:disabled) {
   background: rgba(255, 118, 118, 0.1);
   border-color: rgba(255, 118, 118, 0.3);
   color: #ffd9d9;
+}
+
+/* Recipient control: [Address|Saved] pill toggle + paste-enabled input + saved-recipients
+   dropdown. Reuses .ai-key-input-wrap / .ai-key-paste-btn / .token-choice-mode. */
+.recipient-control {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.recipient-pills {
+  align-self: flex-start;
+}
+
+.recipient-input-wrap {
+  width: 100%;
+}
+
+/* Opens downward and leftward (right-anchored), wider than the input so long names +
+   4char…4char addresses fit. */
+.recipient-saved-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  left: auto;
+  margin-top: 4px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: min(84vw, 340px);
+  width: max-content;
+  max-width: 94vw;
+  max-height: min(58vh, 320px);
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid rgba(95, 227, 161, 0.28);
+  border-radius: 10px;
+  background: rgba(12, 22, 17, 0.98);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.38);
+}
+
+.recipient-saved-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.recipient-saved-row:hover:not(:disabled),
+.recipient-saved-row:focus-visible {
+  background: rgba(95, 227, 161, 0.12);
+}
+
+.recipient-saved-row:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.recipient-saved-row strong {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recipient-saved-addr {
+  flex: 0 0 auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  color: rgba(196, 205, 202, 0.78);
+}
+
+.recipient-saved-empty {
+  align-items: flex-start;
+  padding: 12px;
+  gap: 8px;
+}
+
+.recipient-saved-empty p {
+  margin: 0;
+  font-size: 0.82rem;
+  color: rgba(196, 205, 202, 0.86);
+}
+
+.recipient-saved-open-book {
+  padding: 6px 12px;
+  border: 1px solid rgba(95, 227, 161, 0.4);
+  border-radius: 8px;
+  background: rgba(18, 36, 27, 0.9);
+  color: #e7f2ea;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Address Book tab */
+.address-book-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.address-book-head h2 {
+  margin: 0 0 4px;
+}
+
+.address-book-head p {
+  margin: 0;
+  color: rgba(196, 205, 202, 0.86);
+  font-size: 0.9rem;
+}
+
+.address-book-cloud-note {
+  display: block;
+  margin-top: 6px;
+  font-style: normal;
+  font-size: 0.78rem;
+  color: rgba(196, 205, 202, 0.7);
+}
+
+.address-book-add {
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
 }
 
 .ai-actions {
@@ -30861,19 +31009,22 @@ button.danger:hover:not(:disabled) {
     position: relative;
     text-align: center;
     letter-spacing: -0.01em;
-    /* Tab labels must NEVER wrap to a second line on any phone size. */
-    white-space: nowrap;
+    /* Wrap BETWEEN words (e.g. "Sign Approval" -> "Sign" / "Approval") onto a 2nd line, but never
+       within a word — see the span rule. text-size-adjust:100% on <html> keeps iOS from inflating
+       the label so a single word like "Approval" fits its column on one line. */
+    white-space: normal;
     width: 100%;
   }
 
   .route-app .android-bottom-tab-dock .workspace-bottom-tab span {
     display: block;
     max-width: 100%;
-    /* One line, fit the 1/5 column; truncate with an ellipsis only as a last resort on
-       the very narrowest screens rather than wrapping. */
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    /* Keep each word intact: the label wraps to a 2nd line between words, but a single word is
+       never split across lines (which made "Approval" become "Approva"/"l" — a 3rd row — on the
+       iPhone 16). */
+    overflow-wrap: normal;
+    word-break: keep-all;
+    line-height: 1.05;
   }
 
   .route-app .android-bottom-tab-dock .workspace-more-trigger.workspace-bottom-tab::after {
@@ -31702,6 +31853,7 @@ button.danger:hover:not(:disabled) {
   .route-app .one-time-plan-control-row.has-connector .create-action-control,
   .route-app .recurring-control-row.has-connector .create-action-control {
     display: flex !important;
+    flex-wrap: wrap;
     gap: 6px;
     width: 100%;
   }
@@ -31724,6 +31876,14 @@ button.danger:hover:not(:disabled) {
     padding: 0 9px;
   }
   .route-app .recurring-control-row.has-connector .create-action-filter { --action-tab-cols: 2; }
+
+  /* Inner Proof | Evidence 2-tabber (native New Request, when the combined "Proofs" tab is active):
+     a full-width child so it wraps onto its own line below [tabs | Lend ▾]. Borrows .chat-wallet-tabs. */
+  .route-app .one-time-plan-control-row.has-connector .proof-evidence-subtabs {
+    flex-basis: 100%;
+    margin: 6px 0 0;
+    width: 100%;
+  }
 
   /* The control row is position:sticky z-index:220 on native — lift the dropdown menu above it so
      it isn't trapped below the sticky stacking context when it drops over the form below. */
@@ -35768,6 +35928,16 @@ button.danger:hover:not(:disabled) {
   z-index: 36;
   box-shadow: var(--shadow);
 }
+/* The connector connect surface reuses .chat-action-popover for its visual styling, but it lives
+   inside a fixed full-screen flex overlay (.connector-connect-overlay) — NOT anchored above a
+   trigger. Reset the trigger-anchoring (absolute + bottom:calc(100%+8px) + left:0 parks the panel
+   above the viewport's top edge → invisible behind the backdrop) so the panel participates in the
+   overlay's flex layout: centered popover on web, bottom sheet on mobile. */
+.chat-action-popover.connector-connect-popover {
+  position: relative;
+  inset: auto;
+  max-height: min(85dvh, calc(100dvh - 32px));
+}
 .chat-popover-head {
   display: flex;
   align-items: center;
@@ -37064,20 +37234,42 @@ button.danger:hover:not(:disabled) {
   text-transform: uppercase;
 }
 .positions-opened { color: var(--muted); font-size: 0.74rem; }
-.positions-card-summary { color: var(--text); font-size: 0.88rem; line-height: 1.4; }
+.positions-card-summary { align-items: baseline; color: var(--text); display: flex; flex-wrap: wrap; gap: 6px; line-height: 1.4; }
+.positions-title { font-size: 0.95rem; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+/* Hero stat: the single number the user came to see, large under the title. */
+.positions-headline { display: flex; flex-direction: column; gap: 1px; margin: 2px 0; }
+.positions-headline-label { color: var(--muted); font-size: 0.64rem; letter-spacing: 0.03em; text-transform: uppercase; }
+.positions-headline-value { color: var(--text); font-size: 1.2rem; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
+.positions-headline.tone-good .positions-headline-value { color: var(--accent, #3ddc97); }
+.positions-headline.tone-warn .positions-headline-value { color: #f5c451; }
+.positions-headline.tone-bad .positions-headline-value { color: #f0726b; }
 .positions-card-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
 .positions-tx { color: var(--muted); font-size: 0.78rem; margin-right: auto; text-decoration: underline; }
 .positions-connector { color: var(--muted); font-size: 0.72rem; font-weight: 600; }
-.positions-status { color: var(--muted); font-size: 0.72rem; margin-left: auto; text-transform: capitalize; }
+.positions-status { border-radius: 999px; flex: 0 0 auto; font-size: 0.7rem; font-weight: 600; margin-left: auto; padding: 3px 9px; text-transform: capitalize; white-space: nowrap; }
+.positions-status.tone-good { background: rgba(61, 220, 151, 0.14); color: var(--accent, #3ddc97); }
+.positions-status.tone-warn { background: rgba(245, 196, 81, 0.16); color: #f5c451; }
+.positions-status.tone-bad { background: rgba(240, 114, 107, 0.16); color: #f0726b; }
+.positions-status.tone-neutral { background: rgba(224, 230, 226, 0.08); color: var(--muted); }
 .positions-distance { color: var(--accent, #3ddc97); font-size: 0.78rem; font-weight: 600; margin-left: 6px; }
 .positions-details {
   display: grid;
-  gap: 6px 14px;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  margin: 2px 0;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  margin: 0;
 }
-.positions-detail dt { color: var(--muted); font-size: 0.68rem; letter-spacing: 0.02em; text-transform: uppercase; }
-.positions-detail dd { color: var(--text); font-size: 0.85rem; margin: 0; }
+.positions-detail {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(224, 230, 226, 0.08);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 7px 9px;
+}
+.positions-detail dt { color: var(--muted); font-size: 0.64rem; letter-spacing: 0.03em; text-transform: uppercase; }
+.positions-detail dd { color: var(--text); font-size: 0.9rem; font-weight: 600; margin: 0; overflow-wrap: anywhere; }
 .positions-detail.tone-good dd { color: var(--accent, #3ddc97); }
 .positions-detail.tone-warn dd { color: #f5c451; }
 .positions-detail.tone-bad dd { color: #f0726b; }
@@ -37088,13 +37280,21 @@ button.danger:hover:not(:disabled) {
 .positions-refresh-row { align-items: center; display: flex; gap: 10px; margin-bottom: 10px; }
 .positions-updated { color: var(--muted); font-size: 0.72rem; }
 .positions-note { color: var(--muted); font-size: 0.8rem; margin: 0 0 10px; }
-.positions-status { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .positions-extra { opacity: 0.82; }
+/* Risk-only left rail (warn/bad) + accent primary action — draw the eye to positions needing attention. */
+.positions-card-tone-warn { border-left: 3px solid #f5c451; }
+.positions-card-tone-bad { border-left: 3px solid #f0726b; }
+.positions-card-actions .positions-primary { border-color: var(--accent, #3ddc97); color: var(--accent, #3ddc97); }
 /* Mobile (Capacitor dock): single-column cards, horizontally-scrollable selector, stacked actions. */
 .mobile-positions-stage .positions-selector { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 4px; }
 .mobile-positions-stage .positions-tab { flex: 0 0 auto; white-space: nowrap; }
 .mobile-positions-stage .positions-section-body { grid-template-columns: 1fr; }
 .mobile-positions-stage .positions-card { padding: 12px; }
-.mobile-positions-stage .positions-card-head { flex-wrap: wrap; row-gap: 4px; }
+.mobile-positions-stage .positions-card-head { flex-wrap: wrap; gap: 8px; }
 .mobile-positions-stage .positions-card-actions { flex-direction: column; align-items: stretch; }
 .mobile-positions-stage .positions-card-actions button { width: 100%; }
+/* Phone widths (web-on-phone too, not just the native dock): comfortable touch targets + readable tiles. */
+@media (max-width: 899px) {
+  .positions-card-actions button { min-height: 44px; }
+  .positions-details { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+}

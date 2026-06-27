@@ -137,13 +137,13 @@ export async function signWalletProofMessage(
   cluster: Cluster,
 ): Promise<WalletProofSignature> {
   if (!context) {
-    throw new Error('Proof signing context is not ready — connect a wallet first.');
+    throw new Error('Proof signing context is not ready. Connect a wallet first.');
   }
   const state = context.getAppState();
   if (shouldRouteProofThroughAndroidNative(state)) {
     const backend = context.getAndroidProofBackend?.();
     if (!backend) {
-      throw new Error('Android native proof backend is not available — reconnect the wallet and try again.');
+      throw new Error('Android native proof backend is not available. Reconnect the wallet and try again.');
     }
     const result = await backend.signProof(message, summary);
     if (result.encoding === 'tx-memo-proof') {
@@ -159,7 +159,7 @@ export async function signWalletProofMessage(
       };
     }
     if (typeof result.signature !== 'string' || !result.signature.trim()) {
-      throw new Error('Android native proof signing returned an empty signature — please retry in your wallet.');
+      throw new Error('Android native proof signing returned an empty signature. Please retry in your wallet.');
     }
     return {
       signature: result.signature,
@@ -179,7 +179,7 @@ export async function signWalletProofMessage(
   const client = context.getClient();
   const result = await client.signMessage(message, { cluster, summary });
   if (typeof result.signature !== 'string' || !result.signature.trim()) {
-    throw new Error('Wallet returned an empty proof signature — please retry.');
+    throw new Error('Wallet returned an empty proof signature. Please retry.');
   }
   return {
     signature: result.signature,
@@ -195,7 +195,7 @@ async function signMemoTransactionProof(
   state: ProofSigningAppState,
 ): Promise<WalletProofSignature> {
   if (!context) {
-    throw new Error('Proof signing context is not ready — connect a wallet first.');
+    throw new Error('Proof signing context is not ready. Connect a wallet first.');
   }
   const client = context.getClient();
   const feePayer = new PublicKey(state.address);

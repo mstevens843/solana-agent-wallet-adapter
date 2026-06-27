@@ -53,7 +53,7 @@ export async function promptConnectorForm(
 
   const inputs = requiredUserInputsForAction(connectorId, actionKind);
   if (inputs.length === 0) {
-    console.log(badge('No required inputs in spec — you can add custom params below.', 'muted'));
+    console.log(badge('No required inputs in spec - you can add custom params below.', 'muted'));
   }
 
   const params: Record<string, unknown> = {};

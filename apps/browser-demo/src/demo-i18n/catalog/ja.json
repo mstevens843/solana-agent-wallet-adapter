@@ -1,6 +1,9 @@
 {
   "language": "ja",
   "entries": {
+    "Amount exceeds your balance.": "金額が残高を超えています。",
+    "Enter an amount or shares.": "金額またはシェアを入力してください。",
+    "Health factor is too low.": "ヘルスファクターが低すぎます。",
     "Guided demo": "ガイド付きデモ",
     "Preview wallet approval without connecting a wallet.": "ウォレットを接続せずに、ウォレット承認をプレビューできます。",
     "Pick a practical Solana request and watch Agentic turn it into a bounded wallet review. This demo simulates the approval flow, does not move funds, and never asks you to start the local bridge.": "実用的な Solana のリクエストを選ぶと、Agentic がそれを制限付きのウォレットレビューに変換する様子を確認できます。このデモは承認フローをシミュレートするもので、資金を動かすことはなく、ローカルブリッジの起動を求めることもありません。",
@@ -5502,6 +5505,19 @@
     "Copied message": "メッセージをコピーしました",
     "Delete this chat?": "このチャットを削除しますか？",
     "Chat limit reached": "チャットの上限に達しました",
-    "You've reached the max of {max} saved chats. Delete some to start a new one.": "保存できるチャットの上限（{max}件）に達しました。新しく始めるには、いくつか削除してください。"
+    "You've reached the max of {max} saved chats. Delete some to start a new one.": "保存できるチャットの上限（{max}件）に達しました。新しく始めるには、いくつか削除してください。",
+    "Add recipient": "受信者を追加",
+    "Address Book": "アドレス帳",
+    "Clipboard access is unavailable here. Type the address or use your keyboard paste.": "ここではクリップボードにアクセスできません。アドレスを入力するか、キーボードで貼り付けてください。",
+    "Clipboard empty": "クリップボードが空です",
+    "Copy an address first, then tap Paste.": "先にアドレスをコピーしてから、貼り付けをタップしてください。",
+    "No saved recipients yet.": "保存された受信者はまだありません。",
+    "Open Address Book": "アドレス帳を開く",
+    "Paste address from clipboard": "クリップボードからアドレスを貼り付け",
+    "Paste unavailable": "貼り付けできません",
+    "Recipient input mode": "受信者の入力モード",
+    "Save recipients by name, then pick them in any send form.": "受信者を名前で保存すると、どの送信フォームでも選べます。",
+    "Saved on this device. Sign in to sync across your devices.": "この端末に保存しました。サインインすると複数の端末で同期できます。",
+    "Synced to your cloud account.": "クラウドアカウントに同期しました。"
   }
 }

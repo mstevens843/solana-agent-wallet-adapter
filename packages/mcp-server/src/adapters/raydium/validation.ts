@@ -42,8 +42,12 @@ export function parsePositionPoolType(value: string | undefined): RaydiumLiquidi
   throw new AdapterError(RAYDIUM_ADAPTER_ID, 'invalid_pool_type', 'Raydium wallet position poolType must be cpmm or clmm.');
 }
 
+// Omitted slippage = the connector's safe default (1%), NOT the cap — so an empty LP slippage never
+// inherits a large maxSlippageBps (e.g. 5000 bps / 50%). A provided value is still capped below.
+const DEFAULT_DEX_SLIPPAGE_BPS = 100;
+
 export function validateSlippageBps(value: number | undefined, maxSlippageBps: number): number {
-  const slippageBps = value ?? maxSlippageBps;
+  const slippageBps = value ?? Math.min(maxSlippageBps, DEFAULT_DEX_SLIPPAGE_BPS);
   if (!Number.isInteger(slippageBps) || slippageBps < 0) {
     throw new AdapterError(RAYDIUM_ADAPTER_ID, 'invalid_slippage', 'slippageBps must be a non-negative integer.');
   }

@@ -29,7 +29,7 @@ export interface PairingPayload {
 export const AI_PLAN_OPTION_COPY = {
   pairedBridge: {
     title: 'Plan Connector',
-    subtitle: 'Runs on your own computer — keep that computer awake and signed in.',
+    subtitle: 'Runs on your own computer. Keep that computer awake and signed in.',
   },
   byoKey: {
     title: 'Paste an API key',

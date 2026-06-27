@@ -1,6 +1,9 @@
 {
   "language": "es",
   "entries": {
+    "Amount exceeds your balance.": "El importe supera tu saldo.",
+    "Enter an amount or shares.": "Introduce un importe o participaciones.",
+    "Health factor is too low.": "El factor de salud es demasiado bajo.",
     "Guided demo": "Demo guiada",
     "Preview wallet approval without connecting a wallet.": "Previsualiza la aprobación de la wallet sin conectar ninguna wallet.",
     "Pick a practical Solana request and watch Agentic turn it into a bounded wallet review. This demo simulates the approval flow, does not move funds, and never asks you to start the local bridge.": "Elige una solicitud práctica de Solana y observa cómo Agentic la convierte en una revisión de wallet acotada. Esta demo simula el flujo de aprobación, no mueve fondos y nunca te pide iniciar el puente local.",
@@ -5502,6 +5505,19 @@
     "Copied message": "Mensaje copiado",
     "Delete this chat?": "¿Eliminar este chat?",
     "Chat limit reached": "Límite de chats alcanzado",
-    "You've reached the max of {max} saved chats. Delete some to start a new one.": "Has alcanzado el máximo de {max} chats guardados. Elimina algunos para empezar uno nuevo."
+    "You've reached the max of {max} saved chats. Delete some to start a new one.": "Has alcanzado el máximo de {max} chats guardados. Elimina algunos para empezar uno nuevo.",
+    "Add recipient": "Añadir destinatario",
+    "Address Book": "Libreta de direcciones",
+    "Clipboard access is unavailable here. Type the address or use your keyboard paste.": "El acceso al portapapeles no está disponible aquí. Escribe la dirección o pégala con el teclado.",
+    "Clipboard empty": "Portapapeles vacío",
+    "Copy an address first, then tap Paste.": "Copia primero una dirección y luego toca Pegar.",
+    "No saved recipients yet.": "Aún no hay destinatarios guardados.",
+    "Open Address Book": "Abrir libreta de direcciones",
+    "Paste address from clipboard": "Pegar dirección desde el portapapeles",
+    "Paste unavailable": "Pegar no disponible",
+    "Recipient input mode": "Modo de entrada del destinatario",
+    "Save recipients by name, then pick them in any send form.": "Guarda destinatarios por nombre y elígelos en cualquier formulario de envío.",
+    "Saved on this device. Sign in to sync across your devices.": "Guardado en este dispositivo. Inicia sesión para sincronizar entre tus dispositivos.",
+    "Synced to your cloud account.": "Sincronizado con tu cuenta en la nube."
   }
 }

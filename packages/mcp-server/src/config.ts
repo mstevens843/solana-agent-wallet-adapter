@@ -155,7 +155,10 @@ export interface JupiterTriggerPolicyConfig {
 }
 
 export const DEFAULT_JUPITER_TRIGGER_MAX_ORDER_LIFETIME_DAYS = 30;
-export const DEFAULT_JUPITER_TRIGGER_HIGH_SLIPPAGE_WARN_BPS = 300;
+// Aligned with the swap slippage ceiling (5000 bps / 50%) so a Custom slippage the UI accepts is
+// never blocked by the trigger warn-throw. The user still sees a high-slippage notice at Sign
+// (preSignReview warns above 100 bps) and approves with a wallet signature.
+export const DEFAULT_JUPITER_TRIGGER_HIGH_SLIPPAGE_WARN_BPS = 5000;
 export const JUPITER_TRIGGER_MIN_ORDER_USD = 10;
 
 export const DEFAULT_JUPITER_TRIGGER_POLICY: Required<
@@ -494,7 +497,7 @@ export const DEFAULT_CONFIG: AgentWalletConfig = {
     enabled: true,
     maxSolTransfer: '0.05',
     maxSwapInput: '0.05',
-    maxSlippageBps: 100,
+    maxSlippageBps: 5000,
     allowArbitraryTransactions: false,
   },
   tokens: DEFAULT_TOKEN_REGISTRY,

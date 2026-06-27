@@ -438,7 +438,7 @@ export function classifyTransactionFailure(
     return {
       kind: 'rpc_rejected',
       title: TITLE_BY_KIND.rpc_rejected,
-      message: 'The configured Solana RPC refused the request (401/403/451). Verify SOLANA_RPC_URL / HELIUS_RPC_URL (API key, plan tier, method allowlist) — or set SENDER_RPC_URL to a paid sender — before retrying.',
+      message: 'The configured Solana RPC refused the request (401/403/451). Verify SOLANA_RPC_URL / HELIUS_RPC_URL (API key, plan tier, method allowlist), or set SENDER_RPC_URL to a paid sender, before retrying.',
       technicalMessage,
       retryableSignedBroadcast: false,
       maybeSubmitted: false,

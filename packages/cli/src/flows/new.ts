@@ -60,7 +60,7 @@ export async function runNewTokensWithPrefill(
 ): Promise<void> {
   const draft = await promptSendTokensForm(options, prefill, formOptions);
   if (!(await confirmSelfTransfer(options, draft.recipient, draft.token))) return;
-  const description = `Send ${draft.amount} ${draft.token} to ${draft.recipient}${draft.note ? ` — ${draft.note}` : ''}`;
+  const description = `Send ${draft.amount} ${draft.token} to ${draft.recipient}${draft.note ? ` - ${draft.note}` : ''}`;
   const ok = await confirmHighStakes(options, description, estimateFromDraft(draft), null);
   if (!ok) {
     console.log(badge('Aborted.', 'muted'));
@@ -112,7 +112,7 @@ export async function runNewSwap(options: GlobalOptions): Promise<void> {
 export async function runNewSwapWithPrefill(options: GlobalOptions, prefill: Partial<SwapDraft> = {}): Promise<void> {
   const draft = await promptSwapForm(options, prefill);
   if (draft.inputToken.trim().toUpperCase() === draft.outputToken.trim().toUpperCase()) {
-    console.log(badge(`Input and output token are both ${draft.inputToken} — swap would be a no-op. Aborting.`, 'err'));
+    console.log(badge(`Input and output token are both ${draft.inputToken} - swap would be a no-op. Aborting.`, 'err'));
     return;
   }
   const quote = await previewSwapQuote(options, draft);
@@ -471,7 +471,7 @@ function tierBadge(tier: ActionTier): string {
 
 async function runConnectorWrite(options: GlobalOptions, connectorId: string, action: ConnectorAction): Promise<void> {
   const draft = await promptConnectorForm(connectorId, action.actionKind, options);
-  const description = `${draft.summary} — params: ${JSON.stringify(draft.params)}`;
+  const description = `${draft.summary} - params: ${JSON.stringify(draft.params)}`;
   const ok = await confirmHighStakes(options, description, estimateFromConnectorParams(draft.params), null);
   if (!ok) {
     console.log(badge('Aborted.', 'muted'));
@@ -508,7 +508,7 @@ async function runConnectorReadOnly(options: GlobalOptions, connectorId: string,
   // Read-only actions are evidence-only: collect the form, fetch the snapshot,
   // render the result, archive in /bridge/lab-artifacts. No prepared action is
   // queued; nothing hits chain. Mirrors the web's "EVIDENCE-ONLY" routing.
-  console.log(badge('Evidence-only action — nothing will be queued for approval.', 'muted'));
+  console.log(badge('Evidence-only action - nothing will be queued for approval.', 'muted'));
   const draft = await promptConnectorForm(connectorId, action.actionKind, options);
 
   const snapshot = await safeReadFacts(options, connectorId, action, draft.params);
@@ -603,7 +603,7 @@ async function postEvidenceProof(
       body: JSON.stringify({ artifact }),
     });
     console.log(badge('Evidence archived (unsigned).', 'ok'));
-    console.log(badge(`Use /proof to sign formally — Round 4 prototype.  ID: ${id}`, 'muted'));
+    console.log(badge(`Use /proof to sign formally - Round 4 prototype.  ID: ${id}`, 'muted'));
   } catch (err) {
     console.log(badge(`Could not archive evidence: ${err instanceof Error ? err.message : String(err)}`, 'err'));
   }

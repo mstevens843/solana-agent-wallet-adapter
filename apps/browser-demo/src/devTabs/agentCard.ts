@@ -662,7 +662,7 @@ function renderExplainer(): string {
         ${t('A wallet address says')} <em>${t('where')}</em> ${t('to send money. A payment profile says')} <em>${t('how')}</em>.
       </p>
       <p>
-        ${t('Address = phone number (44 chars, opaque). Profile = contact card with display name, accepted tokens, supported protocols, and an "always review" rule. It\'s the same idea as PayPal.me or a Stripe payment link — published at')} <code>/agents/&lt;wallet&gt;/card.json</code> ${t('so AI agents and merchant checkouts can fetch it automatically.')}
+        ${t('Address = phone number (44 chars, opaque). Profile = contact card with display name, accepted tokens, supported protocols, and an "always review" rule. It\'s the same idea as PayPal.me or a Stripe payment link, published at')} <code>/agents/&lt;wallet&gt;/card.json</code> ${t('so AI agents and merchant checkouts can fetch it automatically.')}
       </p>
       <div class="dev-agent-card-explainer-grid">
         <article>
@@ -676,9 +676,9 @@ function renderExplainer(): string {
       </div>
       <h4>${t('When it matters')}</h4>
       <ul>
-        <li>${t('An AI agent (OpenAI Operator, Vercel AI, Google Agent Builder) is paying you autonomously —')} <strong>${t('AP2')}</strong>.</li>
-        <li>${t('A merchant checkout (Stripe ACP) is routing payment to a non-custodial wallet —')} <strong>${t('ACP')}</strong>.</li>
-        <li>${t('Another agent\'s wallet wants to discover yours programmatically —')} <strong>${t('A2A')}</strong>.</li>
+        <li>${t('An AI agent (OpenAI Operator, Vercel AI, Google Agent Builder) is paying you autonomously.')} <strong>${t('AP2')}</strong>.</li>
+        <li>${t('A merchant checkout (Stripe ACP) is routing payment to a non-custodial wallet.')} <strong>${t('ACP')}</strong>.</li>
+        <li>${t('Another agent\'s wallet wants to discover yours programmatically.')} <strong>${t('A2A')}</strong>.</li>
         <li>${t('You want a stable, shareable URL that\'s friendlier than')} <code>4fTq…MoHd</code>.</li>
       </ul>
       <h4>${t('When it doesn\'t')}</h4>
@@ -701,7 +701,7 @@ function routeCardHtml(): string {
     ? tabState.fetched.payload.protocols.map((p) => p.toUpperCase()).join(' · ')
     : tabState.draft.protocols.size > 0
       ? Array.from(tabState.draft.protocols).map((p) => p.toUpperCase()).join(' · ')
-      : '—';
+      : '-';
   return `
     <aside class="dev-agent-card-route-card" aria-label="${escapeHtml(t('Agent profile status'))}">
       <div class="dev-agent-card-status-head">

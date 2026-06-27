@@ -906,6 +906,64 @@ function templateFieldMetadataKey(key: string, fieldIds: Set<string>): boolean {
   return false;
 }
 
+// Custom slippage bounds (basis points). Auto = empty value (Jupiter dynamic) stays valid; a Custom
+// value must be a whole bps count in [10, 5000] = [0.1%, 50%]. Mirrors the backend cap so the UI
+// rejects out-of-range Custom values up front instead of letting them fail later at sign time.
+export const SLIPPAGE_MIN_BPS = 10;
+export const SLIPPAGE_MAX_BPS = 5000;
+
+// Returns '' for Auto (empty) or a valid Custom value; otherwise a raw (untranslated) error string.
+// Callers surface it via the field-error renderer, which applies t(). Shared by New Request, Repeat,
+// Chat, and connector forms (limit/trigger/LP) so every slippage input enforces the same bounds.
+export function slippageBpsError(bps: string | undefined): string {
+  const trimmed = (bps ?? '').trim();
+  if (!trimmed) return '';
+  const n = Number(trimmed);
+  if (!Number.isInteger(n) || n < SLIPPAGE_MIN_BPS || n > SLIPPAGE_MAX_BPS) {
+    // Reuses an existing localized catalog string (avoids a new 11-language key). Bounds are
+    // SLIPPAGE_MIN_BPS..SLIPPAGE_MAX_BPS (0.1%..50%).
+    return 'Use a valid max slippage.';
+  }
+  return '';
+}
+
+// Format-only base58 wallet-address check (32-44 chars). On-curve / existence is verified at sign.
+// Shared by New Request Send + Repeat so an invalid address fails at create with a clear message
+// instead of throwing a cryptic PublicKey error later.
+const WALLET_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+export function isValidWalletAddress(addr: string | undefined): boolean {
+  return WALLET_ADDRESS_RE.test((addr ?? '').trim());
+}
+
+// Positive-number validation for connector numeric fields (amounts, prices). Empty = valid here
+// (required-ness is enforced by the field's `required` flag). Returns a raw (untranslated) error.
+export function positiveNumberError(value: string | undefined): string {
+  const v = (value ?? '').trim();
+  if (!v) return '';
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return 'Enter a valid amount.';
+  return '';
+}
+
+// Health factor / ratio must be a number >= 1.0 when provided (labels read "(1.0+)").
+export function healthFactorError(value: string | undefined): string {
+  const v = (value ?? '').trim();
+  if (!v) return '';
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 1) return 'Health factor is too low.';
+  return '';
+}
+
+// Connector numeric fields validated as a positive number when present. Amounts are always concrete
+// decimals here (withdraw-all uses a separate withdrawMode/withdrawAll flag, never the amount field),
+// so there are no "all"/"max" keyword values to special-case. Ticks are intentionally excluded
+// (Orca/Meteora ticks can be negative).
+const POSITIVE_NUMBER_FIELDS = new Set([
+  'amount', 'amountSol', 'solAmount', 'msolAmount', 'inputAmount', 'totalAmount', 'shares',
+  'priceSol', 'bidPriceSol', 'maxEscrowSol', 'lowerPrice', 'upperPrice', 'triggerPrice', 'limitPrice',
+]);
+const HEALTH_FACTOR_FIELDS = new Set(['minHealthFactor', 'minHealthRatio']);
+
 export function validateConnectorDraftParameters(
   template: Pick<AgentPlanTemplate, 'id' | 'actionType' | 'connectorCapability'>,
   parameters: Record<string, string>,
@@ -947,6 +1005,25 @@ export function validateConnectorDraftParameters(
       normalized.blinkUrl = normalizeBlinkUrl(url);
     } catch (err) {
       errors.blinkUrl = err instanceof Error ? err.message : 'Blink/Solana Action URL is invalid.';
+    }
+  }
+
+  // Validate numeric connector fields at create-time so bad input (negative, zero, "abc",
+  // sub-1.0 health) fails here with a clear message instead of at sign time. Slippage fields keep
+  // their Auto-aware bounds; amount/price fields must be positive; health fields must be >= 1.0.
+  for (const [key, value] of Object.entries(normalized)) {
+    let fieldErr = '';
+    if (/slippagebps$/i.test(key)) fieldErr = slippageBpsError(value);
+    else if (POSITIVE_NUMBER_FIELDS.has(key)) fieldErr = positiveNumberError(value);
+    else if (HEALTH_FACTOR_FIELDS.has(key)) fieldErr = healthFactorError(value);
+    if (fieldErr) errors[key] = fieldErr;
+  }
+
+  // Jupiter Lend earn withdraw/redeem accept EITHER an amount OR a share count — both are optional
+  // individually, but at least one is required to form an executable action.
+  if (/lend_earn_(withdraw|redeem)/.test(template.actionType ?? '')) {
+    if (!normalized.amount?.trim() && !normalized.shares?.trim()) {
+      errors.amount = 'Enter an amount or shares.';
     }
   }
 
@@ -1207,7 +1284,7 @@ function marinadeForms(): ConnectorActionForm[] {
       formField('msolAmount', 'mSOL amount', true),
       formField('memo', 'Reason'),
     ], false, 'marinade_liquid_unstake'),
-    connectorActionForm('marinade', 'delayed-unstake', 'Delayed unstake', 'connector-marinade-delayed-unstake', 'Request a delayed unstake (no fee, takes 1–2 epochs).', 'first-class-adapter', 'queueable', [
+    connectorActionForm('marinade', 'delayed-unstake', 'Delayed unstake', 'connector-marinade-delayed-unstake', 'Request a delayed unstake (no fee, takes 1-2 epochs).', 'first-class-adapter', 'queueable', [
       formField('msolAmount', 'mSOL amount', true),
       formField('memo', 'Reason'),
     ], false, 'marinade_delayed_unstake'),
@@ -1321,7 +1398,7 @@ function meteoraForms(): ConnectorActionForm[] {
       operationId: 'add-liquidity',
       operationLabel: 'Add liquidity',
       templateId: 'connector-meteora-add-liquidity',
-      description: 'Add liquidity to a Meteora DLMM pool — top up an owned position or open a new preset range.',
+      description: 'Add liquidity to a Meteora DLMM pool: top up an owned position or open a new preset range.',
       executionMode: 'first-class-adapter',
       outcome: 'queueable',
       actionType: 'meteora_add_liquidity',
@@ -1421,7 +1498,7 @@ function orcaForms(): ConnectorActionForm[] {
           {
             id: 'existing-position',
             label: 'Add to existing position',
-            description: 'Top up a position you already own — no tick math needed.',
+            description: 'Top up a position you already own. No tick math needed.',
             actionType: 'orca_increase_liquidity',
             fields: [
               orcaWhirlpoolField(true),
@@ -2051,35 +2128,35 @@ function luloUnifiedForm(): ConnectorActionForm {
       options: [
         {
           id: 'deposit-protected',
-          label: 'Deposit — Protected',
+          label: 'Deposit - Protected',
           description: 'Insured deposit tier.',
           actionType: 'lulo_deposit',
           fields: [mintField, formField('amount', 'Amount', true), { id: 'depositType', label: 'Tier', type: 'select', options: ['protected'], defaultValue: 'protected' }],
         },
         {
           id: 'deposit-boost',
-          label: 'Deposit — Boost',
+          label: 'Deposit - Boost',
           description: 'Higher-yield boost tier.',
           actionType: 'lulo_deposit',
           fields: [mintField, formField('amount', 'Amount', true), { id: 'depositType', label: 'Tier', type: 'select', options: ['boost'], defaultValue: 'boost' }],
         },
         {
           id: 'deposit-regular',
-          label: 'Deposit — Regular',
+          label: 'Deposit - Regular',
           description: 'Standard deposit tier.',
           actionType: 'lulo_deposit',
           fields: [mintField, formField('amount', 'Amount', true), { id: 'depositType', label: 'Tier', type: 'select', options: ['regular'], defaultValue: 'regular' }],
         },
         {
           id: 'withdraw-protected',
-          label: 'Withdraw — Protected',
+          label: 'Withdraw - Protected',
           description: 'Withdraw from the protected tier.',
           actionType: 'lulo_withdraw',
           fields: [mintField, formField('amount', 'Amount'), { id: 'withdrawType', label: 'Tier', type: 'select', options: ['protected'], defaultValue: 'protected' }, formField('percentage', 'Percentage')],
         },
         {
           id: 'withdraw-regular',
-          label: 'Withdraw — Regular',
+          label: 'Withdraw - Regular',
           description: 'Withdraw from the regular tier (two-phase).',
           actionType: 'lulo_withdraw',
           fields: [mintField, formField('amount', 'Amount'), { id: 'withdrawType', label: 'Tier', type: 'select', options: ['regular'], defaultValue: 'regular' }, formField('percentage', 'Percentage')],
@@ -2122,7 +2199,7 @@ function raydiumLiquidityUnifiedForm(): ConnectorActionForm {
       options: [
         {
           id: 'cpmm-add',
-          label: 'CPMM — add liquidity',
+          label: 'CPMM - add liquidity',
           description: 'Constant-product full-range deposit.',
           actionType: 'raydium_add_liquidity',
           fields: [
@@ -2135,7 +2212,7 @@ function raydiumLiquidityUnifiedForm(): ConnectorActionForm {
         },
         {
           id: 'clmm-open',
-          label: 'CLMM — open position',
+          label: 'CLMM - open position',
           description: 'Open a concentrated-liquidity position with a price range.',
           actionType: 'raydium_add_liquidity',
           fields: [
@@ -2153,7 +2230,7 @@ function raydiumLiquidityUnifiedForm(): ConnectorActionForm {
         },
         {
           id: 'clmm-increase',
-          label: 'CLMM — add to position',
+          label: 'CLMM - add to position',
           description: 'Increase an existing concentrated-liquidity position.',
           actionType: 'raydium_add_liquidity',
           fields: [
@@ -2162,7 +2239,7 @@ function raydiumLiquidityUnifiedForm(): ConnectorActionForm {
             cascadingField('positionMint', 'Existing position', 'raydium.position', {
               required: true,
               dependsOn: ['poolId'],
-              emptyHint: 'No CLMM positions found in this pool. Choose CLMM — open position to create one.',
+              emptyHint: 'No CLMM positions found in this pool. Choose CLMM - open position to create one.',
             }),
             liquidityAmountSideField(),
             liquidityTokenAmountField('tokenAAmount', 'Token A amount', 'tokenA'),
@@ -2173,7 +2250,7 @@ function raydiumLiquidityUnifiedForm(): ConnectorActionForm {
         },
         {
           id: 'cpmm-remove',
-          label: 'CPMM — remove liquidity',
+          label: 'CPMM - remove liquidity',
           description: 'Withdraw from a constant-product pool.',
           actionType: 'raydium_remove_liquidity',
           fields: [
@@ -2184,7 +2261,7 @@ function raydiumLiquidityUnifiedForm(): ConnectorActionForm {
         },
         {
           id: 'clmm-remove',
-          label: 'CLMM — remove liquidity',
+          label: 'CLMM - remove liquidity',
           description: 'Close or shrink a concentrated-liquidity position.',
           actionType: 'raydium_remove_liquidity',
           fields: [
@@ -2200,7 +2277,7 @@ function raydiumLiquidityUnifiedForm(): ConnectorActionForm {
         },
         {
           id: 'collect-fees',
-          label: 'CLMM — collect fees',
+          label: 'CLMM - collect fees',
           description: 'Harvest CLMM fees accrued by a position.',
           actionType: 'raydium_collect_fees',
           fields: [
@@ -2250,63 +2327,63 @@ function jupiterLendUnifiedForm(): ConnectorActionForm {
       options: [
         {
           id: 'earn-deposit',
-          label: 'Earn — deposit',
+          label: 'Earn - deposit',
           description: 'Supply tokens to a Jupiter Lend earn pool.',
           actionType: 'jupiter_lend_earn_deposit',
           fields: [earnAsset, formField('amount', 'Amount', true)],
         },
         {
           id: 'earn-withdraw',
-          label: 'Earn — withdraw',
+          label: 'Earn - withdraw',
           description: 'Redeem deposited tokens from a Jupiter Lend earn pool.',
           actionType: 'jupiter_lend_earn_withdraw',
           fields: [earnAsset, formField('amount', 'Amount'), formField('shares', 'Shares')],
         },
         {
           id: 'earn-mint',
-          label: 'Earn — mint shares',
+          label: 'Earn - mint shares',
           description: 'Mint earn pool shares directly.',
           actionType: 'jupiter_lend_earn_mint',
           fields: [earnAsset, formField('amount', 'Amount', true)],
         },
         {
           id: 'earn-redeem',
-          label: 'Earn — redeem shares',
+          label: 'Earn - redeem shares',
           description: 'Redeem earn pool shares for the underlying asset.',
           actionType: 'jupiter_lend_earn_redeem',
           fields: [earnAsset, formField('shares', 'Shares', true)],
         },
         {
           id: 'borrow-create',
-          label: 'Borrow — create position',
+          label: 'Borrow - create position',
           description: 'Open a new collateralized borrow position.',
           actionType: 'jupiter_lend_borrow_create_position',
           fields: [borrowVault],
         },
         {
           id: 'borrow-deposit-collateral',
-          label: 'Borrow — deposit collateral',
+          label: 'Borrow - deposit collateral',
           description: 'Add collateral to an existing borrow position.',
           actionType: 'jupiter_lend_borrow_deposit_collateral',
           fields: [borrowVault, borrowPosition, formField('collateralAmount', 'Collateral amount', true)],
         },
         {
           id: 'borrow-borrow',
-          label: 'Borrow — draw',
+          label: 'Borrow - draw',
           description: 'Borrow against the position’s collateral.',
           actionType: 'jupiter_lend_borrow_borrow',
           fields: [borrowVault, borrowPosition, formField('borrowAmount', 'Borrow amount', true), minHealthRatioField()],
         },
         {
           id: 'borrow-repay',
-          label: 'Borrow — repay',
+          label: 'Borrow - repay',
           description: 'Repay outstanding debt on the position.',
           actionType: 'jupiter_lend_borrow_repay',
           fields: [borrowVault, borrowPosition, formField('amount', 'Repay amount', true)],
         },
         {
           id: 'borrow-withdraw-collateral',
-          label: 'Borrow — withdraw collateral',
+          label: 'Borrow - withdraw collateral',
           description: 'Withdraw collateral once health permits.',
           actionType: 'jupiter_lend_borrow_withdraw_collateral',
           fields: [borrowVault, borrowPosition, formField('amount', 'Withdraw amount', true), minHealthRatioField()],

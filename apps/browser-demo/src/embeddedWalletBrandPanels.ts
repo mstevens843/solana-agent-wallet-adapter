@@ -198,7 +198,7 @@ function hardwareSection(input: DesktopBrandPanelsRenderInput): string {
     <section class="embedded-wallet-hardware-section" aria-label="Hardware wallets">
       <header class="embedded-wallet-hardware-head">
         <h3>Hardware wallets</h3>
-        <p>USB-HID device — keys never leave the hardware.</p>
+        <p>USB-HID device. Keys never leave the hardware.</p>
       </header>
       <button
         type="button"

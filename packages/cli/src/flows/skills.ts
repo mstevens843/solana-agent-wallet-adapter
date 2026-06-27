@@ -136,7 +136,7 @@ async function showManifest(options: GlobalOptions, id: string): Promise<void> {
 
 async function installSkill(options: GlobalOptions, skill: SkillSummary): Promise<void> {
   if (!skill.id) {
-    console.log(badge('Skill has no id — cannot install.', 'err'));
+    console.log(badge('Skill has no id - cannot install.', 'err'));
     return;
   }
   const manifestVersion = await input({
@@ -161,7 +161,7 @@ async function installSkill(options: GlobalOptions, skill: SkillSummary): Promis
       default: false,
     });
     if (!acceptMonetization) {
-      console.log(badge('Aborted — monetization not accepted.', 'muted'));
+      console.log(badge('Aborted - monetization not accepted.', 'muted'));
       return;
     }
   }
@@ -265,9 +265,9 @@ function runPublishGuide(): void {
   console.log(header('Publish a new skill'));
   console.log('Publishing uses the `agentic-skill` CLI (resolved via local node_modules, PATH, or bundled).');
   console.log();
-  console.log(`  1.  ${badge('solana-agent-wallet skills init', 'info')}   — scaffold a new skill package`);
-  console.log(`  2.  ${badge('solana-agent-wallet skills test', 'info')}   — smoke-test it against a stub workflow`);
-  console.log(`  3.  ${badge('solana-agent-wallet skills publish', 'info')} — sign the manifest + register in the catalog`);
+  console.log(`  1.  ${badge('solana-agent-wallet skills init', 'info')}   - scaffold a new skill package`);
+  console.log(`  2.  ${badge('solana-agent-wallet skills test', 'info')}   - smoke-test it against a stub workflow`);
+  console.log(`  3.  ${badge('solana-agent-wallet skills publish', 'info')} - sign the manifest + register in the catalog`);
   console.log();
   console.log(badge('Tip: keep the working directory inside the skill package while you run these.', 'muted'));
   console.log(divider());
@@ -276,13 +276,13 @@ function runPublishGuide(): void {
 function rowLabelCatalog(n: number, s: SkillSummary): string {
   const row = String(n).padStart(2, ' ');
   const monetized = s.monetization ? badge(s.monetization, 'warn') : badge('free', 'muted');
-  return `${row}.  ${s.name ?? s.id ?? 'unnamed'}  ${monetized}  ${badge(`v ${s.latestVersion ?? '—'}`, 'muted')}`;
+  return `${row}.  ${s.name ?? s.id ?? 'unnamed'}  ${monetized}  ${badge(`v ${s.latestVersion ?? '-'}`, 'muted')}`;
 }
 
 function rowLabelInstall(n: number, s: SkillInstall): string {
   const row = String(n).padStart(2, ' ');
   const statusChip = s.status === 'active' ? badge('active', 'ok') : s.status ? badge(s.status, 'warn') : badge('unknown', 'muted');
-  return `${row}.  ${statusChip}  ${s.name ?? s.skillId ?? '?'}  ${badge(`v ${s.manifestVersion ?? '—'}`, 'muted')}`;
+  return `${row}.  ${statusChip}  ${s.name ?? s.skillId ?? '?'}  ${badge(`v ${s.manifestVersion ?? '-'}`, 'muted')}`;
 }
 
 function extractList<T>(raw: unknown, keys: string[]): T[] {

@@ -21,6 +21,9 @@ import {
   selectedConnectorForDraftParameters,
   stripConnectorDraftExtras,
   validateConnectorDraftParameters,
+  isValidWalletAddress,
+  positiveNumberError,
+  healthFactorError,
 } from '../connectorDrafting.js';
 import {
   PROTOCOL_CONNECTORS,
@@ -602,10 +605,10 @@ describe('connector drafting helpers', () => {
     const boost = normalizeConnectorDraftParameters(luloTemplate, {
       ...base,
       subAction: 'deposit-boost',
-      subActionLabel: 'Deposit — Protected',
+      subActionLabel: 'Deposit - Protected',
       depositType: 'protected',
     });
-    expect(boost.subActionLabel).toBe('Deposit — Boost');
+    expect(boost.subActionLabel).toBe('Deposit - Boost');
     expect(boost.depositType).toBe('boost');
 
     const regularWithdraw = normalizeConnectorDraftParameters(luloTemplate, {
@@ -1097,5 +1100,31 @@ describe('connector drafting helpers', () => {
       expect(display?.operationLabel).toBe('Tensor bid - Collection');
       expect(display?.selectionLabel).toBe('Mad Lads');
     });
+  });
+});
+
+describe('input-validation helpers', () => {
+  it('isValidWalletAddress accepts base58 wallet addresses and rejects junk', () => {
+    expect(isValidWalletAddress('7NUSC4HBn5pFqGZRouwa3xQ5y4MNoYxqaG3HfYwwekoF')).toBe(true);
+    expect(isValidWalletAddress('not-an-address')).toBe(false);
+    expect(isValidWalletAddress('   ')).toBe(false);
+    expect(isValidWalletAddress('abc')).toBe(false); // too short for a wallet address
+  });
+
+  it('positiveNumberError flags non-positive / junk, allows empty + valid numbers', () => {
+    expect(positiveNumberError('')).toBe('');
+    expect(positiveNumberError('5')).toBe('');
+    expect(positiveNumberError('0.25')).toBe('');
+    expect(positiveNumberError('0')).not.toBe('');
+    expect(positiveNumberError('-5')).not.toBe('');
+    expect(positiveNumberError('abc')).not.toBe('');
+  });
+
+  it('healthFactorError requires a value >= 1.0 when present', () => {
+    expect(healthFactorError('')).toBe('');
+    expect(healthFactorError('1')).toBe('');
+    expect(healthFactorError('1.25')).toBe('');
+    expect(healthFactorError('0.5')).not.toBe('');
+    expect(healthFactorError('abc')).not.toBe('');
   });
 });

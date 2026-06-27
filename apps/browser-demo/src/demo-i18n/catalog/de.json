@@ -1,6 +1,9 @@
 {
   "language": "de",
   "entries": {
+    "Amount exceeds your balance.": "Betrag übersteigt dein Guthaben.",
+    "Enter an amount or shares.": "Gib einen Betrag oder Anteile ein.",
+    "Health factor is too low.": "Der Health-Faktor ist zu niedrig.",
     "Guided demo": "Geführte Demo",
     "Preview wallet approval without connecting a wallet.": "Eine Wallet-Freigabe ansehen, ohne eine Wallet zu verbinden.",
     "Pick a practical Solana request and watch Agentic turn it into a bounded wallet review. This demo simulates the approval flow, does not move funds, and never asks you to start the local bridge.": "Wähle eine praktische Solana-Anfrage und sieh zu, wie Agentic daraus eine begrenzte Wallet-Prüfung macht. Diese Demo simuliert den Freigabeablauf, bewegt keine Gelder und fordert dich nie auf, die lokale Bridge zu starten.",
@@ -5502,6 +5505,19 @@
     "Copied message": "Nachricht kopiert",
     "Delete this chat?": "Diesen Chat löschen?",
     "Chat limit reached": "Chat-Limit erreicht",
-    "You've reached the max of {max} saved chats. Delete some to start a new one.": "Du hast das Maximum von {max} gespeicherten Chats erreicht. Lösche einige, um einen neuen zu starten."
+    "You've reached the max of {max} saved chats. Delete some to start a new one.": "Du hast das Maximum von {max} gespeicherten Chats erreicht. Lösche einige, um einen neuen zu starten.",
+    "Add recipient": "Empfänger hinzufügen",
+    "Address Book": "Adressbuch",
+    "Clipboard access is unavailable here. Type the address or use your keyboard paste.": "Zugriff auf die Zwischenablage ist hier nicht möglich. Gib die Adresse ein oder füge sie über die Tastatur ein.",
+    "Clipboard empty": "Zwischenablage leer",
+    "Copy an address first, then tap Paste.": "Kopiere zuerst eine Adresse, tippe dann auf Einfügen.",
+    "No saved recipients yet.": "Noch keine gespeicherten Empfänger.",
+    "Open Address Book": "Adressbuch öffnen",
+    "Paste address from clipboard": "Adresse aus der Zwischenablage einfügen",
+    "Paste unavailable": "Einfügen nicht verfügbar",
+    "Recipient input mode": "Empfänger-Eingabemodus",
+    "Save recipients by name, then pick them in any send form.": "Speichere Empfänger mit Namen und wähle sie in jedem Sendeformular aus.",
+    "Saved on this device. Sign in to sync across your devices.": "Auf diesem Gerät gespeichert. Melde dich an, um über deine Geräte hinweg zu synchronisieren.",
+    "Synced to your cloud account.": "Mit deinem Cloud-Konto synchronisiert."
   }
 }

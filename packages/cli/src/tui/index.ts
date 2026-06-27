@@ -367,7 +367,7 @@ export function isExitPromptError(err: unknown): boolean {
 export function ensureTtyOrExit(commandName: string): void {
   if (!process.stdin.isTTY) {
     process.stderr.write(
-      `${ANSI.red}✗${ANSI.reset} /${commandName} requires an interactive terminal — stdin is not a TTY.\n`,
+      `${ANSI.red}✗${ANSI.reset} /${commandName} requires an interactive terminal - stdin is not a TTY.\n`,
     );
     process.exit(2);
   }

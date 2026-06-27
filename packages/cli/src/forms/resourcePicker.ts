@@ -109,7 +109,7 @@ const RESOURCE_PICKERS: Record<string, PickerSpec> = {
     responsePath: ['receipts'],
     valueKey: 'receiptAddress',
     labelFn: (r) => `${str(r, 'receiptAddress')?.slice(0, 12) ?? '?'}  ${r.jitoSolAmount ?? ''} JitoSOL`,
-    detailFn: (r) => r.claimable ? badge('claimable', 'ok') : badge(String(r.status ?? '—'), 'muted'),
+    detailFn: (r) => r.claimable ? badge('claimable', 'ok') : badge(String(r.status ?? '-'), 'muted'),
     needsWallet: true,
     extraParams: { claimableOnly: true },
   },
@@ -313,7 +313,7 @@ export async function tryResourcePick(req: PickRequest): Promise<string | null> 
   const PASTE = '__paste__';
   const SKIP  = '__skip__';
   const finalChoices: typeof choices = [...choices];
-  finalChoices.push({ value: PASTE, name: 'Other — paste address / mint manually' });
+  finalChoices.push({ value: PASTE, name: 'Other - paste address / mint manually' });
   if (!req.required) finalChoices.push({ value: SKIP, name: 'Skip (leave blank)' });
 
   const picked = await select<string>({

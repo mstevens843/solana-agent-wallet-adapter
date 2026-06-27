@@ -138,11 +138,11 @@ describe('pure helpers', () => {
   });
 
   it('formats install counts and monthly USDC values', () => {
-    expect(formatInstalls(undefined)).toBe('—');
+    expect(formatInstalls(undefined)).toBe('-');
     expect(formatInstalls(1)).toBe('1 install');
     expect(formatInstalls(3)).toBe('3 installs');
-    expect(formatMonthlyUsdc(undefined)).toBe('—');
-    expect(formatMonthlyUsdc('0.00')).toBe('—');
+    expect(formatMonthlyUsdc(undefined)).toBe('-');
+    expect(formatMonthlyUsdc('0.00')).toBe('-');
     expect(formatMonthlyUsdc('5.25')).toBe('5.25 USDC/mo');
   });
 });
@@ -226,7 +226,7 @@ describe('renderPublishPanel — phase bodies', () => {
     expect(html).toContain('5 USDC/mo');
     expect(html).toContain('2 live');
     // The second row has zero earnings, so only the earnings cell renders a placeholder.
-    const dashCount = (html.match(/skills-publish-cell-value">—/g) ?? []).length;
+    const dashCount = (html.match(/skills-publish-cell-value">-/g) ?? []).length;
     expect(dashCount).toBe(1);
   });
 });

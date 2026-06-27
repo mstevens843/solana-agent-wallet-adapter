@@ -99,12 +99,12 @@ export function renderPolicyBundle(
     // ok — decision and bundle agree.
   } else if (decision === 'approve' && hasBlockingFailure) {
     console.log();
-    console.log(badge('⚠ Inconsistent verdict — bridge says APPROVE but a blocking policy failed.', 'warn'));
+    console.log(badge('⚠ Inconsistent verdict - bridge says APPROVE but a blocking policy failed.', 'warn'));
   }
 
   if (decision === 'approve' && needsLanguageInput) {
     console.log();
-    console.log(badge('⚠ Inconsistent verdict — bridge says APPROVE but a non-English policy could not be safely translated.', 'warn'));
+    console.log(badge('⚠ Inconsistent verdict - bridge says APPROVE but a non-English policy could not be safely translated.', 'warn'));
   }
 
   if (decision && options.printDecision !== false) {
@@ -114,7 +114,7 @@ export function renderPolicyBundle(
 
   if (needsLanguageInput) {
     console.log();
-    console.log(badge('Non-English policy translation needs review — rephrase in English or confirm the rule.', 'warn'));
+    console.log(badge('Non-English policy translation needs review - rephrase in English or confirm the rule.', 'warn'));
     if (language?.sourceLanguage) console.log(`  ${badge(`source: ${language.sourceLanguage}`, 'muted')}`);
     for (const warning of language?.warnings ?? []) {
       console.log(`  · ${warning}`);
@@ -144,7 +144,7 @@ export function renderPolicyBundle(
 
     if (hasBlockingFailure) {
       console.log();
-      console.log(badge('hasBlockingFailure: TRUE — at least one policy check failed; queue will be skipped.', 'err'));
+      console.log(badge('hasBlockingFailure: TRUE - at least one policy check failed; queue will be skipped.', 'err'));
     }
 
     const txGate = bundle?.txGateOutcomes ?? {};
@@ -199,7 +199,7 @@ function renderAtomTable(atoms: Atom[], evaluations: Evaluation[], resolutions: 
     const verdict = ev?.pass === true ? badge('✓', 'ok')
                   : ev?.pass === false ? badge('✗', 'err')
                   : ev?.unresolved === true ? badge('?', 'warn')
-                  : badge('—', 'muted');
+                  : badge('-', 'muted');
     const providerPart = provider ? `  ${badge(provider, 'muted')}` : '';
     console.log(`  ${verdict}  ${describeAtom(atom).padEnd(40)}${providerPart}  ${value}`);
     const reason = ev?.reason ?? (typeof ev?.finding?.label === 'string' ? ev.finding.label : undefined);
@@ -221,7 +221,7 @@ function providerHint(atom: Atom, ev: Evaluation | undefined): string {
 }
 
 function describeValue(v: unknown): string {
-  if (v === undefined || v === null) return badge('—', 'muted');
+  if (v === undefined || v === null) return badge('-', 'muted');
   if (typeof v === 'string') return v.length > 30 ? `${v.slice(0, 27)}…` : v;
   if (typeof v === 'number' || typeof v === 'boolean') return String(v);
   try {

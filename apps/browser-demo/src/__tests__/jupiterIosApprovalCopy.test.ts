@@ -9,7 +9,7 @@ import {
 describe('Jupiter iOS approval copy', () => {
   it('promises an automatic return when notifications are available', () => {
     expect(jupiterIosManualApprovalMessage('Approve the proof in your wallet.')).toBe(
-      "Approve in Jupiter — we'll bring you back here when it's done. Approve the proof in your wallet.",
+      "Approve in Jupiter. We'll bring you back here when it's done. Approve the proof in your wallet.",
     );
   });
 
@@ -23,10 +23,10 @@ describe('Jupiter iOS approval copy', () => {
 
   it('returns just the prefix when no detail is supplied', () => {
     expect(jupiterIosManualApprovalMessage()).toBe(
-      "Approve in Jupiter — we'll bring you back here when it's done.",
+      "Approve in Jupiter. We'll bring you back here when it's done.",
     );
     expect(jupiterIosManualApprovalMessage('   ')).toBe(
-      "Approve in Jupiter — we'll bring you back here when it's done.",
+      "Approve in Jupiter. We'll bring you back here when it's done.",
     );
   });
 

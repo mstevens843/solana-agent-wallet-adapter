@@ -509,7 +509,11 @@ export class JsonPreparedActionStore implements PreparedActionStore {
                   inputToken,
                   outputToken,
                   amount: payment.amount,
-                  slippageBps: payment.slippageBps ?? 50,
+                  // Auto (no stored slippage) → omit so each cycle uses Jupiter dynamic slippage,
+                  // matching one-time swaps; a stored Custom value is passed through.
+                  ...(payment.slippageBps !== undefined && String(payment.slippageBps).trim() !== ''
+                    ? { slippageBps: payment.slippageBps }
+                    : {}),
                 }
               : payment.token.toUpperCase() === 'SOL'
                 ? { recipient: payment.recipient, amountSol: payment.amount }

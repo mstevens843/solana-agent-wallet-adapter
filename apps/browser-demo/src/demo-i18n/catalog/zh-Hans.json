@@ -1,6 +1,9 @@
 {
   "language": "zh-Hans",
   "entries": {
+    "Amount exceeds your balance.": "金额超过您的余额。",
+    "Enter an amount or shares.": "请输入金额或份额。",
+    "Health factor is too low.": "健康系数过低。",
     "Guided demo": "引导式演示",
     "Preview wallet approval without connecting a wallet.": "无需连接钱包即可预览钱包审批流程。",
     "Pick a practical Solana request and watch Agentic turn it into a bounded wallet review. This demo simulates the approval flow, does not move funds, and never asks you to start the local bridge.": "选择一个实用的 Solana 请求，看 Agentic 如何将它转化为有边界的钱包审查。本演示模拟审批流程，不会转移任何资金，也绝不会要求你启动本地桥接。",
@@ -5502,6 +5505,19 @@
     "Copied message": "已复制消息",
     "Delete this chat?": "删除此聊天？",
     "Chat limit reached": "已达到聊天上限",
-    "You've reached the max of {max} saved chats. Delete some to start a new one.": "您已达到最多 {max} 个已保存聊天的上限。请删除一些以开始新聊天。"
+    "You've reached the max of {max} saved chats. Delete some to start a new one.": "您已达到最多 {max} 个已保存聊天的上限。请删除一些以开始新聊天。",
+    "Add recipient": "添加收款人",
+    "Address Book": "地址簿",
+    "Clipboard access is unavailable here. Type the address or use your keyboard paste.": "此处无法访问剪贴板。请输入地址或使用键盘粘贴。",
+    "Clipboard empty": "剪贴板为空",
+    "Copy an address first, then tap Paste.": "请先复制地址，然后点按粘贴。",
+    "No saved recipients yet.": "尚无已保存的收款人。",
+    "Open Address Book": "打开地址簿",
+    "Paste address from clipboard": "从剪贴板粘贴地址",
+    "Paste unavailable": "无法粘贴",
+    "Recipient input mode": "收款人输入模式",
+    "Save recipients by name, then pick them in any send form.": "按名称保存收款人，即可在任何发送表单中选择。",
+    "Saved on this device. Sign in to sync across your devices.": "已保存到此设备。登录后可在多台设备间同步。",
+    "Synced to your cloud account.": "已同步到你的云账户。"
   }
 }

@@ -14,6 +14,7 @@ describe('workspace More menu items', () => {
     // Chat tab can take its slot in the main bar; Positions leads the More menu.
     expect(workspaceMoreMenuItems([])).toEqual([
       { id: 'positions', label: 'Positions' },
+      { id: 'addressBook', label: 'Address Book' },
       { id: 'schedule', label: 'Repeat Payments' },
       { id: 'labs', label: 'Save Proof' },
       { id: 'agent-protocols', label: 'Agent Payments' },
@@ -42,6 +43,7 @@ describe('workspace More menu items', () => {
       { id: 'preferences', label: 'Preferences' },
       { id: 'completed', label: 'Done' },
       { id: 'positions', label: 'Positions' },
+      { id: 'addressBook', label: 'Address Book' },
       { id: 'schedule', label: 'Repeat Payments' },
       { id: 'labs', label: 'Save Proof' },
       { id: 'agent-protocols', label: 'Agent Payments' },

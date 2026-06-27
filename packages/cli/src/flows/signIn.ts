@@ -100,7 +100,7 @@ export async function showSignInStatus(options: GlobalOptions): Promise<void> {
   console.log(header('Sign-in status'));
   console.log(kv([
     ['Signed in', summary.authenticated ? badge('yes', 'ok') : badge('no', 'muted')],
-    ['Wallet', summary.walletAddress ?? '—'],
-    ['Expires', summary.expiresAt ?? '—'],
+    ['Wallet', summary.walletAddress ?? '-'],
+    ['Expires', summary.expiresAt ?? '-'],
   ]));
 }

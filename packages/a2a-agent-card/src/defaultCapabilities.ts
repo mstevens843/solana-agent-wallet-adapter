@@ -14,7 +14,7 @@ export const defaultAgenticCapabilities: AgenticCapability[] = [
     id: 'wallet.sign_message',
     name: 'Sign Message',
     description:
-      'Sign an arbitrary UTF-8 or byte message with the connected Solana wallet. Requires user approval — never auto-signs.',
+      'Sign an arbitrary UTF-8 or byte message with the connected Solana wallet. Requires user approval. Never auto-signs.',
     tags: ['wallet', 'signing'],
     examples: ['Sign the string "Hello, A2A" and return the base58 signature.'],
   },
@@ -80,7 +80,7 @@ export const defaultAgenticCapabilities: AgenticCapability[] = [
     id: 'protocol.ap2_inbound',
     name: 'Accept AP2 Mandate',
     description:
-      'Receive an Agent Payments Protocol (AP2) IntentMandate or PaymentMandate from another agent. Mandates are verified and surfaced as wallet approval cards — never auto-signed.',
+      'Receive an Agent Payments Protocol (AP2) IntentMandate or PaymentMandate from another agent. Mandates are verified and surfaced as wallet approval cards. Never auto-signed.',
     tags: ['ap2', 'payments', 'inbound', 'protocol'],
     inputModes: ['application/json'],
     outputModes: ['application/json'],

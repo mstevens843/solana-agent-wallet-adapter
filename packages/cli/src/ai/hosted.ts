@@ -149,8 +149,8 @@ export function agentAiRouteLabel(route: AgentAiRoute): string {
   // Connector configured on the bridge but not usable yet (CLI missing / not signed in).
   if (route.bridge?.engine === 'connector' && route.bridge.connectorLabel) {
     return route.bridge.connectorAuthStatus === 'binary-not-found'
-      ? `Connector · ${route.bridge.connectorLabel} (CLI not installed — run /agent-setup)`
-      : `Connector · ${route.bridge.connectorLabel} (sign-in needed — run /agent-setup)`;
+      ? `Connector · ${route.bridge.connectorLabel} (CLI not installed - run /agent-setup)`
+      : `Connector · ${route.bridge.connectorLabel} (sign-in needed - run /agent-setup)`;
   }
   if (route.config?.path === 'hosted-byok') {
     return route.signedIn ? 'Hosted BYOK not reachable' : 'Hosted BYOK requires /sign-in';

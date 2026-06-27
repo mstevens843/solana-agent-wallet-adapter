@@ -69,7 +69,7 @@ export async function runRepeatScheduledWithPrefill(
     choices: [...CADENCE_CHOICES],
   });
   const localTime = await input({
-    message: 'Local time (HH:MM, 24h — blank to skip)',
+    message: 'Local time (HH:MM, 24h - blank to skip)',
     default: prefill.localTime ?? '09:00',
     validate: validateClockTime,
   });

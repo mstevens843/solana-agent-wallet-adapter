@@ -94,15 +94,15 @@ export function buildPublicProfileUrl(wallet: string): string {
 }
 
 export function formatSuccessRate(rate: number): string {
-  if (!Number.isFinite(rate)) return '—';
+  if (!Number.isFinite(rate)) return '-';
   const clamped = Math.max(0, Math.min(1, rate));
   return `${Math.round(clamped * 100)}%`;
 }
 
 export function formatUsd(value: string | undefined): string {
-  if (value === undefined || value === null || value === '') return '—';
+  if (value === undefined || value === null || value === '') return '-';
   const num = Number(value);
-  if (!Number.isFinite(num)) return '—';
+  if (!Number.isFinite(num)) return '-';
   return `$${num.toLocaleString('en-US', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
@@ -478,7 +478,7 @@ async function handleAction(action: string, dataset: DOMStringMap): Promise<void
         await navigator.clipboard.writeText(value);
         showToast(t('Public URL copied'));
       } catch {
-        showToast(t('Copy failed — clipboard permission denied'));
+        showToast(t('Copy failed - clipboard permission denied'));
       }
       return;
     }

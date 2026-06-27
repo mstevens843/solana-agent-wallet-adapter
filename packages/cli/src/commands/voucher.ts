@@ -84,7 +84,7 @@ function verifyVoucherShape(voucher: unknown): VoucherShapeReport {
   };
   const schema = typeof voucher.schema === 'string' ? voucher.schema : 'unknown';
   if (schema && !schema.startsWith('streaming/voucher')) {
-    warnings.push(`Unexpected schema "${schema}" — expected "streaming/voucher/<version>".`);
+    warnings.push(`Unexpected schema "${schema}" - expected "streaming/voucher/<version>".`);
   }
   const ok = Object.values(fields).every(Boolean);
   if (!ok) {

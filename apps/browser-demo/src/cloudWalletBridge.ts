@@ -35,11 +35,11 @@ export function cloudWalletAvailable(): boolean {
 }
 
 export async function cloudWalletSignMessage(message: string, summary: string): Promise<CloudWalletSignResult> {
-  if (!bridge) throw new Error('Wallet bridge is not ready — connect a wallet first.');
+  if (!bridge) throw new Error('Wallet bridge is not ready. Connect a wallet first.');
   return bridge.signMessage(message, summary);
 }
 
 export async function cloudWalletRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  if (!bridge) throw new Error('Wallet bridge is not ready — connect a wallet first.');
+  if (!bridge) throw new Error('Wallet bridge is not ready. Connect a wallet first.');
   return bridge.cloudRequest<T>(path, init);
 }

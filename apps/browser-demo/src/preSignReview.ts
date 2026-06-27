@@ -542,7 +542,12 @@ function pushAmountAndTokenRows(
 
 function pushSlippageRow(rows: PreSignReviewRow[], slippageBps: number | undefined): void {
   const value = formatSlippage(slippageBps);
-  if (!value) return;
+  if (!value) {
+    // Swap-only caller: no cap = Auto (Jupiter applies its own dynamic slippage). Show it
+    // explicitly so the review reads "Slippage · Auto" rather than silently omitting the row.
+    rows.push({ label: 'Slippage', value: 'Auto' });
+    return;
+  }
   const tone: ReviewTone | undefined =
     typeof slippageBps === 'number' && slippageBps > 100 ? 'warn' : undefined;
   const row: PreSignReviewRow = { label: 'Slippage', value };

@@ -37,7 +37,7 @@ export async function confirmHighStakes(
   if (advice?.riskLevel === 'high') {
     console.log(badge('AI flagged this plan as HIGH risk.', 'warn'));
     const proceed = await confirm({
-      message: `Continue anyway? — ${summary}`,
+      message: `Continue anyway? - ${summary}`,
       default: false,
     });
     if (!proceed) return false;
@@ -52,7 +52,7 @@ export async function confirmHighStakes(
     // Couldn't price it — fail closed: show a soft gate so the user is aware
     // they're operating on mainnet with an unknown value.
     console.log();
-    console.log(header('Mainnet — value unknown'));
+    console.log(header('Mainnet - value unknown'));
     console.log(kv([
       ['Summary', summary],
       ['Token', estimate.token],
@@ -65,7 +65,7 @@ export async function confirmHighStakes(
   if (usd < getMainnetThreshold()) return true;
 
   console.log();
-  console.log(header('Mainnet — value confirmation'));
+  console.log(header('Mainnet - value confirmation'));
   console.log(kv([
     ['Summary', summary],
     ['Amount', `${estimate.amount} ${estimate.token}`],

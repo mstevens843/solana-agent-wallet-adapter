@@ -133,7 +133,7 @@ const CRON_LABELS: Record<string, string> = {
 };
 
 export function humanizeSeconds(totalSeconds: number): string {
-  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return '—';
+  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return '-';
   const s = Math.round(totalSeconds);
   if (s === 60) return t('Every minute');
   if (s === 3600) return t('Every hour');
@@ -188,7 +188,7 @@ export function humanizeRelative(iso: string, nowMs: number): string {
 }
 
 export function formatRecentCount(n: number | undefined | null): string {
-  if (n === undefined || n === null || !Number.isFinite(n)) return t('7d: —');
+  if (n === undefined || n === null || !Number.isFinite(n)) return t('7d: -');
   const rounded = Math.max(0, Math.round(n));
   return rounded === 1 ? tf('7d: {n} run', { n: rounded }) : tf('7d: {n} runs', { n: rounded });
 }
@@ -435,7 +435,7 @@ function rowOneTimePendingBanner(row: InstallRow): string {
   if (typeof approvalId !== 'string' || !approvalId) return '';
   return `
     <p class="skills-installed-row-banner">
-      ${t('Pending initial approval — review the one-time payment in your Sign Approval inbox.')}
+      ${t('Pending initial approval. Review the one-time payment in your Sign Approval inbox.')}
     </p>
   `;
 }

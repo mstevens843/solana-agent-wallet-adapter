@@ -704,9 +704,10 @@ export class AgentWalletActionService {
 
   async prepareTransferSol(input: PrepareTransferSolInput): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
-    parseDecimalAmount(input.amountSol, 9, 'SOL transfer amount');
+    const lamports = parseDecimalAmount(input.amountSol, 9, 'SOL transfer amount');
+    assertMainnetTransferCap(this.config, lamports, 9, this.config.mainnet.maxSolTransfer, 'SOL transfer');
     const from = await this.backend.getAddress();
-    const to = new PublicKey(input.recipient).toBase58();
+    const to = toRecipientAddress(input.recipient);
     await this.enforceRecipientCap(to, 'SOL', input.amountSol);
     const action = await this.store().addAction({
       kind: 'transfer_sol',
@@ -723,9 +724,10 @@ export class AgentWalletActionService {
   async prepareTransferSpl(input: PrepareTransferSplInput): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
     const tokenConfig = await resolveToken(this.config, this.connection, input.token);
-    parseDecimalAmount(input.amount, tokenConfig.decimals, `${tokenConfig.symbol} amount`);
+    const rawAmount = parseDecimalAmount(input.amount, tokenConfig.decimals, `${tokenConfig.symbol} amount`);
+    assertMainnetTransferCap(this.config, rawAmount, tokenConfig.decimals, tokenConfig.maxTransfer, `${tokenConfig.symbol} transfer`);
     const from = await this.backend.getAddress();
-    const to = new PublicKey(input.recipient).toBase58();
+    const to = toRecipientAddress(input.recipient);
     await this.enforceRecipientCap(to, tokenConfig.symbol, input.amount);
     const action = await this.store().addAction({
       kind: 'transfer_spl',
@@ -5048,7 +5050,7 @@ export class AgentWalletActionService {
     const mergedInput: RecurringPaymentInput = {
       ...current,
       ...input,
-      slippageBps: normalizeRecurringSlippageBps(input.slippageBps ?? current.slippageBps),
+      slippageBps: normalizeRecurringSlippageBps(input.slippageBps ?? current.slippageBps, this.config.mainnet.maxSlippageBps),
     };
     const recurringPayment = await store.updateRecurringPayment(
       input.recurringId,
@@ -6276,11 +6278,36 @@ function assertMainnetTransferCap(
   }
 }
 
-function normalizeRecurringSlippageBps(value: number | string | undefined): number | undefined {
+// Normalize a recipient to base58, turning an invalid address into a clear ProtocolError instead of
+// the raw "Invalid public key input" thrown by the PublicKey constructor.
+function toRecipientAddress(recipient: string): string {
+  try {
+    return new PublicKey(recipient).toBase58();
+  } catch {
+    throw new ProtocolError('invalid_request', 'Recipient is not a valid Solana address.');
+  }
+}
+
+// Auto (undefined / empty string) → undefined so the recurring swap omits slippageBps and each cycle
+// uses Jupiter's own dynamic slippage (matching one-time swaps). A provided value is validated as a
+// non-negative integer within the configured cap.
+function normalizeRecurringSlippageBps(
+  value: number | string | undefined,
+  maxBps: number,
+): number | undefined {
   if (value === undefined) return undefined;
-  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
+  if (typeof value === 'string' && value.trim() === '') return undefined;
+  const parsed = typeof value === 'number' ? value : Number(value.trim());
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new ProtocolError('invalid_request', 'Recurring swap slippageBps must be a non-negative integer.');
+  }
+  if (parsed > maxBps) {
+    throw new ProtocolError(
+      'unauthorized',
+      `Recurring swap slippage ${parsed} bps exceeds configured cap of ${maxBps} bps.`,
+    );
+  }
+  return parsed;
 }
 
 async function buildRecurringPaymentInput(
@@ -6290,6 +6317,7 @@ async function buildRecurringPaymentInput(
   connection: Connection,
 ): Promise<AddRecurringPaymentInput> {
   requireActionAllowed(config);
+  const recurringSwapSlippageBps = normalizeRecurringSlippageBps(input.slippageBps, config.mainnet.maxSlippageBps);
   const actionKind: 'transfer' | 'swap' | 'connector' | 'blink' =
     input.actionKind === 'connector' || input.actionKind === 'blink' || input.actionKind === 'swap'
       ? input.actionKind
@@ -6327,7 +6355,7 @@ async function buildRecurringPaymentInput(
     : undefined;
   let recipient = '';
   if (actionKind === 'transfer') {
-    recipient = new PublicKey(requireString(input.recipient, 'recipient')).toBase58();
+    recipient = toRecipientAddress(requireString(input.recipient, 'recipient'));
   } else if (input.recipient) {
     try {
       recipient = new PublicKey(input.recipient).toBase58();
@@ -6401,7 +6429,15 @@ async function buildRecurringPaymentInput(
     walletAddress,
     status,
     cluster: config.cluster,
-    ...(actionKind === 'swap' ? { actionKind: 'swap' as const, inputToken, outputToken, slippageBps: input.slippageBps ?? config.mainnet.maxSlippageBps } : {}),
+    ...(actionKind === 'swap'
+      ? {
+          actionKind: 'swap' as const,
+          inputToken,
+          outputToken,
+          // Auto omits slippageBps (Jupiter dynamic per cycle); a Custom value is validated + capped.
+          ...(recurringSwapSlippageBps !== undefined ? { slippageBps: recurringSwapSlippageBps } : {}),
+        }
+      : {}),
     ...(actionKind === 'connector' || actionKind === 'blink'
       ? {
           actionKind,

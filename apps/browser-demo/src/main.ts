@@ -666,6 +666,10 @@ import {
   selectedConnectorActionForm,
   selectedConnectorForDraftParameters,
   selectedSubAction,
+  slippageBpsError,
+  isValidWalletAddress,
+  SLIPPAGE_MIN_BPS,
+  SLIPPAGE_MAX_BPS,
   stripConnectorDraftExtras,
   validateConnectorDraftParameters,
   type ConnectorActionForm,
@@ -1043,6 +1047,7 @@ type ActiveTab =
   | 'schedule'
   | 'labs'
   | 'preferences'
+  | 'addressBook'
   // Layer 1 tab ids registered at runtime via DEV_TAB_REGISTRY.
   // The (string & {}) intersection preserves literal-union autocomplete
   // while permitting arbitrary registry-supplied ids without an
@@ -1641,6 +1646,7 @@ const CLOUD_PREFERENCE_NAMESPACES = [
   'failure-policies',
   'custom-tokens',
   'ai-settings',
+  'recipient-rules',
 ] as const;
 
 type CloudPreferenceNamespace = (typeof CLOUD_PREFERENCE_NAMESPACES)[number];
@@ -2306,6 +2312,9 @@ interface PositionLiveRow {
   kind: ActionCategory;
   title: string;
   status?: string;
+  // The single most important stat for this position, rendered large under the title. Parsers
+  // extract it from `details` (so it isn't duplicated). Optional — cards degrade to title + tiles.
+  headline?: PositionDetail;
   details: PositionDetail[];
   progress?: { current: number; total: number };
   distancePct?: number | null; // limit: % from trigger
@@ -3408,7 +3417,7 @@ interface DemoState {
   chatConnectorSession: ChatConnectorSession | null;
   // In-place connect surface (popover web / sheet mobile) opened when a user picks an
   // un-enabled connector in an action's "Use connector" dropdown.
-  connectorConnect: { connectorId: string; category: ActionCategory | null; draftApiKey?: string; draftBaseUrl?: string } | null;
+  connectorConnect: { connectorId: string; category: ActionCategory | null; surface?: 'create' | 'recurring'; draftApiKey?: string; draftBaseUrl?: string } | null;
   // Jupiter Ultra Shield advisory token-safety warnings, cached per output mint.
   swapShield: Record<string, { status: 'pending' | 'done'; warnings: ShieldWarning[] }>;
   chatRecurringSession: ChatRecurringSession | null;
@@ -3430,6 +3439,9 @@ interface DemoState {
   recipientRules: RecipientRulesState;
   recipientDraft: RecipientDraft;
   recipientErrors: Record<string, string>;
+  // Per-field Address|Saved picker mode for the recipient control, keyed by "target:fieldId"
+  // (e.g. "chat:recipient", "template:<id>", "recurring:recipient"). Ephemeral UI state.
+  recipientPickerMode: Record<string, 'address' | 'saved'>;
   connectedDapps: ConnectedDappsState;
   protocolConnectorPrefs: ProtocolConnectorPrefs;
   agentPolicies: UserAgentPolicy[];
@@ -4593,6 +4605,7 @@ const state: DemoState = {
   recipientRules: initialRecipientRules,
   recipientDraft: defaultRecipientDraft(),
   recipientErrors: {},
+  recipientPickerMode: {},
   connectedDapps: initialConnectedDapps,
   protocolConnectorPrefs: initialProtocolConnectorPrefs,
   agentPolicies: initialAgentPolicies,
@@ -5911,7 +5924,7 @@ async function runWalletHostBrandAutoConnect(brandId: string): Promise<void> {
     pushToast(
       'success',
       t('Return to your desktop app'),
-      tf('{brand} is connected — switch back to the Agentic desktop window.', { brand: brandLabel }),
+      tf('{brand} is connected. Switch back to the Agentic desktop window.', { brand: brandLabel }),
     );
     if (pairingUuid) {
       // Cross-device pairing path: register the host on the cloud relay
@@ -6586,7 +6599,7 @@ async function openQrConnectWalletForRequest(
     // wallet's universal-link page then renders the Play Store install
     // prompt. Letting the user tap the rendered button below preserves the
     // gesture and lets the OS route the deeplink to the wallet app.
-    qrConnect.detail = t('Tap the button below — your wallet will open with the request to approve, then return you here automatically.');
+    qrConnect.detail = t('Tap the button below. Your wallet will open with the request to approve, then return you here automatically.');
     render();
   } catch (err) {
     if (!await deliverQrConnectResult(
@@ -7514,7 +7527,7 @@ function walletConnectAppMetadata(): {
   }
   return {
     name: 'Agentic Desktop',
-    description: 'Solana Agent Wallet Adapter — desktop runtime',
+    description: 'Solana Agent Wallet Adapter - desktop runtime',
     url: origin,
     icons: [],
   };
@@ -8608,7 +8621,7 @@ async function confirmLedgerAddress(): Promise<void> {
       );
       dispatchLedgerOverlay({
         type: 'setError',
-        error: 'The Ledger derived a different address on re-check — please retry.',
+        error: 'The Ledger derived a different address on re-check. Please retry.',
       });
       return;
     }
@@ -9017,7 +9030,7 @@ function desktopQrBody(): string {
     <div class="desktop-connect-flow-body desktop-deeplink-qr-inline">
       <div class="walletconnect-qr-overlay-brand">
         ${brandLogoMarkup(wallet, 'walletconnect-qr-overlay-brand-logo')}
-        <span>Scan with your phone's Camera app — ${escapeHtmlForFlow(brandName)} will open</span>
+        <span>Scan with your phone's Camera app - ${escapeHtmlForFlow(brandName)} will open</span>
       </div>
       ${qrMarkup}
       <p class="desktop-connect-flow-deeplink-hint">
@@ -9471,7 +9484,7 @@ async function adoptPairedWallet(input: {
   }
   savePersistedState();
   trackWalletConnectSuccess(walletConnectSurface(), state.cluster, 'qr_pairing_relay');
-  pushToast('success', tf('Connected via your phone — {walletName}', { walletName: input.walletName }), short(input.address));
+  pushToast('success', tf('Connected via your phone - {walletName}', { walletName: input.walletName }), short(input.address));
   dispatchDesktopConnectFlow({ type: 'reset' });
 }
 
@@ -10157,7 +10170,10 @@ function renderWorkspace(): void {
       if (fromEl.nodeType === 1 && typeof fromEl.matches === 'function' && fromEl.matches(WORKSPACE_MORPH_SKIP_SELECTOR)) {
         return false;
       }
-      if (fromEl === activeEl) return false;
+      // Only skip a focused INPUT/TEXTAREA (preserve its typed value + cursor). A focused button
+      // (a just-clicked tab/pill) MUST still morph so its active/aria-selected class updates —
+      // node identity is preserved either way, so focus is never lost.
+      if (fromEl === activeEl && (fromEl instanceof HTMLInputElement || fromEl instanceof HTMLTextAreaElement)) return false;
       return true;
     },
   });
@@ -10627,11 +10643,11 @@ function agenticLoginPage(): string {
   return `
     <section class="agentic-login">
       <h1>${escapeHtml(summary)}</h1>
-      <p>${escapeHtml(t('Your Solana Agent Wallet CLI is requesting a wallet signature. Review the message below and sign with your connected wallet — Agentic never sees your private key.'))}</p>
+      <p>${escapeHtml(t('Your Solana Agent Wallet CLI is requesting a wallet signature. Review the message below and sign with your connected wallet. Agentic never sees your private key.'))}</p>
       <dl class="agentic-login__details">
-        <dt>${escapeHtml(t('Nonce'))}</dt><dd><code>${escapeHtml(nonce || '—')}</code></dd>
+        <dt>${escapeHtml(t('Nonce'))}</dt><dd><code>${escapeHtml(nonce || '-')}</code></dd>
         <dt>${escapeHtml(t('Connected wallet'))}</dt><dd><code>${escapeHtml(connected || t('not connected'))}</code></dd>
-        <dt>${escapeHtml(t('Callback'))}</dt><dd><code>${escapeHtml(callback || '—')}</code></dd>
+        <dt>${escapeHtml(t('Callback'))}</dt><dd><code>${escapeHtml(callback || '-')}</code></dd>
       </dl>
       <pre class="agentic-login__message" aria-label="${escapeHtml(t('Message to sign'))}">${messageHtml}</pre>
       ${calloutHtml}
@@ -11304,7 +11320,7 @@ function cliApproveView(): string {
             <p>${escapeHtml(cliWalletPageApprovalLoadingMessage())}</p>
           </div>
         `,
-        footer: `<p class="cli-focused-note">Keep this page open — the ${surfaceLabel} is sending the request.</p>`,
+        footer: `<p class="cli-focused-note">Keep this page open. The ${surfaceLabel} is sending the request.</p>`,
       });
     }
     return cliErrorView(
@@ -11623,7 +11639,7 @@ function aiConnectorsPage(): string {
             })}
           </label>
           <p class="ai-connectors-instruction">
-            No app to install — open a terminal in any directory and paste this command in.
+            No app to install. Open a terminal in any directory and paste this command in.
             It starts the connector and opens this page automatically.
           </p>
           ${runtimeCommandRow('Lightweight connector', command, 'Copy command')}
@@ -11633,7 +11649,7 @@ function aiConnectorsPage(): string {
           ${aiConnectorsReadinessPanel(readiness)}
           ${aiConnectorsQrPanel(readiness)}
           <p class="ai-connectors-keepalive">
-            <span aria-hidden="true">●</span> Stays paired while this computer is awake &amp; signed in — you can close this tab.
+            <span aria-hidden="true">●</span> Stays paired while this computer is awake &amp; signed in. You can close this tab.
           </p>
         </section>
 
@@ -15746,7 +15762,7 @@ function walletRail(): string {
     ? `<p>${escapeHtml(wallet.detail)}</p>`
     : `<p class="signer-detail-desktop-only">${escapeHtml(wallet.detail)}</p>`;
   const connectionsReadiness = connected
-    ? t('Wallet connected — you can review, approve, and sign.')
+    ? t('Wallet connected. You can review, approve, and sign.')
     : t('Connect your wallet to approve and sign. AI connector and cloud sync are optional.');
   // Connections re-org (reviewer feedback): group the wallet/AI/cloud connections under one
   // prioritized "Connections" header with Required/Optional labels for native mobile app shells.
@@ -16079,7 +16095,7 @@ function workflowSourceStorageBadge(source?: WorkflowRecordSource): StorageDurab
 
 function generatedPlanStorageBadge(record: GeneratedPlanRecord): StorageDurabilityBadge {
   if (record.workflowSource === 'cloud' && record.cloudSyncStatus === 'pending') {
-    return storageBadge('cloud-pending', t('Signed locally — cloud sync will retry when reachable.'));
+    return storageBadge('cloud-pending', t('Signed locally. Cloud sync will retry when reachable.'));
   }
   return workflowSourceStorageBadge(record.workflowSource ?? 'browser');
 }
@@ -16872,7 +16888,7 @@ function recipientRulesPanel(): string {
           </label>
           <label class="field compact">
             <span>${t('Address')}</span>
-            <input data-recipient-field="address" value="${escapeHtml(state.recipientDraft.address)}" placeholder="${escapeHtml(t('Solana address'))}" autocomplete="off" spellcheck="false" ${state.busy ? 'disabled' : ''} />
+            ${recipientPasteInputWrap(`<input data-recipient-field="address" value="${escapeHtml(state.recipientDraft.address)}" placeholder="${escapeHtml(t('Solana address'))}" autocomplete="off" spellcheck="false" ${state.busy ? 'disabled' : ''} />`, state.busy)}
             ${recipientFieldError('address')}
           </label>
           <label class="field compact">
@@ -16896,7 +16912,7 @@ function recipientRulesPanel(): string {
           <label class="field compact recipient-mine-field">
             <span>${t('Mine')}</span>
             <input type="checkbox" data-recipient-field="isMine" ${state.recipientDraft.isMine ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
-            <em class="recipient-mine-hint">${t('My own wallet — pre-sign shows "→ your wallet"')}</em>
+            <em class="recipient-mine-hint">${t('My own wallet - pre-sign shows "→ your wallet"')}</em>
           </label>
           <div class="recipient-save-actions">
             <button type="button" class="primary" data-recipient-action="save" ${state.busy ? 'disabled' : ''}>${t('Save')}</button>
@@ -16906,6 +16922,53 @@ function recipientRulesPanel(): string {
         ${savedCount ? savedRecipientList(rules.recipients) : `<div class="recipient-empty">${t('No saved recipients')}</div>`}
       </section>
     </details>
+  `;
+}
+
+// The Address Book tab: a clean name + address book over the SAME state.recipientRules.recipients
+// data the recipient picker reads (single source of truth). Reuses the data-recipient-field draft
+// form + data-recipient-action save/reset/delete handlers, and the address input gets the one-tap
+// Paste button. Available on every platform; syncs to cloud when signed in.
+function addressBookPanel(): string {
+  const recipients = state.recipientRules.recipients;
+  const savedCount = recipients.length;
+  const cloudNote = state.cloudSession.status === 'signed-in'
+    ? t('Synced to your cloud account.')
+    : t('Saved on this device. Sign in to sync across your devices.');
+  const addressInput = `<input data-recipient-field="address" value="${escapeHtml(state.recipientDraft.address)}" placeholder="${escapeHtml(t('Solana address'))}" autocomplete="off" spellcheck="false" ${state.busy ? 'disabled' : ''} />`;
+  return `
+    <div class="address-book-page" data-layout="address-book-page">
+      <header class="address-book-head">
+        <h2>${escapeHtml(t('Address Book'))}</h2>
+        <p>${escapeHtml(t('Save recipients by name, then pick them in any send form.'))}</p>
+        <em class="address-book-cloud-note">${escapeHtml(cloudNote)}</em>
+      </header>
+      <section class="address-book-add" aria-label="${escapeHtml(t('Add recipient'))}">
+        <div class="recipient-save-form">
+          <label class="field compact">
+            <span>${t('Name')}</span>
+            <input data-recipient-field="name" value="${escapeHtml(state.recipientDraft.name)}" placeholder="${escapeHtml(t('Jeremy'))}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+            ${recipientFieldError('name')}
+          </label>
+          <label class="field compact">
+            <span>${t('Address')}</span>
+            ${recipientPasteInputWrap(addressInput, state.busy)}
+            ${recipientFieldError('address')}
+          </label>
+          <label class="field compact recipient-note-field">
+            <span>${t('Note')}</span>
+            <input data-recipient-field="note" value="${escapeHtml(state.recipientDraft.note)}" placeholder="${escapeHtml(t('Invoice, contractor, savings'))}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+          </label>
+          <div class="recipient-save-actions">
+            <button type="button" class="primary" data-recipient-action="save" ${state.busy ? 'disabled' : ''}>${t('Add recipient')}</button>
+            <button type="button" class="utility" data-recipient-action="reset" ${state.busy ? 'disabled' : ''}>${t('Clear')}</button>
+          </div>
+        </div>
+      </section>
+      <section class="address-book-list-wrap" aria-label="${escapeHtml(t('Saved recipients'))}">
+        ${savedCount ? savedRecipientList(recipients) : `<div class="recipient-empty">${t('No saved recipients yet.')}</div>`}
+      </section>
+    </div>
   `;
 }
 
@@ -17076,7 +17139,7 @@ function connectedDappRow(adapter: ConnectedDappAdapter): string {
       </dl>
       <div class="connected-dapp-row-actions">
         ${alwaysOn
-          ? `<span class="connected-dapp-always-on-note">${escapeHtml(t('Always on — no connection needed. Covered by Agentic’s Jupiter API.'))}</span>`
+          ? `<span class="connected-dapp-always-on-note">${escapeHtml(t('Always on, no connection needed. Covered by Agentic’s Jupiter API.'))}</span>`
           : `<button
           type="button"
           class="primary"
@@ -17127,7 +17190,7 @@ function connectedDappRowMobile(input: {
         </dl>
         <div class="connected-dapp-row-actions">
           ${alwaysOn
-            ? `<span class="connected-dapp-always-on-note">${escapeHtml(t('Always on — no connection needed. Covered by Agentic’s Jupiter API.'))}</span>`
+            ? `<span class="connected-dapp-always-on-note">${escapeHtml(t('Always on, no connection needed. Covered by Agentic’s Jupiter API.'))}</span>`
             : `<button
             type="button"
             class="primary"
@@ -17585,8 +17648,8 @@ function agentTierButton(agent: RegisteredAgent, tier: AgentTier, label: string)
 
 function agentTierOptions(): SelectPickerOption[] {
   return [
-    { value: 'read_only', label: t('Read-only'), detail: t('Status and balances only — cannot prepare or send.') },
-    { value: 'capped', label: t('Capped'), detail: t('Can prepare actions for your approval — cannot execute or sign.') },
+    { value: 'read_only', label: t('Read-only'), detail: t('Status and balances only - cannot prepare or send.') },
+    { value: 'capped', label: t('Capped'), detail: t('Can prepare actions for your approval - cannot execute or sign.') },
     { value: 'full', label: t('Full'), detail: t('Can do everything the bridge supports, subject to wallet approval.') },
   ];
 }
@@ -17928,28 +17991,34 @@ function updateRecipientDraftField(field: HTMLInputElement | HTMLSelectElement):
   }
 }
 
-function applyRecipientSelection(select: HTMLSelectElement): void {
-  const recipientId = select.value;
-  if (recipientId === '__manual__') return;
+// Applies a saved recipient chosen from the [Saved] dropdown. `key` is "target:fieldId"
+// (chat|template|recurring). Mirrors applyRecipientSelection but also covers the chat builder,
+// then collapses the picker back to Address mode.
+function applyRecipientPick(recipientId: string, key: string): void {
   const recipient = savedRecipientById(recipientId);
   if (!recipient) return;
-  const target = select.dataset.recipientSelect;
-  const fieldId = select.dataset.recipientTargetField || 'recipient';
+  const separator = key.indexOf(':');
+  const target = separator === -1 ? key : key.slice(0, separator);
+  const fieldId = (separator === -1 ? '' : key.slice(separator + 1)) || 'recipient';
   if (target === 'template') {
     state.templateFields[fieldId] = recipient.address;
     delete state.templateFieldErrors[fieldId];
     state.agentPlan = null;
     state.agentSignature = '';
     state.agentPreparedActionId = '';
-    render();
-    return;
-  }
-  if (target === 'recurring') {
+  } else if (target === 'recurring') {
     state.recurringDraft = readRecurringDraft();
     state.recurringDraft.recipient = recipient.address;
     delete state.recurringErrors.recurringRecipient;
-    render();
+  } else if (target === 'chat') {
+    if (state.chatActionBuilder) {
+      state.chatActionBuilder.recipient = recipient.address;
+      applyChatBuilderDraft();
+    }
   }
+  bumpRecipientLastUsed(recipient.address);
+  state.recipientPickerMode[key] = 'address';
+  render();
 }
 
 function updateAgentPolicyDraftField(field: HTMLInputElement | HTMLSelectElement): void {
@@ -19330,6 +19399,8 @@ function activePanel(): string {
       return labsPanel();
     case 'preferences':
       return preferencesPanel();
+    case 'addressBook':
+      return addressBookPanel();
     default: {
       // Layer 1 tab fallthrough. If the activeTab id matches a registered tab
       // AND its guard passes, render its panel. Otherwise fall back to the
@@ -19893,7 +19964,7 @@ function commandAiRouteCards(): string {
         ? t('Desktop Device Agent AI')
         : t('Device Agent AI'),
       detail: IS_TAURI_APP && state.tauriBridgeStatus?.bridgeReachable
-        ? t('Routed through the local desktop bridge — agent requests stay on this machine and never round-trip to the cloud.')
+        ? t('Routed through the local desktop bridge. Agent requests stay on this machine and never round-trip to the cloud.')
         : IS_ANDROID_APP
           ? t('Connect the on-device runtime so agent requests stay inside this app boundary.')
           : t('Connect the gated Device Agent setup for this wallet.'),
@@ -20132,7 +20203,7 @@ function commandAiInfoCardsGroup(): string {
         ? t('Local desktop route')
         : t('On-device route'),
       detail: IS_TAURI_APP && state.tauriBridgeStatus?.bridgeReachable
-        ? t('Agent requests run through the bundled desktop bridge on this machine — same workflow pipeline as cloud, no round-trip.')
+        ? t('Agent requests run through the bundled desktop bridge on this machine. Same workflow pipeline as cloud, no round-trip.')
         : t('The runtime path uses the same agent setup and workflow pipeline while its native worker is gated for development.'),
       foot: IS_TAURI_APP && state.tauriBridgeStatus?.bridgeReachable
         ? t('Bridge auto-starts when the app launches. Manage it under Preferences → Access → Local runtime.')
@@ -20342,7 +20413,7 @@ function planConnectorSheetPanel(): string {
       ? `
         ${available ? '' : `
         <div class="plan-connector-unavailable" aria-live="polite" style="margin-bottom:8px;">
-          <strong>${escapeHtml(t('Test mode — native pairing not detected in this build.'))}</strong>
+          <strong>${escapeHtml(t('Test mode - native pairing not detected in this build.'))}</strong>
           <p>${escapeHtml(t('The scanner and paste box are exposed for testing. Pairing may not complete unless this app build includes the connector engine.'))}</p>
         </div>`}
         <div class="plan-connector-pairing-mount" data-plan-connector-pairing-panel aria-live="polite"></div>
@@ -20449,7 +20520,7 @@ function websitePlanConnectorSetupPanel(scope: string): string {
 
       <ol class="local-runtime-steps compact website-plan-connector-steps">
         <li>Choose the plan connector and copy the command.</li>
-        <li>Paste it in Terminal and keep that process running — it opens a browser tab already connected to your plan.</li>
+        <li>Paste it in Terminal and keep that process running. It opens a browser tab already connected to your plan.</li>
         <li>Use that connected tab (or refresh here) to confirm the planner.</li>
       </ol>
 
@@ -21744,7 +21815,7 @@ function queueChatPendingApproval(actionId: string | null): void {
   appendChatMessage(session.id, {
     id: newId('chat-msg'),
     role: 'assistant',
-    content: t('Here is the action you queued — review and approve.'),
+    content: t('Here is the action you queued. Review and approve.'),
     createdAt: new Date().toISOString(),
     status: 'done',
     preparedActionId: action.id,
@@ -22112,6 +22183,18 @@ function chatSheetTextFieldHtml(opts: { label: string; value: string; placeholde
     </label>`;
 }
 
+// The chat send recipient field: same monospace text field but routed through the shared
+// recipient control so it gets the [Address|Saved] pills, one-tap Paste, and the saved-recipients
+// dropdown. Reuses the live data-chat-chip-recipient handler.
+function chatSheetRecipientFieldHtml(b: ChatActionBuilder): string {
+  const inputHtml = `<input data-chat-chip-recipient value="${escapeHtml(b.recipient ?? '')}" placeholder="${escapeHtml(t('Recipient public key'))}" autocomplete="off" spellcheck="false" />`;
+  return `
+    <label class="field compact planner-field chat-sheet-mono recipient-field">
+      <span>${escapeHtml(t('Recipient address'))}</span>
+      ${recipientControlHtml({ key: 'chat:recipient', inputHtml })}
+    </label>`;
+}
+
 // A responsive field row mirroring the New Request mobile grid: two short fields pair
 // side-by-side, a single field spans full width.
 function chatSheetFieldRow(...fields: string[]): string {
@@ -22223,7 +22306,7 @@ function chatActionSheetFormHtml(b: ChatActionBuilder): string {
       ${chatSheetFieldRow(chatSheetNoteRowHtml(b))}`;
   } else if (b.kind === 'send') {
     fields = `
-      ${chatSheetFieldRow(chatSheetTextFieldHtml({ label: t('Recipient address'), value: b.recipient ?? '', placeholder: t('Recipient public key'), attr: 'data-chat-chip-recipient', mono: true }))}
+      ${chatSheetFieldRow(chatSheetRecipientFieldHtml(b))}
       ${chatSheetFieldRow(chatSheetTokenFieldHtml('fromToken', t('Token')))}
       ${chatSheetFieldRow(chatSheetAmountFieldHtml(b, t('Amount')))}
       ${chatSheetFieldRow(chatSheetTextFieldHtml({ label: t('Memo / reason'), value: b.memo ?? '', placeholder: t('Invoice, friend payment, reimbursement'), attr: 'data-chat-memo-input' }))}`;
@@ -22273,7 +22356,7 @@ function chatActionPopoverHtml(): string {
   } else {
     body = `
       <div class="chat-popover-fields">
-        ${row('', chatSheetTextFieldHtml({ label: t('Recipient address'), value: b.recipient ?? '', placeholder: t('Recipient public key'), attr: 'data-chat-chip-recipient', mono: true }))}
+        ${row('', chatSheetRecipientFieldHtml(b))}
         ${row('pair', chatSheetTokenFieldHtml('fromToken', t('Token')), chatSheetAmountFieldHtml(b, t('Amount')))}
         ${row('', chatSheetTextFieldHtml({ label: t('Memo / reason'), value: b.memo ?? '', placeholder: t('Invoice, friend payment, reimbursement'), attr: 'data-chat-memo-input' }))}
       </div>`;
@@ -22342,7 +22425,7 @@ function composeChatProofStatement(template: AgentPlanTemplate): string {
       return v ? `${t(f.label)}: ${v}` : '';
     })
     .filter(Boolean);
-  return parts.length ? `${t(template.title)} — ${parts.join(', ')}` : t(template.title);
+  return parts.length ? `${t(template.title)} - ${parts.join(', ')}` : t(template.title);
 }
 // Seed the sign-proof builder from the filled template and autofill the composer.
 function chatProofConfirm(): void {
@@ -23010,7 +23093,7 @@ function chatComposerHtml(): string {
     // when a wallet is connected (the USD total is meaningless otherwise).
     // Only trust the snapshot when it belongs to the CURRENT wallet/cluster scope — otherwise a
     // fast wallet switch would briefly flash the previous wallet's total. When prices are missing,
-    // show a compact "—" rather than the long "USD unavailable" string (which would overflow).
+    // show a compact "-" rather than the long "USD unavailable" string (which would overflow).
     const balanceScopeOk = state.walletBalance.scopeKey === walletBalanceScopeKey();
     const balanceSnap = balanceScopeOk ? (state.walletBalance.full ?? state.walletBalance.summary) : null;
     const balanceLoading = state.walletBalance.fullStatus === 'loading' || state.walletBalance.fullStatus === 'idle';
@@ -23018,7 +23101,7 @@ function chatComposerHtml(): string {
       ? '…'
       : (balanceSnap && balanceSnap.priceStatus !== 'unavailable')
         ? formatWalletBalanceSnapshotUsd(balanceSnap)
-        : (balanceLoading ? '…' : '—');
+        : (balanceLoading ? '…' : '-');
     const balancesPill = state.address ? `
       <button type="button" class="chat-balances-pill" data-chat-balances-pill aria-haspopup="dialog" aria-expanded="${state.activeMobileRailSheet === 'chat-wallet-balances' ? 'true' : 'false'}" aria-label="${escapeHtml(t('View wallet portfolio'))}">
         <img class="chat-balances-pill-logo" src="${escapeHtml(BRAND_LOGOS.solana)}" alt="" aria-hidden="true" />
@@ -23644,7 +23727,7 @@ function buildClientChatToolDeps(): ClientChatToolDeps {
             listedAt: typeof it.liquidityAddedAt === 'string' ? it.liquidityAddedAt : ts !== undefined ? new Date(ts * 1000).toISOString() : null,
           };
         });
-        return { count: tokens.length, tokens, note: 'newly listed — unvetted, high-risk; verify safety before acting', source: 'birdeye' };
+        return { count: tokens.length, tokens, note: 'newly listed, unvetted, high-risk; verify safety before acting', source: 'birdeye' };
       } catch (err) {
         return { unavailable: true, error: err instanceof Error ? err.message : String(err) };
       }
@@ -24007,7 +24090,7 @@ function friendlyChatError(raw: string): string {
     // Bearer token is still hydrating after a cold launch — a 401 here means
     // "reconnecting", not "sign in" (which would be misleading + un-actionable).
     if (nativeCloudApiSurfaceActive() && state.cloudSession.status === 'signed-in') {
-      return t('Reconnecting to Agentic Cloud — try again in a moment.');
+      return t('Reconnecting to Agentic Cloud. Try again in a moment.');
     }
     return chatCurrentAiConnectorConfigured()
       ? t(CHAT_HOSTED_BYOK_RELAY_REQUIRED)
@@ -24892,7 +24975,10 @@ function resolveChatAmount(raw: string, fromAsset: WalletBalanceAsset | null): {
         : t('Balances are still loading - try again in a moment, or enter a token amount.') };
     }
     if (!Number.isFinite(usd) || usd <= 0) return { error: t('Enter a dollar amount greater than zero.') };
-    return { amount: trimChatAmount(usd / price, fromAsset.decimals) };
+    const usdTokenAmount = usd / price;
+    const usdBalanceError = chatAmountBalanceError(usdTokenAmount, fromAsset);
+    if (usdBalanceError) return { error: usdBalanceError };
+    return { amount: trimChatAmount(usdTokenAmount, fromAsset.decimals) };
   }
   const numeric = value.replace(/,/g, '');
   // Plain-decimal only: Number() would accept '1e5'/'0x10'/'Infinity', which then die
@@ -24901,7 +24987,18 @@ function resolveChatAmount(raw: string, fromAsset: WalletBalanceAsset | null): {
   if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(numeric)) return { error: t('Enter a valid amount.') };
   const num = Number(numeric);
   if (!Number.isFinite(num) || num <= 0) return { error: t('Enter a valid amount.') };
+  const numericBalanceError = chatAmountBalanceError(num, fromAsset);
+  if (numericBalanceError) return { error: numericBalanceError };
   return { amount: numeric.replace(/^\./, '0.') };
+}
+
+// Block a chat amount that exceeds the spend token's balance (reserving a fee buffer for native
+// SOL). Skips when the balance isn't loaded so a stale snapshot never false-blocks.
+function chatAmountBalanceError(amount: number, asset: WalletBalanceAsset | null): string {
+  if (!asset || !(asset.amount > 0)) return '';
+  const buffer = asset.mint === WSOL_MINT ? 0.01 : 0;
+  if (amount > asset.amount - buffer) return t('Amount exceeds your balance.');
+  return '';
 }
 
 // Parse the Wallet Actions grammar. Returns 'none' when the text is not a wallet
@@ -25554,7 +25651,7 @@ function bindChat(): void {
       if (!trimmed) { delete state.chatActionBuilder.slippageBps; }
       else {
         const n = Number(trimmed.replace(/[^\d]/g, ''));
-        if (Number.isFinite(n) && n > 0 && n <= 5000) state.chatActionBuilder.slippageBps = String(Math.round(n));
+        if (Number.isInteger(n) && n >= SLIPPAGE_MIN_BPS && n <= SLIPPAGE_MAX_BPS) state.chatActionBuilder.slippageBps = String(n);
         else delete state.chatActionBuilder.slippageBps;
       }
       applyChatBuilderDraft();
@@ -25807,8 +25904,8 @@ function bindChat(): void {
       delete state.chatActionBuilder.slippageBps;
     } else {
       const n = Number(trimmed.replace(/[^\d]/g, ''));
-      if (!Number.isFinite(n) || n <= 0 || n > 5000) { pushToast('error', t('Invalid slippage'), t('Enter slippage in basis points (1-5000).')); return; }
-      state.chatActionBuilder.slippageBps = String(Math.round(n));
+      if (!Number.isInteger(n) || n < SLIPPAGE_MIN_BPS || n > SLIPPAGE_MAX_BPS) { pushToast('error', t('Invalid slippage'), t('Use a valid max slippage.')); return; }
+      state.chatActionBuilder.slippageBps = String(n);
     }
     state.chatActionPicker = null;
     closeChatActionSheet();
@@ -26593,7 +26690,7 @@ function generatedPlanFailureLabel(label: string): string {
     case AI_DRAFT_PLACEHOLDER_LABEL:
       return t('Planning…');
     case AI_DRAFT_FAILED_LABEL:
-      return t('AI plan failed — try again');
+      return t('AI plan failed - try again');
     case 'Sign failed - try again':
       return t('Sign failed - try again');
     case 'Send failed - try again':
@@ -28776,16 +28873,18 @@ function selectCreateAction(category: ActionCategory): void {
   else render();
 }
 
-// Inline connect-gate: if the action has connectors but none enabled, offer to enable the top one
-// (reuses the global [data-connected-dapp-action="toggle"] enable flow). Shared by New Request +
-// Repeat. Returns '' for base/connectorless actions (swap/send/proof) — they need no connector.
-function connectGateFor(category: ActionCategory | ''): string {
+// Inline connect-gate: if the action has connectors but none enabled, offer to connect the top one.
+// Opens the inline connect surface (keyless Enable OR BYO-key form) — same flow as the dropdown's
+// "Tap to connect" — so a key-required top (e.g. lulo/sanctum) gets its key prompt instead of being
+// toggled on credential-less. Shared by New Request (surface 'create') + Repeat ('recurring').
+// Returns '' for base/connectorless actions (swap/send/proof) — they need no connector.
+function connectGateFor(category: ActionCategory | '', surface: 'create' | 'recurring' = 'create'): string {
   if (!category) return '';
   const env = connectorDraftEnvironment();
   const connectors = connectorsForCategory(category, env);
   const top = connectors[0];
   if (!top || connectors.some((c) => connectorCreateStatus(c, env).selectable)) return '';
-  return `<button type="button" class="utility create-connect-gate" data-connected-dapp-action="toggle" data-connected-dapp-id="${escapeHtml(top.id)}" data-connected-dapp-next="on">${escapeHtml(tf('Enable {connector} to continue', { connector: top.name }))}</button>`;
+  return `<button type="button" class="utility create-connect-gate" data-connector-connect-gate data-connect-gate-id="${escapeHtml(top.id)}" data-connect-gate-category="${escapeHtml(category)}" data-connect-gate-surface="${escapeHtml(surface)}">${escapeHtml(tf('Enable {connector} to continue', { connector: top.name }))}</button>`;
 }
 function createConnectGate(): string {
   return connectGateFor(state.createActionCategory);
@@ -28851,22 +28950,42 @@ function connectorActionDropdownSegment(scope: 'create' | 'repeat'): string {
   `;
 }
 
-// Segmented action tab bar (matches the PLAN METHOD look): Swap | Send | Proof | Evidence | Lend ▾
+// Segmented action tab bar (matches the PLAN METHOD look). Desktop/web: Swap | Send | Proof | Evidence | Lend ▾.
+// Native apps (Android/iOS): the row is too cramped, so Proof + Evidence collapse into one "Proofs" tab
+// (Swap | Send | Proofs | Lend ▾) and an inner Proof | Evidence 2-tabber appears below when Proofs is active.
 function createActionTabs(): string {
   const active = state.createActionCategory;
-  const tabs = BASE_ACTION_TABS.map((tab) => `
+  const native = isNativeAppShellSurface();
+  const proofsActive = active === 'proof' || active === 'read';
+  // Local render list only — never mutate BASE_ACTION_TABS (it backs isConnectorAction()).
+  const renderTabs: { id: ActionCategory; label: string }[] = native
+    ? [{ id: 'swap', label: 'Swap' }, { id: 'send', label: 'Send' }, { id: 'proof', label: 'Proofs' }]
+    : BASE_ACTION_TABS;
+  const tabs = renderTabs.map((tab) => {
+    // On native the combined "Proofs" tab (id 'proof') reads active for both proof and Evidence (read).
+    const tabActive = native && tab.id === 'proof' ? proofsActive : active === tab.id;
+    return `
     <button
       type="button"
       data-create-action="${escapeHtml(tab.id)}"
-      class="${active === tab.id ? 'active' : ''}"
-      aria-pressed="${active === tab.id ? 'true' : 'false'}"
+      class="${tabActive ? 'active' : ''}"
+      aria-pressed="${tabActive ? 'true' : 'false'}"
       ${state.busy ? 'disabled' : ''}
     >${escapeHtml(t(tab.label))}</button>
-  `).join('');
+  `;
+  }).join('');
+  // Inner 2-tabber: reuses data-create-action (auto-wired by the existing handler) so tapping Proofs
+  // (→ selectCreateAction('proof')) defaults here to Proof, and Evidence maps to the 'read' category.
+  const proofSubTabs = native && proofsActive ? `
+    <div class="chat-wallet-tabs proof-evidence-subtabs" role="tablist" aria-label="${escapeHtml(t('Proofs'))}">
+      <button type="button" role="tab" data-create-action="proof" class="${active === 'proof' ? 'active' : ''}" aria-selected="${active === 'proof' ? 'true' : 'false'}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Proof'))}</button>
+      <button type="button" role="tab" data-create-action="read" class="${active === 'read' ? 'active' : ''}" aria-selected="${active === 'read' ? 'true' : 'false'}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Evidence'))}</button>
+    </div>` : '';
   return `
     <div class="one-time-method-control create-action-control" role="group" aria-label="${escapeHtml(t('What do you want to do?'))}">
-      <div class="template-filter-row one-time-method-filter create-action-filter">${tabs}</div>
+      <div class="template-filter-row one-time-method-filter create-action-filter" style="--action-tab-cols:${renderTabs.length}">${tabs}</div>
       ${connectorActionDropdownSegment('create')}
+      ${proofSubTabs}
     </div>
   `;
 }
@@ -29555,7 +29674,7 @@ function raydiumPairPreviewHintForField(fieldId: string): string {
   const maxSegment = preview.pairedMaxAmount
     ? ` ${tf('(max {amount} {symbol} with slippage)', { amount: preview.pairedMaxAmount, symbol: preview.pairedSymbol })}`
     : '';
-  const noteSegment = preview.estimateNote ? ` — ${preview.estimateNote}` : '';
+  const noteSegment = preview.estimateNote ? ` - ${preview.estimateNote}` : '';
   return `<em class="planner-field-hint subtle">${escapeHtml(`${main}${maxSegment}${noteSegment}`)}</em>`;
 }
 
@@ -30509,9 +30628,8 @@ function slippagePercentInputToBps(value: string): string {
   const parsed = Number(normalized.replace(/%|bps/g, ''));
   if (!Number.isFinite(parsed) || parsed < 0) return trimmed;
   const bps = normalized.includes('bps') ? parsed : parsed * 100;
-  return Number.isInteger(bps)
-    ? String(bps)
-    : bps.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+  // Slippage is sent to the backend in whole basis points — round so 0.125% → 13 bps stays valid.
+  return String(Math.round(bps));
 }
 
 function isTokenSelectField(fieldDef: AgentPlanTemplateField): boolean {
@@ -30572,7 +30690,7 @@ function amountControlFieldInput(fieldDef: AgentPlanTemplateField, value: string
       <button type="button" data-template-amount-unit="token" data-template-amount-field="${escapeHtml(fieldDef.id)}" class="${mode === 'token' ? 'active' : ''}">${escapeHtml(t('Token'))}</button>
     </span>`;
   const balanceLine = asset
-    ? `<span class="amount-balance-line">${escapeHtml(tf('Balance {amount} · {usd}', { amount: `${formatChatCompactAmount(asset.amount)} ${asset.symbol}`, usd: formatChatCompactUsd(asset.valueUsd) || '—' }))}</span>`
+    ? `<span class="amount-balance-line">${escapeHtml(tf('Balance {amount} · {usd}', { amount: `${formatChatCompactAmount(asset.amount)} ${asset.symbol}`, usd: formatChatCompactUsd(asset.valueUsd) || '-' }))}</span>`
     : '';
   const pctBtn = (p: string): string =>
     `<button type="button" class="chat-amount-pct" data-template-pct="${p}" data-template-amount-field="${escapeHtml(fieldDef.id)}">${escapeHtml(`${p}%`)}</button>`;
@@ -30767,8 +30885,10 @@ function recipientTemplateFieldInput(
   return `
     <label class="field compact planner-field recipient-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
       <span>${escapeHtml(label)}</span>
-      ${recipientSelectForField('template', fieldDef.id, value, disabled)}
-      <input
+      ${recipientControlHtml({
+        key: `template:${fieldDef.id}`,
+        disabled,
+        inputHtml: `<input
         id="tpl-recipient-${escapeHtml(fieldDef.id)}"
         data-template-field="${escapeHtml(fieldDef.id)}"
         value="${escapeHtml(value)}"
@@ -30776,50 +30896,12 @@ function recipientTemplateFieldInput(
         autocomplete="off"
         spellcheck="false"
         ${disabled ? 'disabled' : ''}
-      />
+      />`,
+      })}
       ${recipientPolicyHint(policy)}
       ${error}
     </label>
   `;
-}
-
-function recipientSelectForField(
-  target: 'template' | 'recurring',
-  fieldId: string,
-  value: string,
-  disabled: boolean,
-): string {
-  if (state.recipientRules.recipients.length === 0) return '';
-  const selected = savedRecipientForAddress(value);
-  return selectPicker({
-    id: `${target}-${fieldId}-recipient-picker`,
-    value: selected?.id ?? '__manual__',
-    attrs: {
-      'data-recipient-select': target,
-      'data-recipient-target-field': fieldId,
-    },
-    disabled,
-    options: recipientSelectOptions(value),
-  });
-}
-
-function recipientSelectOptions(currentValue: string): SelectPickerOption[] {
-  const current = currentValue.trim();
-  const manualLabel = current ? tf('Manual {address}', { address: short(current) }) : t('Manual address');
-  return [
-    { value: '__manual__', label: manualLabel, meta: t('Recipient') },
-    ...state.recipientRules.recipients.map((recipient) => {
-      const blocked = recipientOptionDisabled(recipient);
-      return {
-        value: recipient.id,
-        label: recipient.name,
-        meta: recipientPolicyDisplay(recipient.policy),
-        detail: short(recipient.address),
-        disabled: blocked,
-        title: blocked ? recipientPolicyBlockReason(recipient.address) ?? recipient.address : recipient.address,
-      };
-    }),
-  ];
 }
 
 function recipientOptionDisabled(recipient: SavedRecipient): boolean {
@@ -30827,6 +30909,63 @@ function recipientOptionDisabled(recipient: SavedRecipient): boolean {
   if (state.recipientRules.blockListEnabled && recipient.policy === 'block') return true;
   if (state.recipientRules.allowListEnabled && recipient.policy !== 'allow') return true;
   return false;
+}
+
+// Wraps a recipient <input> in the shared one-tap Paste affordance (reuses the AI-key paste
+// styling). The Paste handler reads the clipboard and fills the sibling input. Shown on every
+// platform.
+function recipientPasteInputWrap(inputHtml: string, disabled: boolean): string {
+  return `
+    <div class="ai-key-input-wrap recipient-input-wrap">
+      ${inputHtml}
+      <button type="button" class="ai-key-paste-btn" data-recipient-paste title="${escapeHtml(t('Paste from clipboard'))}" aria-label="${escapeHtml(t('Paste address from clipboard'))}"${disabled ? ' disabled' : ''}>${escapeHtml(t('Paste'))}</button>
+    </div>`;
+}
+
+// The full recipient control: an [ Address | Saved ] pill toggle, the paste-enabled input
+// (Address mode), and a leftward-opening saved-recipients dropdown (Saved mode). `key` encodes
+// the apply target as "target:fieldId" (chat|template|recurring) so picks route correctly.
+// Reused by every send/recipient surface so the affordance is identical everywhere.
+function recipientControlHtml(opts: { key: string; inputHtml: string; disabled?: boolean }): string {
+  const mode = state.recipientPickerMode[opts.key] === 'saved' ? 'saved' : 'address';
+  const disabled = Boolean(opts.disabled);
+  const pills = `
+    <span class="token-choice-mode recipient-pills" role="group" aria-label="${escapeHtml(t('Recipient input mode'))}">
+      <button type="button" data-recipient-mode="address" data-recipient-control="${escapeHtml(opts.key)}" class="${mode === 'address' ? 'active' : ''}"${disabled ? ' disabled' : ''}>${escapeHtml(t('Address'))}</button>
+      <button type="button" data-recipient-mode="saved" data-recipient-control="${escapeHtml(opts.key)}" class="${mode === 'saved' ? 'active' : ''}"${disabled ? ' disabled' : ''}>${escapeHtml(t('Saved'))}</button>
+    </span>`;
+  return `
+    <div class="recipient-control" data-recipient-control-root="${escapeHtml(opts.key)}">
+      ${pills}
+      ${recipientPasteInputWrap(opts.inputHtml, disabled)}
+      ${mode === 'saved' ? recipientSavedMenuHtml(opts.key) : ''}
+    </div>`;
+}
+
+// The Saved-mode dropdown: every saved recipient as name + 4char…4char, opening leftward and
+// wider than the input (CSS). Empty state links to the Address Book tab.
+function recipientSavedMenuHtml(key: string): string {
+  const recipients = state.recipientRules.recipients;
+  if (recipients.length === 0) {
+    return `
+      <div class="recipient-saved-menu recipient-saved-empty" data-recipient-saved-menu="${escapeHtml(key)}">
+        <p>${escapeHtml(t('No saved recipients yet.'))}</p>
+        <button type="button" class="recipient-saved-open-book" data-tab="addressBook">${escapeHtml(t('Open Address Book'))}</button>
+      </div>`;
+  }
+  const rows = recipients.map((recipient) => {
+    const blocked = recipientOptionDisabled(recipient);
+    const title = blocked ? recipientPolicyBlockReason(recipient.address) ?? recipient.address : recipient.address;
+    return `
+      <button type="button" class="recipient-saved-row" data-recipient-pick="${escapeHtml(recipient.id)}" data-recipient-control="${escapeHtml(key)}"${blocked ? ' disabled' : ''} title="${escapeHtml(title)}">
+        <strong>${escapeHtml(recipient.name)}</strong>
+        <span class="recipient-saved-addr">${escapeHtml(shortFirstRunWallet(recipient.address))}</span>
+      </button>`;
+  }).join('');
+  return `
+    <div class="recipient-saved-menu" data-recipient-saved-menu="${escapeHtml(key)}" role="listbox" aria-label="${escapeHtml(t('Saved recipients'))}">
+      ${rows}
+    </div>`;
 }
 
 function recipientPolicyHint(status: RecipientPolicyStatus): string {
@@ -31665,7 +31804,7 @@ function applyPairedRelayPresence(online: boolean): void {
       pushToast(
         'error',
         tf('{name} disconnected', { name: planConnectorDisplayName() }),
-        t('Computer bridge went offline — reopen the connector page on your computer to keep planning.'),
+        t('Computer bridge went offline. Reopen the connector page on your computer to keep planning.'),
         {
           key: 'plan-connector-disconnect',
           actionLabel: t('Open connector page'),
@@ -31741,7 +31880,7 @@ function pairedBridgeStatusChip(): string {
     relayCheckingSince = null;
     stopRelayCheckingWatch();
   }
-  return `<span class="bridge-online-chip warn" style="color:#ffb27a">● ${escapeHtml(t('computer offline — open the connector page'))}</span>`;
+  return `<span class="bridge-online-chip warn" style="color:#ffb27a">● ${escapeHtml(t('computer offline - open the connector page'))}</span>`;
 }
 
 function deviceAgentConnectionCard(status: DeviceAgentStatus | null): string {
@@ -31924,7 +32063,7 @@ function localBridgeConnectorSection(status: BridgeAiStatus | null): string {
   return `
     ${engineToggle}
     <div class="bridge-connector-section">
-      <p class="bridge-connector-note">${escapeHtml(t('Use a subscription you already pay for. The bridge runs your local CLI on this machine — your key never leaves it. Codex/Gemini use your plan; Claude uses metered Agent-SDK credits.'))}</p>
+      <p class="bridge-connector-note">${escapeHtml(t('Use a subscription you already pay for. The bridge runs your local CLI on this machine. Your key never leaves it. Codex/Gemini use your plan; Claude uses metered Agent-SDK credits.'))}</p>
       <div class="bridge-connector-choices">${choices}</div>
       <div class="bridge-connector-status-row">${statusBadge}${connectButton}</div>
     </div>`;
@@ -32533,8 +32672,8 @@ function agentReviewUnavailableReason(record?: GeneratedPlanRecord): string {
   if (state.aiSettings.mode === 'device-agent') {
     if (pairedBridgeActive()) {
       return refreshRelayPresence()
-        ? 'Plan Connector review is ready — runs on your computer’s plan.'
-        : 'Plan Connector review is ready once your computer is online — open the connector page on your computer.';
+        ? 'Plan Connector review is ready. Runs on your computer’s plan.'
+        : 'Plan Connector review is ready once your computer is online. Open the connector page on your computer.';
     }
     return deviceAgentConfiguredForCurrentRequests()
       ? 'Device Agent review is ready; the native runtime starts from the stored key when needed.'
@@ -32566,7 +32705,7 @@ function aiGenerateDisabledReason(): string {
   if (state.aiSettings.mode === 'device-agent') {
     if (pairedBridgeActive()) {
       return refreshRelayPresence()
-        ? t('Plan Connector is ready — AI runs on your computer’s plan.')
+        ? t('Plan Connector is ready. AI runs on your computer’s plan.')
         : t('Open the connector page on your computer (and keep it awake) to use Plan Connector.');
     }
     const status = state.deviceAgentStatus;
@@ -34366,7 +34505,7 @@ function recurringMobileModeControls(): string {
         ${recurringActionTabs()}
         ${recurringActionIsConnector() ? recurringConnectorPicker() : ''}
         ${recurringActionIsConnector() && connector ? recurringConnectorActionPicker(state.recurringDraft, connector) : ''}
-        ${connectGateFor(recurringActionIsConnector() ? state.recurringActionCategory : '')}
+        ${connectGateFor(recurringActionIsConnector() ? state.recurringActionCategory : '', 'recurring')}
       </div>
     `;
   }
@@ -34393,7 +34532,7 @@ function recurringViewTabs(activeCount: number): string {
       ${creating ? recurringActionTabs() : ''}
       ${creating && recurringActionIsConnector() ? recurringConnectorPicker() : ''}
       ${creating && recurringActionIsConnector() && connector ? recurringConnectorActionPicker(state.recurringDraft, connector) : ''}
-      ${creating ? connectGateFor(recurringActionIsConnector() ? state.recurringActionCategory : '') : ''}
+      ${creating ? connectGateFor(recurringActionIsConnector() ? state.recurringActionCategory : '', 'recurring') : ''}
     </div>
   `;
 }
@@ -34813,8 +34952,8 @@ function cloudEvidenceStatusLabel(status: string): string {
       return t('Cloud evidence archive synced for the signed-in wallet.');
     case 'Cloud evidence archive ready (no receipts yet).':
       return t('Cloud evidence archive ready (no receipts yet).');
-    case 'Cloud receipt id missing — refresh archive then retry delete.':
-      return t('Cloud receipt id missing — refresh archive then retry delete.');
+    case 'Cloud receipt id missing. Refresh archive then retry delete.':
+      return t('Cloud receipt id missing. Refresh archive then retry delete.');
     case 'Private local mode: receipts stay off Agentic Cloud.':
       return t('Private local mode: receipts stay off Agentic Cloud.');
   }
@@ -36221,6 +36360,18 @@ function bind(): void {
     });
   });
 
+  // "Enable {connector} to continue" gate (New Request + Repeat): open the inline connect surface
+  // for the top connector — keyless Enable OR BYO-key form — instead of a credential-less toggle.
+  for (const gate of document.querySelectorAll<HTMLButtonElement>('[data-connector-connect-gate]')) {
+    bindOnce(gate, 'click', () => {
+      const id = gate.dataset.connectGateId;
+      if (!id) return;
+      const category = (gate.dataset.connectGateCategory || '') as ActionCategory | '';
+      const surface = gate.dataset.connectGateSurface === 'recurring' ? 'recurring' : 'create';
+      openConnectorConnect(id, category || null, surface);
+    });
+  }
+
   bindOnce(document.querySelector<HTMLSelectElement>('[data-connector-create-action]'), 'input', (event) => {
     selectConnectorActionForCreate((event.currentTarget as HTMLSelectElement).value);
   });
@@ -36813,8 +36964,23 @@ function bind(): void {
     });
   }
 
+  // Tapping a DISABLED connector in the Repeat picker opens the inline connect surface (sheet on
+  // mobile / popover on web) — same flow as New Request — instead of silently deselecting. Returns
+  // true when it took over, so the caller bails before readRecurringDraft commits the disabled id.
+  // chooseOption dispatches BOTH input + change; the dedupe guard keeps the second dispatch a no-op.
+  const maybeOpenRecurringConnectorConnect = (control: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement): boolean => {
+    if (control.dataset.recurringField !== 'connectorId') return false;
+    const value = (control as HTMLSelectElement).value;
+    const connector = value ? getAdapterMeta(value as ConnectedDappId) : undefined;
+    if (!connector || connectorCreateStatus(connector, connectorDraftEnvironment()).kind !== 'disabled') return false;
+    if (!(state.connectorConnect && state.connectorConnect.connectorId === value)) {
+      openConnectorConnect(value, state.recurringActionCategory || null, 'recurring');
+    }
+    return true;
+  };
   for (const recurringInput of document.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('[data-recurring-field]')) {
     bindOnce(recurringInput, 'input', () => {
+      if (maybeOpenRecurringConnectorConnect(recurringInput)) return;
       const field = recurringInput.dataset.recurringField;
       syncRecurringTokenFieldFromControl(recurringInput);
       state.recurringDraft = readRecurringDraft();
@@ -36824,6 +36990,7 @@ function bind(): void {
       syncRecurringPreview();
     });
     bindOnce(recurringInput, 'change', () => {
+      if (maybeOpenRecurringConnectorConnect(recurringInput)) return;
       const field = recurringInput.dataset.recurringField;
       syncRecurringTokenFieldFromControl(recurringInput);
       state.recurringDraft = readRecurringDraft();
@@ -36898,9 +37065,36 @@ function bind(): void {
     bindOnce(field, 'change', () => updateRecipientDraftField(field));
   }
 
-  for (const select of document.querySelectorAll<HTMLSelectElement>('[data-recipient-select]')) {
-    bindOnce(select, 'input', () => applyRecipientSelection(select));
-    bindOnce(select, 'change', () => applyRecipientSelection(select));
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recipient-paste]')) {
+    // Block focus moving to the button on mobile so the paste lands cleanly in the input.
+    bindOnce(button, 'pointerdown', (event) => { event.preventDefault(); event.stopPropagation(); });
+    bindOnce(button, 'touchstart', (event) => { event.stopPropagation(); }, { passive: true });
+    bindOnce(button, 'click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void runPasteRecipient(button);
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recipient-mode]')) {
+    bindOnce(button, 'click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const key = button.dataset.recipientControl;
+      if (!key) return;
+      state.recipientPickerMode[key] = button.dataset.recipientMode === 'saved' ? 'saved' : 'address';
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recipient-pick]')) {
+    bindOnce(button, 'click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const id = button.dataset.recipientPick;
+      const key = button.dataset.recipientControl;
+      if (id && key) applyRecipientPick(id, key);
+    });
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recipient-action]')) {
@@ -38986,15 +39180,22 @@ function connectProtocolConnectorThenSelect(connector: ProtocolConnector): void 
   openConnectorConnect(connector.id, state.createActionCategory || null);
 }
 
-function openConnectorConnect(connectorId: string, category: ActionCategory | null): void {
-  state.connectorConnect = { connectorId, category };
+function openConnectorConnect(connectorId: string, category: ActionCategory | null, surface: 'create' | 'recurring' = 'create'): void {
+  state.connectorConnect = { connectorId, category, surface };
   render();
 }
 
 function closeConnectorConnect(opts: { revert: boolean }): void {
+  const surface = state.connectorConnect?.surface ?? 'create';
   state.connectorConnect = null;
-  if (opts.revert) clearConnectorCreateSelection();
-  else render();
+  // Only the New Request (create) draft needs the template-draft rollback; the recurring draft was
+  // never mutated (the picker handler bails before readRecurringDraft), so a plain render() rebuilds
+  // the Repeat picker from its prior good connectorId.
+  if (opts.revert && surface === 'create') {
+    clearConnectorCreateSelection();
+    return;
+  }
+  render();
 }
 
 function connectorConnectIsByo(id: string): boolean {
@@ -39009,12 +39210,23 @@ function connectorConnectEnable(connectorId: string): void {
 }
 
 // After a connector is connected, route into its form for the active action and clear the surface.
-function connectorConnectFinish(connectorId: string, category: ActionCategory | null): void {
+function connectorConnectFinish(connectorId: string, category: ActionCategory | null, surface: 'create' | 'recurring' = 'create'): void {
   state.connectorConnect = null;
   const connector = getAdapterMeta(connectorId as ConnectedDappId);
   const form = connector
     ? ((category ? firstFormForCategory(connector, category) : undefined) ?? connectorActionFormsForConnector(connector)[0])
     : undefined;
+  // Repeat tab: seed the recurring draft (the connector is now enabled → selectable) instead of the
+  // New Request template draft. normalizeRecurringConnectorDraft keeps the category-correct form.
+  if (surface === 'recurring') {
+    state.recurringDraft = normalizeRecurringConnectorDraft({
+      ...state.recurringDraft,
+      connectorId,
+      connectorOperationId: form?.id ?? state.recurringDraft.connectorOperationId,
+    });
+    render();
+    return;
+  }
   if (!form) {
     render();
     return;
@@ -39046,13 +39258,13 @@ function connectorConnectSurfaceHtml(): string {
         <button type="button" class="primary" data-connector-connect-save>${escapeHtml(t('Connect'))}</button>
       </div>`
     : `
-      <p class="connector-connect-intro">${escapeHtml(tf('Enable {name} for this action? It needs no key — Agentic connects to it directly.', { name: connector.name }))}</p>
+      <p class="connector-connect-intro">${escapeHtml(tf('Enable {name} for this action? It needs no key. Agentic connects to it directly.', { name: connector.name }))}</p>
       <div class="connector-connect-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
         <button type="button" class="chat-builder-clear" data-connector-connect-cancel>${escapeHtml(t('Cancel'))}</button>
         <button type="button" class="primary" data-connector-connect-enable>${escapeHtml(t('Enable'))}</button>
       </div>`;
   const panel = `
-    <div class="chat-action-popover connector-connect-popover" role="dialog" aria-modal="true" style="max-width:440px;width:100%;${sheet ? 'border-bottom-left-radius:0;border-bottom-right-radius:0;' : ''}">
+    <div class="chat-action-popover connector-connect-popover" role="dialog" aria-modal="true" style="${sheet ? 'max-width:none;width:100%;border-bottom-left-radius:0;border-bottom-right-radius:0;' : 'max-width:440px;width:100%;'}">
       <div class="chat-popover-head">
         <span class="chat-builder-eyebrow">${escapeHtml(tf('Connect {name}', { name: connector.name }))}</span>
         <button type="button" class="chat-builder-clear" data-connector-connect-cancel aria-label="${escapeHtml(t('Close'))}" title="${escapeHtml(t('Close'))}">&times;</button>
@@ -39084,7 +39296,7 @@ function bindConnectorConnectSurface(): void {
   document.querySelector<HTMLButtonElement>('[data-connector-connect-enable]')?.addEventListener('click', () => {
     connectorConnectEnable(session.connectorId);
     pushToast('success', tf('{name} connected', { name: connectorName }), t('Enabled for this action.'));
-    connectorConnectFinish(session.connectorId, session.category);
+    connectorConnectFinish(session.connectorId, session.category, session.surface);
   });
   document.querySelector<HTMLButtonElement>('[data-connector-connect-save]')?.addEventListener('click', () => {
     void (async () => {
@@ -39099,7 +39311,7 @@ function bindConnectorConnectSurface(): void {
         await saveConnectorSecret(session.connectorId as ByoKeyConnectorId, { apiKey, ...(baseUrl ? { baseUrl } : {}) });
         connectorConnectEnable(session.connectorId);
         pushToast('success', tf('{name} connected', { name: connectorName }), t('Key saved and enabled for this action.'));
-        connectorConnectFinish(session.connectorId, session.category);
+        connectorConnectFinish(session.connectorId, session.category, session.surface);
       } catch (err) {
         pushToast('error', t('Could not connect'), err instanceof Error ? err.message : String(err));
         render();
@@ -40346,7 +40558,7 @@ function startAiDraftOperation(templateTitle: string, prompt: string, toastId: n
 }
 
 const AI_DRAFT_PLACEHOLDER_LABEL = 'Planning…';
-const AI_DRAFT_FAILED_LABEL = 'AI plan failed — try again';
+const AI_DRAFT_FAILED_LABEL = 'AI plan failed - try again';
 
 function placeholderAgentPlanFromTemplate(
   template: AgentPlanTemplate,
@@ -40842,7 +41054,7 @@ async function runDenyGeneratedPlanWithAgentReason(planId: string): Promise<void
   }).catch(() => undefined);
   const savedMessage = proofSignature
     ? `${planSummary} archived. Signed denial proof saved in Done.`
-    : `${planSummary} archived. Proof saved in Done (unsigned — wallet was unavailable).`;
+    : `${planSummary} archived. Proof saved in Done (unsigned - wallet was unavailable).`;
   if (proofToastId !== undefined) {
     completeProofSigningToast(proofToastId, 'success', t('Agent denial saved'), savedMessage);
   } else {
@@ -42470,12 +42682,12 @@ function posAmount(value: unknown, maxDp = 6): string {
   return n.toLocaleString('en-US', opts);
 }
 function posMint(mint?: string): string {
-  return mint ? `${mint.slice(0, 4)}…${mint.slice(-4)}` : '—';
+  return mint ? `${mint.slice(0, 4)}…${mint.slice(-4)}` : '-';
 }
 // Resolve a token symbol from the in-memory known-token map (SOL/USDC/USDT/JUP/BONK/WIF/PYUSD/mSOL/JitoSOL),
 // falling back to a truncated mint — same behavior as wallet-balance rows. No fetch.
 function posSymbol(mint?: string): string {
-  if (!mint) return '—';
+  if (!mint) return '-';
   return KNOWN_BROWSER_TOKENS_BY_MINT.get(mint)?.symbol ?? posMint(mint);
 }
 async function posPrices(mints: Array<string | undefined>): Promise<Map<string, WalletBalancePriceInfo>> {
@@ -42512,10 +42724,11 @@ function parseLimitRows(res: Record<string, unknown> | null | undefined, prices:
     ];
     // Filled/cancelled/expired orders leave funds in the Jupiter vault — surface the reclaim path.
     if (o.withdrawable === true) limitExtras.push({ kind: 'jupiter_trigger_withdraw_order_funds', label: t('Withdraw funds'), orderId });
+    const { headline, rest } = extractHeadline(details, 'Trigger price');
     return {
       section: 'orders', id: orderId, connectorId: 'jupiter', kind: 'limit',
       title: `${posSymbol(posStr(o.inputMint))} → ${posSymbol(posStr(o.outputMint))}`,
-      status: posStr(o.state), details, distancePct,
+      status: posStr(o.state), headline, details: rest, distancePct,
       cancel: o.cancellable ? { kind: 'jupiter_trigger_cancel_order', orderId } : undefined,
       extras: limitExtras,
     };
@@ -42539,11 +42752,16 @@ function parseDcaRows(res: Record<string, unknown> | null | undefined, prices: M
     if (Number.isFinite(perCycle) && typeof inPrice === 'number' && executed > 0) {
       details.push({ label: 'Spent', value: posUsd(perCycle * executed * inPrice) });
     }
+    if (total > 0) details.push({ label: 'Remaining', value: tf('{n} cycles', { n: String(Math.max(0, total - executed)) }) });
+    if (Number.isFinite(perCycle) && total > 0 && typeof inPrice === 'number') {
+      details.push({ label: 'Total budget', value: posUsd(perCycle * total * inPrice) });
+    }
     if (posStr(o.nextExecutionAt)) details.push({ label: 'Next fill', value: formatDateTime(posStr(o.nextExecutionAt)!) });
+    const { headline, rest } = extractHeadline(details, 'Per cycle');
     return {
       section: 'orders', id: orderId, connectorId: 'jupiter', kind: 'dca',
       title: `${posSymbol(inMint)} → ${posSymbol(posStr(o.outputMint))}`,
-      status: posStr(o.status), details,
+      status: posStr(o.status), headline, details: rest,
       progress: total ? { current: executed, total } : undefined,
       cancel: { kind: 'jupiter_recurring_cancel_order', orderId },
     };
@@ -42563,9 +42781,10 @@ function parseLendRows(res: Record<string, unknown> | null | undefined, prices: 
     if (Number.isFinite(supplied) && typeof price === 'number') details.push({ label: 'Value', value: posUsd(supplied * price) });
     if (typeof p.apy === 'number') details.push({ label: 'APY', value: `${(p.apy as number).toFixed(2)}%`, tone: p.apy >= 0 ? 'good' : 'warn' });
     const assetMint = posStr(p.assetMint) ?? '';
+    const { headline, rest } = extractHeadline(details, 'Value');
     return {
       section: 'lending', id: posStr(p.shareMint) ?? posStr(p.assetMint) ?? sym, connectorId: 'jupiter', kind: 'lend',
-      title: `${sym} supplied`, status: 'earning', details,
+      title: `${sym} supplied`, status: 'earning', headline, details: rest,
       cancel: { kind: 'jupiter_lend_earn_withdraw', orderId: assetMint },
       // Withdraw is partial (by amount); Redeem-all is the clean full-exit by shares.
       extras: assetMint ? [{ kind: 'jupiter_lend_earn_redeem', label: t('Redeem all'), orderId: assetMint }] : undefined,
@@ -42590,7 +42809,11 @@ function parseBorrowRows(res: Record<string, unknown> | null | undefined): Posit
     if (posStr(p.debtValueUsd)) details.push({ label: 'Debt', value: posUsd(posNum(p.debtValueUsd, 0)) });
     else if (posStr(p.debtAmount)) details.push({ label: 'Debt', value: posAmount(p.debtAmount) });
     if (posStr(p.collateralValueUsd)) details.push({ label: 'Collateral', value: posUsd(posNum(p.collateralValueUsd, 0)) });
-    if (health != null && Number.isFinite(health)) details.push({ label: 'Health', value: health.toFixed(2), tone });
+    // LTV is the at-a-glance risk number, computed from the debt/collateral USD already in hand.
+    if (Number.isFinite(debtUsd) && debtUsd > 0 && Number.isFinite(colUsd) && colUsd > 0) {
+      details.push({ label: 'LTV', value: `${((debtUsd / colUsd) * 100).toFixed(1)}%`, tone });
+    }
+    if (health != null && Number.isFinite(health)) details.push({ label: 'Health factor', value: health.toFixed(2), tone });
 
     // Borrow manage needs the NUMERIC positionId + vaultId (the picker is valued by positionId &
     // dependsOn vaultId; the prepare action requires both). positionAddress is display-only.
@@ -42606,6 +42829,7 @@ function parseBorrowRows(res: Record<string, unknown> | null | undefined): Posit
     actions.push({ kind: 'jupiter_lend_borrow_deposit_collateral', label: t('Add collateral') });
     if (hasCollateral) actions.push({ kind: 'jupiter_lend_borrow_borrow', label: t('Borrow more') });
     const primary = actions[0];
+    const { headline, rest } = extractHeadline(details, 'Debt');
     return {
       section: 'borrowing',
       id: posStr(p.positionAddress) ?? String(p.positionId ?? ''),
@@ -42613,7 +42837,8 @@ function parseBorrowRows(res: Record<string, unknown> | null | undefined): Posit
       kind: 'borrow',
       title: t('Borrow position'),
       status,
-      details,
+      headline,
+      details: rest,
       ...(hasIds && primary
         ? { cancel: { kind: primary.kind, orderId: manageId, fields: manageFields, label: primary.label } }
         : {}),
@@ -42636,19 +42861,20 @@ function parseStakeRows(connectorId: string, res: Record<string, unknown> | null
     if (posStr(r.estimatedSolValue)) details.push({ label: 'Est. SOL', value: posAmount(r.estimatedSolValue) });
     // Prefill the unstake form's required amount with the full mSOL balance the card already knows.
     const msolBal = posStr(r.msolBalance);
-    rows.push({ section: 'staking', id: `${connectorId}-msol`, connectorId, kind: 'stake', title: t('Marinade staked'), details, cancel: { kind: 'marinade_liquid_unstake', orderId: '', ...(msolBal ? { fields: { msolAmount: msolBal } } : {}) } });
+    const { headline, rest } = extractHeadline(details, 'mSOL');
+    rows.push({ section: 'staking', id: `${connectorId}-msol`, connectorId, kind: 'stake', title: t('Marinade staked'), headline, details: rest, cancel: { kind: 'marinade_liquid_unstake', orderId: '', ...(msolBal ? { fields: { msolAmount: msolBal } } : {}) } });
   }
   const jitoSol = r.jitoSol as Record<string, unknown> | undefined;
   if (jitoSol && posStr(jitoSol.amount)) {
     const jitoBal = posStr(jitoSol.amount)!;
-    rows.push({ section: 'staking', id: `${connectorId}-jitosol`, connectorId, kind: 'stake', title: 'JitoSOL', details: [{ label: 'Balance', value: posAmount(jitoBal) }], cancel: { kind: 'jito_unstake_jitosol', orderId: '', fields: { jitoSolAmount: jitoBal } } });
+    rows.push({ section: 'staking', id: `${connectorId}-jitosol`, connectorId, kind: 'stake', title: 'JitoSOL', headline: { label: 'Balance', value: posAmount(jitoBal) }, details: [], cancel: { kind: 'jito_unstake_jitosol', orderId: '', fields: { jitoSolAmount: jitoBal } } });
   }
   for (const lst of posArray(r.rows)) {
     // SanctumWalletPosition exposes the human balance as `amountUi` (not `amount`).
     const lstAmount = posStr(lst.amountUi);
     if (!lstAmount) continue;
     const sym = posStr(lst.symbol) ?? posMint(posStr(lst.mint));
-    rows.push({ section: 'staking', id: `${connectorId}-${posStr(lst.mint) ?? sym}`, connectorId, kind: 'stake', title: sym, details: [{ label: 'Balance', value: `${posAmount(lstAmount)} ${sym}` }], cancel: { kind: 'sanctum_unstake_lst_to_sol', orderId: posStr(lst.mint) ?? '' } });
+    rows.push({ section: 'staking', id: `${connectorId}-${posStr(lst.mint) ?? sym}`, connectorId, kind: 'stake', title: sym, headline: { label: 'Balance', value: `${posAmount(lstAmount)} ${sym}` }, details: [], cancel: { kind: 'sanctum_unstake_lst_to_sol', orderId: posStr(lst.mint) ?? '' } });
   }
   return rows;
 }
@@ -42699,13 +42925,15 @@ function parseLpRows(connectorId: string, res: Record<string, unknown> | null | 
     const lpExtras: Array<{ kind: string; label: string; orderId: string }> = [];
     if (collectKind && removeId) lpExtras.push({ kind: collectKind, label: t('Collect fees'), orderId: removeId });
     if (rewardsKind && removeId) lpExtras.push({ kind: rewardsKind, label: t('Claim rewards'), orderId: removeId });
+    const { headline, rest } = extractHeadline(details, 'Value');
     return {
       section: 'liquidity' as PositionSectionId,
       id: posStr(p.positionAddress) ?? posStr(p.positionMint) ?? `${connectorId}-${i}`,
       connectorId,
       kind: 'lp' as ActionCategory,
       title: `${positionConnectorName(connectorId)} ${t('Liquidity')}`,
-      details,
+      headline,
+      details: rest,
       ...(removeKind && removeId ? { cancel: { kind: removeKind as PreparedActionKind, orderId: removeId } } : {}),
       ...(lpExtras.length ? { extras: lpExtras } : {}),
     };
@@ -42814,6 +43042,10 @@ function positionDetailLabel(key: string): string {
     case 'Debt': return t('Debt');
     case 'Collateral': return t('Collateral');
     case 'Health': return t('Health');
+    case 'Health factor': return t('Health factor');
+    case 'LTV': return t('LTV');
+    case 'Remaining': return t('Remaining');
+    case 'Total budget': return t('Total budget');
     case 'mSOL': return t('mSOL');
     case 'Est. SOL': return t('Est. SOL');
     case 'Balance': return t('Balance');
@@ -42846,6 +43078,26 @@ function formatPositionStatus(status: string | undefined): string {
   }
 }
 
+type PositionTone = 'good' | 'warn' | 'bad' | 'neutral';
+
+// Map a position status to a card tone for the status pill + (risk-only) left rail.
+function positionStatusTone(status: string | undefined): PositionTone {
+  switch ((status ?? '').toLowerCase()) {
+    case 'safe': case 'earning': case 'filled': case 'completed': return 'good';
+    case 'at_risk': case 'pending': case 'expired': return 'warn';
+    case 'liquidatable': case 'liquidated': case 'failed': case 'cancelled': return 'bad';
+    default: return 'neutral'; // open, active, unknown, …
+  }
+}
+
+// Pull one labelled detail out of the list to feature as the card headline (so it isn't shown
+// twice). Returns the remaining details. No-op when the label isn't present.
+function extractHeadline(details: PositionDetail[], label: string): { headline?: PositionDetail; rest: PositionDetail[] } {
+  const idx = details.findIndex((d) => d.label === label);
+  if (idx === -1) return { rest: details };
+  return { headline: details[idx], rest: details.filter((_, i) => i !== idx) };
+}
+
 // Branded protocol display name for the connector that owns a position.
 function positionConnectorName(connectorId: string): string {
   return getAdapterMeta(connectorId as ConnectedDappId)?.name ?? connectorId.charAt(0).toUpperCase() + connectorId.slice(1);
@@ -42854,9 +43106,12 @@ function positionConnectorName(connectorId: string): string {
 // Single source of truth for the .positions-card chrome — BOTH positionLiveCard (live) and positionCard
 // (seeded fallback) compose this so their structure/CSS can't drift. Each supplies its own head/summary/
 // body/actions HTML.
-function positionCardShell(opts: { id: string; head: string; summary: string; body?: string; actions: string; focused?: boolean }): string {
+function positionCardShell(opts: { id: string; head: string; summary: string; body?: string; actions: string; focused?: boolean; tone?: PositionTone }): string {
+  // A left tone rail is only drawn for risk states (warn/bad) so it draws the eye to positions that
+  // need attention (borrow at-risk, LP out-of-range) without striping every card.
+  const toneClass = opts.tone === 'warn' || opts.tone === 'bad' ? ` positions-card-tone-${opts.tone}` : '';
   return `
-    <div class="positions-card${opts.focused ? ' positions-card-focused' : ''}" data-position-id="${escapeHtml(opts.id)}">
+    <div class="positions-card${opts.focused ? ' positions-card-focused' : ''}${toneClass}" data-position-id="${escapeHtml(opts.id)}">
       <div class="positions-card-head">${opts.head}</div>
       <div class="positions-card-summary">${opts.summary}</div>
       ${opts.body ?? ''}
@@ -42887,7 +43142,7 @@ function positionLiveCard(row: PositionLiveRow): string {
     row.cancel?.label ??
     (row.kind === 'lend' ? t('Withdraw') : row.kind === 'borrow' ? t('Repay') : row.kind === 'stake' ? t('Unstake') : row.kind === 'lp' ? t('Remove') : t('Cancel'));
   const cancelBtn = row.cancel
-    ? `<button class="utility" data-position-cancel="${escapeHtml(row.id)}" data-position-cancel-kind="${escapeHtml(row.cancel.kind)}" data-position-cancel-order-id="${escapeHtml(row.cancel.orderId)}"${fieldsAttr(row.cancel.fields)} data-position-capture="1">${escapeHtml(cancelLabel)}</button>`
+    ? `<button class="utility positions-primary" data-position-cancel="${escapeHtml(row.id)}" data-position-cancel-kind="${escapeHtml(row.cancel.kind)}" data-position-cancel-order-id="${escapeHtml(row.cancel.orderId)}"${fieldsAttr(row.cancel.fields)} data-position-capture="1">${escapeHtml(cancelLabel)}</button>`
     : '';
   const extrasBtns = (row.extras ?? [])
     .map(
@@ -42896,14 +43151,20 @@ function positionLiveCard(row: PositionLiveRow): string {
     )
     .join('');
   const statusLabel = formatPositionStatus(row.status);
+  const tone = positionStatusTone(row.status);
+  // The hero stat: large label-over-value block under the title (the number the user came to see).
+  const headline = row.headline
+    ? `<div class="positions-headline${row.headline.tone ? ' tone-' + row.headline.tone : ''}"><span class="positions-headline-label">${escapeHtml(positionDetailLabel(row.headline.label))}</span><span class="positions-headline-value">${escapeHtml(row.headline.value)}</span></div>`
+    : '';
   return positionCardShell({
     id: row.id,
+    tone,
     head: `
         <span class="positions-badge">${escapeHtml(positionCategoryLabel(row.kind))}</span>
         ${chip}
-        ${statusLabel ? `<span class="positions-status" title="${escapeHtml(statusLabel)}">${escapeHtml(statusLabel)}</span>` : ''}`,
-    summary: `${escapeHtml(row.title)} ${distance}`,
-    body: `${detailRows ? `<div class="positions-details">${detailRows}</div>` : ''}
+        ${statusLabel ? `<span class="positions-status tone-${tone}">${escapeHtml(statusLabel)}</span>` : ''}`,
+    summary: `<span class="positions-title">${escapeHtml(row.title)}</span>${distance}`,
+    body: `${headline}${detailRows ? `<div class="positions-details">${detailRows}</div>` : ''}
       ${progress}`,
     actions: `${cancelBtn}${extrasBtns}`,
   });
@@ -47538,7 +47799,7 @@ async function runEnablePairedBridge(connector?: string): Promise<void> {
       setAiPlannerConfirmation('failed', status.message || 'Paired, but the AI runtime did not start.');
       pushToast(
         'error',
-        t('Paired — runtime not started'),
+        t('Paired - runtime not started'),
         status.message || t('Could not start the paired AI runtime. Make sure the computer connector page is open and signed in.'),
       );
     }
@@ -54982,7 +55243,7 @@ async function runDeleteLabArtifact(artifactId: string): Promise<void> {
       pushToast(
         'error',
         t('Cloud delete skipped'),
-        t('Cloud receipt id was missing locally — refresh the archive to retry.'),
+        t('Cloud receipt id was missing locally. Refresh the archive to retry.'),
       );
     }
   });
@@ -55309,7 +55570,7 @@ async function deleteCloudEvidenceArtifact(artifact: LabArtifact): Promise<Delet
     return { kind: 'skipped' };
   }
   if (!artifact.cloudReceiptId) {
-    state.cloudEvidenceStatus = 'Cloud receipt id missing — refresh archive then retry delete.';
+    state.cloudEvidenceStatus = 'Cloud receipt id missing. Refresh archive then retry delete.';
     return { kind: 'missing-id' };
   }
   try {
@@ -57783,9 +58044,34 @@ function assertValidTemplatePlanInput(
       errors[fieldDef.id] = tf('{label} is required.', { label: t(fieldDef.label) });
     }
     if (isRecipientFieldId(fieldDef.id)) {
-      const policyError = recipientPolicyBlockReason(parameters[fieldDef.id] ?? '');
-      if (policyError) errors[fieldDef.id] = policyError;
+      const recipient = (parameters[fieldDef.id] ?? '').trim();
+      if (recipient && !isValidWalletAddress(recipient)) {
+        // Catch a malformed address at create-time (clear message) instead of a cryptic
+        // PublicKey error at sign time.
+        errors[fieldDef.id] = 'The recipient must be a valid base58 wallet address.';
+      } else {
+        const policyError = recipientPolicyBlockReason(recipient);
+        if (policyError) errors[fieldDef.id] = policyError;
+      }
     }
+    if (isSlippageBpsField(fieldDef.id)) {
+      const slippageError = slippageBpsError(parameters[fieldDef.id]);
+      if (slippageError) errors[fieldDef.id] = slippageError;
+    }
+  }
+  // One-time swap: input and output token must differ (recurring + chat already block this).
+  if (template.actionType === 'swap') {
+    const inToken = (parameters.inputToken || parameters.inputMint || '').trim();
+    const outToken = (parameters.outputToken || parameters.outputMint || '').trim();
+    if (inToken && outToken && inToken.toUpperCase() === outToken.toUpperCase()) {
+      if (!errors.outputToken) errors.outputToken = 'Choose a different output token.';
+    }
+  }
+  // Insufficient-balance: fail at create when the spend amount clearly exceeds the owned balance
+  // (skips silently when balances aren't loaded or the token isn't in the snapshot).
+  const balanceCheck = templateSpendBalanceError(template, parameters);
+  if (balanceCheck && !errors[balanceCheck.field]) {
+    errors[balanceCheck.field] = balanceCheck.message;
   }
   if (templateRequiresUserNotes(template) && !userNotes.trim()) {
     errors.__notes = 'Describe the custom request before creating this plan.';
@@ -57798,6 +58084,48 @@ function assertValidTemplatePlanInput(
     const firstError = Object.values(errors)[0];
     throw new Error(firstError ? t(firstError) : t('Complete required fields before creating this plan.'));
   }
+}
+
+// Compare a UI amount against the owned balance of the spend token. Returns an inline error only
+// when balances are loaded AND the token is in the snapshot AND the amount clearly exceeds it (a
+// small SOL buffer is reserved for fees). Skips otherwise so a stale/empty snapshot never
+// false-blocks a valid plan. Shared by New Request, Repeat, and Chat.
+function insufficientBalanceError(tokenRef: string, amountStr: string): string {
+  const amount = Number((amountStr ?? '').trim());
+  if (!Number.isFinite(amount) || amount <= 0) return '';
+  const ref = (tokenRef ?? '').trim();
+  if (!ref) return '';
+  const assets = chatSnapshotAssets();
+  if (assets.length === 0) return '';
+  const asset = looksLikeMintAddress(ref)
+    ? assets.find((a) => a.mint === ref)
+    : assets.find((a) => a.symbol?.toUpperCase() === ref.toUpperCase());
+  if (!asset) return '';
+  const isSol = asset.symbol?.toUpperCase() === 'SOL';
+  const available = isSol ? asset.amount - 0.01 : asset.amount; // reserve ~0.01 SOL for fees/rent
+  if (amount > available) return 'Amount exceeds your balance.';
+  return '';
+}
+
+// Resolve the spend token + amount for swap/transfer templates and return a balance error (or null).
+function templateSpendBalanceError(
+  template: AgentPlanTemplate,
+  parameters: Record<string, string>,
+): { field: string; message: string } | null {
+  let token = '';
+  if (template.actionType === 'swap') token = parameters.inputToken || parameters.inputMint || '';
+  else if (template.actionType === 'transfer_sol') token = 'SOL';
+  else if (template.actionType === 'transfer_spl') token = parameters.token || '';
+  else return null;
+  if (!token) return null;
+  const amount = (parameters.amount || parameters.inputAmount || parameters.amountSol || '').trim();
+  if (!amount) return null;
+  const message = insufficientBalanceError(token, amount);
+  if (!message) return null;
+  const field = parameters.amount !== undefined ? 'amount'
+    : parameters.inputAmount !== undefined ? 'inputAmount'
+      : 'amountSol';
+  return { field, message };
 }
 
 function templateRequiresUserNotes(template: AgentPlanTemplate): boolean {
@@ -58791,7 +59119,7 @@ async function bridgeRequest<T = unknown>(path: string, init?: RequestInit): Pro
       (state.tauriNativeEnvironment.isTauriNative && Boolean(state.tauriBridgeStatus?.bridgeReachable));
     if (bridgeRecentlyReachable) {
       throw new BridgeRequestError(
-        'The local bridge accepted the request but it did not complete in time. A subscription-connector review can take a while — check the Logs panel for the connector error, then retry.',
+        'The local bridge accepted the request but it did not complete in time. A subscription-connector review can take a while. Check the Logs panel for the connector error, then retry.',
         0,
       );
     }
@@ -58888,7 +59216,7 @@ function bridgeOfflineMessage(): string {
     // The desktop app owns and auto-starts its own bridge — never tell the user to run the CLI
     // (that starts a *second* bridge on a different port). Keep the recognized prefix so
     // isBridgeOfflineMessage() still classifies this as offline (toast + poll teardown).
-    return `Local approval bridge is not running at ${compactEndpoint(state.bridgeUrl)}. The desktop app manages this bridge — click Start bridge (or Retry bridge check), then Check local bridge. You do not need to run the CLI.`;
+    return `Local approval bridge is not running at ${compactEndpoint(state.bridgeUrl)}. The desktop app manages this bridge. Click Start bridge (or Retry bridge check), then Check local bridge. You do not need to run the CLI.`;
   }
   if (launchParams.cliSurface === 'desktop') {
     return `Local wallet service is not running at ${compactEndpoint(state.bridgeUrl)}. Return to the desktop app, restart the local runtime, and try again.`;
@@ -59090,7 +59418,7 @@ async function bridgeOfflineDiagnosticMessage(): Promise<{ message: string; comm
   if (state.tauriNativeEnvironment.isTauriNative) {
     // Desktop owns its bridge; the wallet-host probe + "run the CLI" guidance below is for web/CLI.
     return {
-      message: `Local approval bridge is not running at ${bridgeEndpoint}. The desktop app manages this bridge — click Start bridge (or Retry bridge check), then Check local bridge. You do not need to run the CLI.`,
+      message: `Local approval bridge is not running at ${bridgeEndpoint}. The desktop app manages this bridge. Click Start bridge (or Retry bridge check), then Check local bridge. You do not need to run the CLI.`,
       command: '',
     };
   }
@@ -60006,7 +60334,8 @@ const POSITIONS_SECTIONS: ReadonlyArray<{ id: PositionSectionId; title: string; 
   { id: 'borrowing', title: 'Borrowing', blurb: 'Outstanding debt and collateral.', categories: ['borrow'] },
   { id: 'staking', title: 'Staking', blurb: 'Staked SOL and liquid-staking tokens.', categories: ['stake'] },
   { id: 'liquidity', title: 'Liquidity', blurb: 'Provided liquidity positions and fees.', categories: ['lp'] },
-  { id: 'perps', title: 'Perps', blurb: 'Open perpetual positions.', categories: ['perps'] },
+  // Perps intentionally omitted until the perps position read is implemented — keeping the
+  // 'perps' PositionSectionId + the perps guards below makes re-enabling a one-line change.
 ];
 
 function positionCategoryLabel(category: ActionCategory): string {
@@ -60025,7 +60354,7 @@ function positionCard(p: PositionRecord): string {
     head: `
         <span class="positions-badge">${escapeHtml(positionCategoryLabel(p.category))}</span>
         <span class="positions-opened">${escapeHtml(tf('Opened {when}', { when: formatDateTime(p.openedAt) }))}</span>`,
-    summary: `${escapeHtml(p.summary || positionCategoryLabel(p.category))}`,
+    summary: `<span class="positions-title">${escapeHtml(p.summary || positionCategoryLabel(p.category))}</span>`,
     actions: `
         ${explorer}
         <button class="utility" data-position-manage="${escapeHtml(p.id)}">${escapeHtml(t('New action'))}</button>
@@ -60136,7 +60465,7 @@ function positionsPanel(): string {
   let toolbar = '';
   let body: string;
   if (section.id === 'perps') {
-    body = `<p class="positions-empty">${escapeHtml(t('Perps positions are not available yet — Jupiter\'s perps API is still in progress.'))}</p>`;
+    body = `<p class="positions-empty">${escapeHtml(t('Perps positions are not available yet. Jupiter\'s perps API is still in progress.'))}</p>`;
   } else if (!live) {
     body = seededCards.length ? seededCards.map(positionCard).join('') : positionsEmpty();
   } else if (entry?.loading && !entry.rows.length) {
@@ -60144,7 +60473,7 @@ function positionsPanel(): string {
   } else if (entry && !entry.error) {
     toolbar = positionsRefreshButton(section.id, entry);
     const partialNote = entry.partial
-      ? `<p class="positions-note">${escapeHtml(t('Some sources couldn’t be reached — tap refresh to retry.'))}</p>`
+      ? `<p class="positions-note">${escapeHtml(t('Some sources couldn’t be reached. Tap refresh to retry.'))}</p>`
       : '';
     if (entry.rows.length) {
       body = partialNote + entry.rows.map(positionLiveCard).join('');
@@ -60153,14 +60482,14 @@ function positionsPanel(): string {
       // seeded bridge-records as "Pending confirmation" instead of a misleading "nothing open".
       const pending = seededCards.filter(positionIsRecentlyOpened);
       body = pending.length
-        ? `<p class="positions-note">${escapeHtml(t('Pending confirmation — your new position is being confirmed on-chain and will appear here shortly.'))}</p>` +
+        ? `<p class="positions-note">${escapeHtml(t('Pending confirmation. Your new position is being confirmed on-chain and will appear here shortly.'))}</p>` +
           pending.map(positionCard).join('')
         : partialNote + positionsEmpty();
     }
   } else {
     const hint = entry?.error === 'signed-out'
       ? t('Sign in to Agentic Cloud or connect a local bridge to see live position details.')
-      : t('Could not refresh live data — showing what you opened. Tap refresh to retry.');
+      : t('Could not refresh live data. Showing what you opened. Tap refresh to retry.');
     // When signed out, Refresh alone just re-fails — surface a working Sign-in button (reuses the global
     // [data-cloud-action="sign-in"] → runCloudSignIn handler).
     const signInRow = entry?.error === 'signed-out'
@@ -60175,7 +60504,7 @@ function positionsPanel(): string {
   return `
     <section class="approval-object signature-stage stage-anchor positions-stage ${mobile ? 'mobile-positions-stage' : ''} ${open.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
-        ${sectionTitleLine(t('Positions'), t('Monitor and manage everything you have open — orders, lending, borrowing, staking, liquidity, and perps. A manage action returns to Sign Approval to sign.'))}
+        ${sectionTitleLine(t('Positions'), t('Monitor and manage what you have open: orders, lending, borrowing, staking, liquidity, perps. Manage actions return to Sign Approval.'))}
         <div class="generated-plans-toolbar signature-toolbar">
           <span class="signature-state">${escapeHtml(tf('{n} open in {section}', { n: positionsSectionCount(section, open), section: positionsSectionTitle(section.id) }))}</span>
         </div>
@@ -62586,7 +62915,7 @@ function approvalEffectCopy(action: PreparedAction): string {
     return t('Your wallet signs the transaction. The receipt appears in the Done tab.');
   }
   if (isConnectorApprovalKind(action)) {
-    return t('Connector execution is not yet wired into this browser. Approving here would only sign a decision proof — no transaction would be submitted. Use Private Local Mode (or sign into Agentic Cloud) to actually run this connector.');
+    return t('Connector execution is not yet wired into this browser. Approving here would only sign a decision proof - no transaction would be submitted. Use Private Local Mode (or sign into Agentic Cloud) to actually run this connector.');
   }
   if (isBrowserWorkflowId(action.id)) {
     return t('Your wallet signs a browser-local decision proof. The receipt stays on this device; no transaction is submitted by this proof.');
@@ -62713,10 +63042,10 @@ function completedPlanSubmissionPill(plan: CompletedPlanRecord): string {
   };
   const outcome = classifyConnectorReceipt(receipt);
   if (outcome === 'unsubmitted_connector') {
-    return `<span class="status-pill warn" title="${escapeHtml(t('This receipt signed a decision proof but no on-chain transaction was submitted. The connector execution path was not yet wired when this approval ran.'))}">${escapeHtml(t('decision proof — no transaction'))}</span>`;
+    return `<span class="status-pill warn" title="${escapeHtml(t('This receipt signed a decision proof but no on-chain transaction was submitted. The connector execution path was not yet wired when this approval ran.'))}">${escapeHtml(t('decision proof - no transaction'))}</span>`;
   }
   if (outcome === 'decision_proof_only' && isConnectorApprovalKind({ kind: plan.actionKind })) {
-    return `<span class="status-pill warn" title="${escapeHtml(t('Audit-only receipt: a decision proof signature, not a submitted transaction.'))}">${escapeHtml(t('decision proof — no transaction'))}</span>`;
+    return `<span class="status-pill warn" title="${escapeHtml(t('Audit-only receipt: a decision proof signature, not a submitted transaction.'))}">${escapeHtml(t('decision proof - no transaction'))}</span>`;
   }
   return '';
 }
@@ -62795,7 +63124,7 @@ function recurringComposer(): string {
   const actionHelper = !state.address
     ? t('Connect a wallet before creating a repeat payment.')
     : browserWorkflow
-      ? t('Saved on this device — sign in to Cloud or connect Plan Connector to run it on schedule.')
+      ? t('Saved on this device. Sign in to Cloud or connect Plan Connector to run it on schedule.')
       : isSwap
         ? t('Future swaps will appear in Sign Approval.')
         : t('Future payments will appear in Sign Approval.');
@@ -63330,8 +63659,8 @@ function recurringTokenSelectField(field: RecurringTokenField, label: string, va
 function recurringSlippageInput(value: string): string {
   const error = fieldError('recurringSlippageBps');
   const label = isMobileAppViewport() ? t('Slippage') : t('Max slippage');
-  // Auto | Custom pill (mirrors the swap form). Auto = empty → the recurring backend applies its safe
-  // default cap (unattended swaps); Custom = an editable %/bps value.
+  // Auto | Custom pill (mirrors the swap form). Auto = empty → the recurring swap omits slippageBps so
+  // each cycle uses Jupiter's dynamic slippage (matching one-time swaps); Custom = an editable %/bps value.
   const custom = Boolean(value && value.trim());
   const modePill = `
     <span class="token-choice-mode slippage-choice-mode" role="group" aria-label="${escapeHtml(t('Slippage mode'))}">
@@ -63430,8 +63759,10 @@ function recurringRecipientInput(value: string): string {
   return `
     <label class="field compact recipient-field ${state.recurringErrors.recurringRecipient ? 'field-error' : ''}">
       <span>${escapeHtml(t('Recipient *'))}</span>
-      ${recipientSelectForField('recurring', 'recipient', value, state.busy)}
-      <input
+      ${recipientControlHtml({
+        key: 'recurring:recipient',
+        disabled: state.busy,
+        inputHtml: `<input
         id="recurringRecipient"
         data-recurring-field="recipient"
         value="${escapeHtml(value)}"
@@ -63439,7 +63770,8 @@ function recurringRecipientInput(value: string): string {
         autocomplete="off"
         spellcheck="false"
         ${state.busy ? 'disabled' : ''}
-      />
+      />`,
+      })}
       ${recipientPolicyHint(policy)}
       ${fieldError('recurringRecipient')}
     </label>
@@ -64229,7 +64561,7 @@ function recurringScheduleFields(draft: RecurringDraft): string {
     // Day 29-31 is clamped to the last day in shorter months (cadence.clampedMonthlyDate),
     // so "31st" runs Feb 28/29. Surface that so the cadence isn't a silent surprise.
     const shortMonthNote = Number.isInteger(monthDay) && monthDay >= 29
-      ? `<p class="accent-note recurring-field-hint">${escapeHtml(t('Months shorter than this run on their last day — e.g. day 31 runs on Feb 28.'))}</p>`
+      ? `<p class="accent-note recurring-field-hint">${escapeHtml(t('Months shorter than this run on their last day, e.g. day 31 runs on Feb 28.'))}</p>`
       : '';
     return `
       ${fieldInput('recurringDayOfMonth', t('Day of month'), draft.dayOfMonth, '1-31')}
@@ -64316,7 +64648,7 @@ function recurringAmountControlHtml(value: string, label: string): string {
       <button type="button" data-recurring-amount-unit="token" class="${mode === 'token' ? 'active' : ''}">${escapeHtml(t('Token'))}</button>
     </span>`;
   const balanceLine = asset
-    ? `<span class="amount-balance-line">${escapeHtml(tf('Balance {amount} · {usd}', { amount: `${formatChatCompactAmount(asset.amount)} ${asset.symbol}`, usd: formatChatCompactUsd(asset.valueUsd) || '—' }))}</span>`
+    ? `<span class="amount-balance-line">${escapeHtml(tf('Balance {amount} · {usd}', { amount: `${formatChatCompactAmount(asset.amount)} ${asset.symbol}`, usd: formatChatCompactUsd(asset.valueUsd) || '-' }))}</span>`
     : '';
   const pctBtn = (p: string): string => `<button type="button" class="chat-amount-pct" data-recurring-pct="${p}">${escapeHtml(`${p}%`)}</button>`;
   const pctRow = asset ? `
@@ -65533,7 +65865,7 @@ function normalizedRecipientParam(value: string): string {
     normalized === 'null' ||
     normalized === 'undefined' ||
     normalized === '-' ||
-    normalized === '—'
+    normalized === '-'
   ) {
     return '';
   }
@@ -66268,17 +66600,22 @@ function assertValidRecurringDraft(draft: RecurringDraft): void {
     ) {
       errors.recurringOutputToken = 'Choose a different output token.';
     }
-    const slippage = Number(draft.slippageBps);
-    if (!draft.slippageBps.trim()) {
-      errors.recurringSlippageBps = 'Max slippage is required.';
-    } else if (!Number.isFinite(slippage) || slippage < 0) {
-      errors.recurringSlippageBps = 'Use a valid max slippage.';
-    }
+    // Empty = Auto (valid) → recurring omits slippage so each cycle uses Jupiter dynamic slippage;
+    // a Custom value must be within bounds.
+    const slippageError = slippageBpsError(draft.slippageBps);
+    if (slippageError) errors.recurringSlippageBps = slippageError;
   } else {
     if (!draft.token.trim()) errors.recurringToken = 'Token is required.';
-    if (!draft.recipient.trim()) errors.recurringRecipient = 'Recipient is required.';
-    const recipientPolicyError = recipientPolicyBlockReason(draft.recipient);
-    if (recipientPolicyError) errors.recurringRecipient = recipientPolicyError;
+    const recipient = draft.recipient.trim();
+    if (!recipient) {
+      errors.recurringRecipient = 'Recipient is required.';
+    } else if (!isValidWalletAddress(recipient)) {
+      // Catch a malformed address at create-time instead of a cryptic PublicKey error at sign.
+      errors.recurringRecipient = 'The recipient must be a valid base58 wallet address.';
+    } else {
+      const recipientPolicyError = recipientPolicyBlockReason(recipient);
+      if (recipientPolicyError) errors.recurringRecipient = recipientPolicyError;
+    }
   }
   if (!draft.amount.trim()) {
     errors.recurringAmount = 'Amount is required.';
@@ -67280,6 +67617,37 @@ async function runPasteAiKey(targetScope?: string): Promise<void> {
   }
 }
 
+let recipientPasteInFlight = false;
+// One-tap paste for any recipient/send-address input. Reads the clipboard via the shared
+// cross-platform helper, fills the sibling input inside .ai-key-input-wrap, then dispatches an
+// 'input' event so each surface's existing live handler runs (chat/template/recurring/draft).
+async function runPasteRecipient(button: HTMLButtonElement): Promise<void> {
+  if (recipientPasteInFlight) return;
+  const input = button.closest<HTMLElement>('.ai-key-input-wrap')?.querySelector<HTMLInputElement>('input');
+  if (!input) return;
+  recipientPasteInFlight = true;
+  try {
+    const clipboard = await readClipboardText();
+    if (clipboard.kind === 'unavailable') {
+      if (!isMobileAppViewport()) input.focus();
+      pushToast('info', t('Paste unavailable'), t('Clipboard access is unavailable here. Type the address or use your keyboard paste.'));
+      return;
+    }
+    const trimmed = clipboard.text.trim();
+    if (!trimmed) {
+      pushToast('error', t('Clipboard empty'), t('Copy an address first, then tap Paste.'));
+      return;
+    }
+    input.value = trimmed;
+    // The 'input' event runs each surface's live handler, which persists the value into state
+    // (chat/template/recurring/draft) — no render() here so surfaces that keep their value only in
+    // the DOM (e.g. Pay Out) aren't wiped by a rebuild.
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  } finally {
+    recipientPasteInFlight = false;
+  }
+}
+
 function openAndroidMwaTest(): void {
   const bridge = agenticAndroidBridge();
   if (!bridge?.openMwaExample) {
@@ -67838,12 +68206,15 @@ function loadRecipientRules(): RecipientRulesState {
   }
 }
 
-function saveRecipientRules(): void {
+function saveRecipientRules(options: { sync?: boolean } = {}): void {
   try {
     state.recipientRules.recipients = mergeSavedRecipients(state.recipientRules.recipients);
     window.localStorage.setItem(RECIPIENT_RULES_STORAGE_KEY, JSON.stringify(state.recipientRules));
   } catch {
     // Best-effort browser persistence.
+  }
+  if (options.sync !== false) {
+    void syncCloudPreference('recipient-rules');
   }
 }
 
@@ -68332,6 +68703,8 @@ function cloudPreferencePayload(namespace: CloudPreferenceNamespace): unknown {
         autoBackgroundWatch: state.aiSettings.autoBackgroundWatch === true,
         ...(state.aiSettings.reasoningEffort ? { reasoningEffort: state.aiSettings.reasoningEffort } : {}),
       };
+    case 'recipient-rules':
+      return state.recipientRules;
   }
 }
 
@@ -68384,6 +68757,11 @@ function applyCloudPreference(record: CloudPreferenceRecord): boolean {
     }
     case 'ai-settings': {
       return applyCloudAiSettings(record.payload);
+    }
+    case 'recipient-rules': {
+      state.recipientRules = normalizeRecipientRules(record.payload);
+      saveRecipientRules({ sync: false });
+      return true;
     }
   }
 }
@@ -68485,6 +68863,8 @@ function cloudPreferenceLocalNonEmpty(namespace: CloudPreferenceNamespace): bool
       return state.customTokens.length > 0;
     case 'ai-settings':
       return true;
+    case 'recipient-rules':
+      return state.recipientRules.recipients.length > 0;
   }
 }
 

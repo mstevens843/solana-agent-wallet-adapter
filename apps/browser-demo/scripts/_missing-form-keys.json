@@ -1,4 +1,14 @@
 [
-  "Limit / TP-SL",
-  "Perps"
+  "Amount (USD)",
+  "Buy or sell YES/NO contracts on a prediction market.",
+  "Claim payout",
+  "Claim winnings from a settled prediction position ($1 per winning contract).",
+  "Market id",
+  "Prediction",
+  "Prediction action",
+  "Prediction beta acknowledged",
+  "Prediction markets",
+  "Sell all contracts in an existing prediction position.",
+  "Set up a recurring payment or DCA swap. Each run returns to Sign Approval.",
+  "Trade Jupiter Prediction markets (beta). Buy/sell YES/NO contracts, close, or claim. Markets come from external providers; US/SK access is restricted and writes require a non-US egress."
 ]

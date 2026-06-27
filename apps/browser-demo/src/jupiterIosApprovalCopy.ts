@@ -5,7 +5,7 @@ export const JUPITER_IOS_MANUAL_APPROVAL_ACTION_LABEL = 'Open Jupiter';
 // back (older iOS) or our return notification does (iOS 17+/18, where Apple
 // blocks silent app-to-app redirects). The signed result always arrives over
 // the WalletConnect relay regardless of app-switching.
-const JUPITER_IOS_AUTO_RETURN_PREFIX = "Approve in Jupiter — we'll bring you back here when it's done.";
+const JUPITER_IOS_AUTO_RETURN_PREFIX = "Approve in Jupiter. We'll bring you back here when it's done.";
 
 // When the user denied notifications: we can't guarantee a return on iOS 18, so
 // ask them to come back themselves (the manual "Open Jupiter" button still helps).

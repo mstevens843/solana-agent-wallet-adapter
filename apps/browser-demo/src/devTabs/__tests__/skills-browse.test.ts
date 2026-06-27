@@ -114,9 +114,9 @@ describe('pure helpers', () => {
   });
 
   it('formatSuccessRate handles undefined / NaN', () => {
-    expect(formatSuccessRate(undefined)).toBe('—');
-    expect(formatSuccessRate(null)).toBe('—');
-    expect(formatSuccessRate(Number.NaN)).toBe('—');
+    expect(formatSuccessRate(undefined)).toBe('-');
+    expect(formatSuccessRate(null)).toBe('-');
+    expect(formatSuccessRate(Number.NaN)).toBe('-');
   });
 
   it('formatSuccessRate rounds to integer percent', () => {
@@ -130,8 +130,8 @@ describe('pure helpers', () => {
   });
 
   it('formatInstalls pluralizes correctly', () => {
-    expect(formatInstalls(undefined)).toBe('—');
-    expect(formatInstalls(null)).toBe('—');
+    expect(formatInstalls(undefined)).toBe('-');
+    expect(formatInstalls(null)).toBe('-');
     expect(formatInstalls(0)).toBe('0 installs');
     expect(formatInstalls(1)).toBe('1 install');
     expect(formatInstalls(12)).toBe('12 installs');
@@ -382,8 +382,8 @@ describe('renderCard', () => {
       installStatus: 'none',
     };
     const html = renderCard(row, null);
-    // both Installs and Success cells render an em dash.
-    expect((html.match(/—/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    // both Installs and Success cells render a placeholder dash.
+    expect((html.match(/<dd>-<\/dd>/g) ?? []).length).toBeGreaterThanOrEqual(2);
   });
 
   it('shows monetization line when manifest has monetization', () => {

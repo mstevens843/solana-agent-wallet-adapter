@@ -256,7 +256,7 @@ export function normalizeAuthorEarningsResponse(input: unknown): AuthorEarningsR
 }
 
 export function formatInstalls(value: number | undefined | null): string {
-  if (value === undefined || value === null || !Number.isFinite(value)) return '—';
+  if (value === undefined || value === null || !Number.isFinite(value)) return '-';
   const rounded = Math.max(0, Math.round(value));
   return rounded === 1
     ? tf('{count} install', { count: rounded })
@@ -277,7 +277,7 @@ function isZeroDecimalString(value: string): boolean {
  * skills-publish.test fixtures that predate the token argument.
  */
 export function formatMonthlyAmount(value: string | undefined, token: string = 'USDC'): string {
-  if (!value || isZeroDecimalString(value)) return '—';
+  if (!value || isZeroDecimalString(value)) return '-';
   return `${value} ${token}/mo`;
 }
 
@@ -589,7 +589,7 @@ async function handleAction(action: string, dataset: DOMStringMap): Promise<void
         await navigator.clipboard.writeText(value);
         showToast(t('CLI snippet copied'));
       } catch {
-        showToast(t('Copy failed — clipboard permission denied'));
+        showToast(t('Copy failed - clipboard permission denied'));
       }
       return;
     }
