@@ -10071,6 +10071,7 @@ const WORKSPACE_MORPH_SKIP_SELECTOR = [
 ].join(',');
 
 let lastRenderedChatOutsideWorkspaceHtml = '';
+let lastRenderedPageShellModalSignature = '';
 
 // Markup the full render path appends AFTER #workspace: the toast stack (inside pageShell) and
 // the four wallet overlays (appended at appRoot). The Chat morph only patches #workspace, so
@@ -10080,6 +10081,22 @@ function chatOutsideWorkspaceHtml(): string {
     + walletConnectOverlayBlock()
     + ledgerOverlayBlock()
     + connectorConnectSurfaceHtml();
+}
+
+// The delete/confirm modals live in pageShell() OUTSIDE #workspace, so the Chat morph fast-path
+// (which only patches #workspace + the toast stack) never paints them. Each builder returns '' when
+// its modal is closed, so this signature flips the moment any modal opens or closes — letting
+// canMorphActiveTab() fall back to a full render so the modal is actually injected/removed. NOTE:
+// this string is compared only, never appended (the modals are already rendered inside pageShell).
+function pageShellModalSignature(): string {
+  return cloudWorkspaceDeleteModal()
+    + completedDeleteModal()
+    + generatedPlanDeleteModal()
+    + inboxDeleteModal()
+    + deleteAllInboxModal()
+    + deleteAllCheckModal()
+    + deleteAllRepeatsModal()
+    + deleteAllDoneModal();
 }
 
 // True when a render() can be served by the scoped Chat morph instead of a full rebuild:
@@ -10094,6 +10111,9 @@ function canMorphActiveTab(): boolean {
   // changed since the last paint — those take the full render path.
   if (!workspace || !workspace.querySelector('[data-layout="active-panel"]')) return false;
   if (chatOutsideWorkspaceHtml() !== lastRenderedChatOutsideWorkspaceHtml) return false;
+  // A pageShell modal (delete confirm, etc.) opening/closing must take the full render path so the
+  // modal — which lives outside #workspace — is actually painted/removed.
+  if (pageShellModalSignature() !== lastRenderedPageShellModalSignature) return false;
   return true;
 }
 
@@ -10222,6 +10242,7 @@ function renderWorkspace(): void {
   lastRenderedMobileRailSheet = state.activeMobileRailSheet;
   suppressMobileRailSheetEnterAnimation = false;
   lastRenderedChatOutsideWorkspaceHtml = chatOutsideWorkspaceHtml();
+  lastRenderedPageShellModalSignature = pageShellModalSignature();
 }
 function render(): void {
   if (!appRoot) return;
@@ -10327,6 +10348,7 @@ function render(): void {
   // Chat-tab morph fast-path (canMorphChat) can tell when one of them changed and must take
   // the full render path instead — the scoped workspace morph cannot repaint them.
   lastRenderedChatOutsideWorkspaceHtml = outsideWorkspaceHtml;
+  lastRenderedPageShellModalSignature = pageShellModalSignature();
   reconcileBodyScrollLockDatasetsAfterRender();
   flushPendingSpendNavigation();
   bind();
@@ -21633,8 +21655,13 @@ function chatToolDisplayName(tool: string): string {
 
 function chatInlineActionHtml(msg: ChatMessage, sessionId: string): string {
   if (msg.preparedActionId) {
+    // Deleted from a chat card: short-circuit before the receipt/proposal branches so we never
+    // re-offer "Prepare for approval" for a request the user explicitly deleted.
+    if (chatDeletedActionIds.has(msg.preparedActionId)) {
+      return `<div class="chat-card"><p class="ticket-meta-line">${escapeHtml(t('Deleted.'))}</p></div>`;
+    }
     const action = state.preparedActions.find((a) => a.id === msg.preparedActionId);
-    if (action) return `<div class="chat-card">${preparedActionCard(action)}</div>`;
+    if (action) return `<div class="chat-card">${chatActionCard(action)}</div>`;
     // Action no longer live (completed + pruned, or archived). If a receipt exists,
     // show a completed block instead of re-offering "Prepare for approval".
     const receipt = state.receipts.find((r) => r.actionId === msg.preparedActionId);
@@ -23084,7 +23111,7 @@ function chatComposerHtml(): string {
     const pendingCount = chatSessionPendingApprovals(pendingSession).length;
     const pendingMobile = pendingCount > 0 ? `
       <div class="chat-pending chat-pending--mobile${state.chatPendingOpen ? ' open' : ''}" data-chat-pending>
-        <button type="button" class="chat-pending-pill chat-pending-pill--sm" data-chat-pending-toggle aria-haspopup="listbox" aria-expanded="${state.chatPendingOpen ? 'true' : 'false'}"><span class="chat-pending-label">${escapeHtml(t('Pending Approvals'))}</span> <span class="chat-pending-count">${pendingCount}</span></button>
+        <button type="button" class="chat-pending-pill chat-pending-pill--sm" data-chat-pending-toggle aria-haspopup="listbox" aria-expanded="${state.chatPendingOpen ? 'true' : 'false'}"><span class="chat-pending-label">${escapeHtml(t('Pending'))}</span> <span class="chat-pending-count">${pendingCount}</span></button>
         ${state.chatPendingOpen ? chatPendingPanelHtml(pendingSession, 'mobile') : ''}
       </div>` : '';
     // Native chat has no on-page wallet rail, so a tiny pill on the right of this row surfaces
@@ -24762,6 +24789,7 @@ function teardownChatRuntimeForWalletBoundary(): void {
   chatConflictReconcilesInFlight.clear();
   chatActionResultPosted.clear();
   chatActionInterimPosted.clear();
+  chatDeletedActionIds.clear();
 }
 
 // --- Action-promotion bridge: chat proposal -> existing PreparedAction --------
@@ -24892,6 +24920,10 @@ const chatActionResultPosted = new Set<string>();
 // Actions whose interim "Submitted. Awaiting confirmation." message was posted,
 // so the pending ack fires at most once before the terminal message lands.
 const chatActionInterimPosted = new Set<string>();
+// Actions deleted from a chat card. The action+receipt are gone from state, so chatInlineActionHtml
+// would otherwise fall through to the proposal branch and wrongly re-offer "Prepare for approval";
+// this lets it render a tidy "Deleted." note instead.
+const chatDeletedActionIds = new Set<string>();
 
 type ChatActionParse =
   | { kind: 'none' } // not a wallet-action message -> fall through to the agent
@@ -25108,9 +25140,20 @@ function isChatOriginatedAction(action: { id: string; chatOriginated?: boolean }
   return action.chatOriginated === true || findChatMessageForAction(action.id) !== null;
 }
 
-// After a chat-originated action settles, post the success + "Receipt sent to
-// Done tab" messages (idempotent). The receipt itself already lands in Done via
-// completeBrowserExecutedAction's state.receipts write.
+// Where a just-settled chat action now lives, worded for the automated follow-up message. Keyed on
+// actionOpensPosition (NOT raw category) so a stateful close/manage action — which lands in Done,
+// not Monitor — is worded correctly. Open positions (lend/borrow/limit/dca/stake/lp/perps) point at
+// Monitor; everything terminal (swap/send/proof/nft/...) points at Done.
+function chatActionDestinationLine(action: PreparedAction): string {
+  const category = ACTION_TYPE_CATEGORY[action.kind];
+  if (actionOpensPosition(action.kind, category)) return t('It is now active. Track it in Monitor.');
+  return t('Receipt saved in Done.');
+}
+
+// After a chat-originated action settles, post the success + destination ("Receipt saved in Done." /
+// "It is now active. Track it in Monitor.") messages (idempotent). The receipt itself already lands
+// in Done via completeBrowserExecutedAction's state.receipts write; the position is seeded by
+// applyActionCompletionSideEffects.
 function postChatActionSuccessMessage(
   action: PreparedAction,
   execution: { txid?: string; txStatus?: PreparedActionTxStatus; explorerUrl?: string },
@@ -25140,7 +25183,7 @@ function postChatActionSuccessMessage(
       isProof ? t('Signed. Your proof is ready.') : t('Sent and confirmed on-chain.'),
       execution.txid && !isProof ? { txReceipt: { txid: execution.txid, cluster: action.cluster } } : {},
     );
-    appendAssistant(t('Receipt sent to Done tab.'));
+    appendAssistant(chatActionDestinationLine(action));
   }
   located.session.updatedAt = new Date().toISOString();
   chatForceScrollBottom = true;
@@ -25159,6 +25202,33 @@ function postChatActionFailureMessage(action: PreparedAction, message: string, t
     createdAt: new Date().toISOString(),
     status: 'error',
     ...(txid ? { txReceipt: { txid, cluster: action.cluster } } : {}),
+  });
+  located.session.updatedAt = new Date().toISOString();
+  chatForceScrollBottom = true;
+  saveChatHistoryState();
+  if (state.activeTab === 'chat') render();
+}
+
+// After a chat-originated request is denied / archived / deleted, post the tailored follow-up so the
+// user is told what happened + where it now lives WITHOUT being navigated off the Chat tab. Reuses
+// chatActionResultPosted for idempotency so a re-entrant op can't double-post.
+function postChatActionDecisionMessage(action: PreparedAction, op: 'reject' | 'archive' | 'delete'): void {
+  const located = findChatMessageForAction(action.id);
+  if (!located) return;
+  if (op === 'delete') chatDeletedActionIds.add(action.id);
+  if (chatActionResultPosted.has(action.id)) return;
+  chatActionResultPosted.add(action.id);
+  const content = op === 'reject'
+    ? t('Request denied. Receipt saved in Done.')
+    : op === 'archive'
+      ? t('Request archived. Receipt in Done.')
+      : t('Request deleted.');
+  appendChatMessage(located.session.id, {
+    id: newId('chat-msg'),
+    role: 'assistant',
+    content,
+    createdAt: new Date().toISOString(),
+    status: 'done',
   });
   located.session.updatedAt = new Date().toISOString();
   chatForceScrollBottom = true;
@@ -43214,26 +43284,40 @@ function openManageForm(kind: string, orderId: string, fields?: Record<string, s
   render();
 }
 
+// Apply the position-side-effects of a just-completed action WITHOUT navigating. A chat-originated
+// action calls this (not showCompletedHistoryForAction) so a lend/borrow/limit/dca STILL seeds its
+// Monitor position — and a manage/close action still closes it — while the user stays in the Chat
+// tab. Returns whether a position was opened, closed, or neither (so callers can word the message).
+function applyActionCompletionSideEffects(actionId?: string): 'opened' | 'closed' | 'none' {
+  const action = actionId ? state.preparedActions.find((a) => a.id === actionId) : undefined;
+  if (!action) return 'none';
+  const category = ACTION_TYPE_CATEGORY[action.kind];
+  if (actionOpensPosition(action.kind, category)) {
+    upsertPositionFromAction(action, category as ActionCategory);
+    void fetchPositionCategory(sectionForCategory(category as ActionCategory), true); // pull the freshly-opened position
+    return 'opened';
+  }
+  if (isStatefulActionCategory(category)) {
+    closePositionsForManageAction(action, category as ActionCategory);
+    // Invalidate live cache so the just-cancelled/closed order doesn't linger within the 30s freshness
+    // window when the user returns to Positions (forces a fresh read on next view).
+    delete state.positionsLive[sectionForCategory(category as ActionCategory)];
+    return 'closed';
+  }
+  return 'none';
+}
+
 function showCompletedHistoryForAction(actionId?: string): void {
   // Stateful actions take over the normal "→ Done" navigation: an OPEN routes to the Positions tab
   // (seed + highlight the card); a manage/close action closes its position then continues to Done.
+  const effect = applyActionCompletionSideEffects(actionId);
   const action = actionId ? state.preparedActions.find((a) => a.id === actionId) : undefined;
-  if (action) {
+  if (effect === 'opened' && action) {
     const category = ACTION_TYPE_CATEGORY[action.kind];
-    if (actionOpensPosition(action.kind, category)) {
-      upsertPositionFromAction(action, category as ActionCategory);
-      state.positionsCategory = sectionForCategory(category as ActionCategory);
-      state.activeTab = 'positions';
-      state.lastPositionFocusId = action.id;
-      void fetchPositionCategory(state.positionsCategory, true); // pull the freshly-opened position
-      return;
-    }
-    if (isStatefulActionCategory(category)) {
-      closePositionsForManageAction(action, category as ActionCategory);
-      // Invalidate live cache so the just-cancelled/closed order doesn't linger within the 30s freshness
-      // window when the user returns to Positions (forces a fresh read on next view).
-      delete state.positionsLive[sectionForCategory(category as ActionCategory)];
-    }
+    state.positionsCategory = sectionForCategory(category as ActionCategory);
+    state.activeTab = 'positions';
+    state.lastPositionFocusId = action.id;
+    return;
   }
   const records = completedPlanRecords();
   const focused = actionId
@@ -50947,7 +51031,9 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
           body: JSON.stringify({ actionId, reason: 'Rejected in browser wallet UI.' }),
         });
         await refreshInboxData();
-        showCompletedHistoryForAction(actionId);
+        // Chat-card ops stay in Chat (inline message); rail ops navigate to Done as before.
+        if (isChatOriginatedAction(action)) postChatActionDecisionMessage(action, 'reject');
+        else showCompletedHistoryForAction(actionId);
         pushToast('success', t('Request rejected'), t('Saved in Done.'));
         break;
       case 'archive':
@@ -50956,7 +51042,8 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
           body: JSON.stringify({ actionId }),
         });
         await refreshInboxData();
-        showCompletedHistoryForAction(actionId);
+        if (isChatOriginatedAction(action)) postChatActionDecisionMessage(action, 'archive');
+        else showCompletedHistoryForAction(actionId);
         pushToast('success', t('Request cancelled'), t('Saved in Done.'));
         break;
       case 'delete':
@@ -50964,6 +51051,7 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
           method: 'POST',
           body: JSON.stringify({ actionId }),
         });
+        if (isChatOriginatedAction(action)) postChatActionDecisionMessage(action, 'delete');
         pushToast('success', t('Deleted permanently'), actionId);
         break;
       default:
@@ -51022,7 +51110,11 @@ async function runCloudPreparedActionOp(action: PreparedAction, op: string): Pro
           }),
         });
         await refreshCloudWorkspaceData();
-        showCompletedHistoryForAction(action.id);
+        // Chat-card ops stay in Chat (inline message + side-effects); rail ops navigate to Done.
+        if (isChatOriginatedAction(action)) {
+          applyActionCompletionSideEffects(action.id);
+          postChatActionSuccessMessage(action, { txStatus: 'confirmed' });
+        } else showCompletedHistoryForAction(action.id);
         completeProofSigningToast(proofToastId, 'success', t('Approval recorded'), t('Cloud receipt saved in Done.'));
       } catch (err) {
         const message = redactSecrets(err instanceof Error ? err.message : String(err));
@@ -51049,7 +51141,8 @@ async function runCloudPreparedActionOp(action: PreparedAction, op: string): Pro
           }),
         });
         await refreshCloudWorkspaceData();
-        showCompletedHistoryForAction(action.id);
+        if (isChatOriginatedAction(action)) postChatActionDecisionMessage(action, 'reject');
+        else showCompletedHistoryForAction(action.id);
         completeProofSigningToast(proofToastId, 'success', t('Request denied'), t('Cloud denial receipt saved in Done.'));
       } catch (err) {
         const message = redactSecrets(err instanceof Error ? err.message : String(err));
@@ -51064,11 +51157,13 @@ async function runCloudPreparedActionOp(action: PreparedAction, op: string): Pro
         body: JSON.stringify({ note: 'Cancelled in Agentic Cloud workspace.' }),
       });
       await refreshCloudWorkspaceData();
-      showCompletedHistoryForAction(action.id);
+      if (isChatOriginatedAction(action)) postChatActionDecisionMessage(action, 'archive');
+      else showCompletedHistoryForAction(action.id);
       pushToast('success', t('Request cancelled'), t('Cloud cancellation receipt saved in Done.'));
       return;
     case 'delete':
       await deletePreparedActionWithoutReceipt(action);
+      if (isChatOriginatedAction(action)) postChatActionDecisionMessage(action, 'delete');
       pushToast('success', t('Request deleted'), t('Removed from cloud workspace.'));
       return;
     default:
@@ -51352,7 +51447,7 @@ async function executeCloudBrowserPreparedAction(action: PreparedAction): Promis
         txid: execution.txid,
       });
       await refreshCloudWorkspaceData();
-      state.activeTab = 'inbox';
+      if (!isChatOriginatedAction(action)) state.activeTab = 'inbox';
       replaceToast(toastId, 'pending', t('Transaction submitted'), short(execution.txid), {
         linkHref: execution.explorerUrl,
         linkLabel: t('Open Solscan'),
@@ -51372,7 +51467,8 @@ async function executeCloudBrowserPreparedAction(action: PreparedAction): Promis
       txid: execution.txid,
     });
     await refreshCloudWorkspaceData();
-    showCompletedHistoryForAction(action.id);
+    if (isChatOriginatedAction(action)) applyActionCompletionSideEffects(action.id);
+    else showCompletedHistoryForAction(action.id);
     replaceToast(toastId, 'success', t('Transaction confirmed'), tf('{tx} - Solscan link saved in Done.', { tx: short(execution.txid) }), {
       linkHref: execution.explorerUrl,
       linkLabel: t('Open Solscan'),
@@ -51447,7 +51543,8 @@ async function runCloudBrowserTransactionConfirm(action: PreparedAction): Promis
       syncPendingTransactionsFromLedger();
     }
     await refreshCloudWorkspaceData();
-    showCompletedHistoryForAction(action.id);
+    if (isChatOriginatedAction(action)) applyActionCompletionSideEffects(action.id);
+    else showCompletedHistoryForAction(action.id);
     replaceToast(toastId, 'success', t('Transaction confirmed'), tf('{tx} - Solscan link saved in Done.', { tx: short(txid) }), {
       linkHref: explorerUrl(txid, action.cluster),
       linkLabel: t('Open Solscan'),
@@ -51809,7 +51906,9 @@ async function runBrowserPreparedActionOp(actionId: string, op: string): Promise
       try {
         const proofSignature = await signBrowserWorkflowDecision(action, 'approved');
         completeBrowserPreparedAction(action, 'approved', proofSignature);
-        if (!isChatOriginatedAction(action)) showCompletedHistoryForAction(action.id);
+        // Chat-card ops stay in Chat but still seed/close any position; rail ops navigate to Done.
+        if (isChatOriginatedAction(action)) applyActionCompletionSideEffects(action.id);
+        else showCompletedHistoryForAction(action.id);
         completeProofSigningToast(proofToastId, 'success', t('Decision proof saved'), t('Wallet proof saved in Done. No transaction was submitted.'));
       } catch (err) {
         const message = redactSecrets(err instanceof Error ? err.message : String(err));
@@ -51826,7 +51925,8 @@ async function runBrowserPreparedActionOp(actionId: string, op: string): Promise
       try {
         const proofSignature = await signBrowserWorkflowDecision(action, 'rejected');
         completeBrowserPreparedAction(action, 'rejected', proofSignature);
-        showCompletedHistoryForAction(action.id);
+        if (isChatOriginatedAction(action)) postChatActionDecisionMessage(action, 'reject');
+        else showCompletedHistoryForAction(action.id);
         completeProofSigningToast(proofToastId, 'success', t('Request rejected'), t('Wallet rejection proof saved in Done.'));
       } catch (err) {
         const message = redactSecrets(err instanceof Error ? err.message : String(err));
@@ -51844,14 +51944,20 @@ async function runBrowserPreparedActionOp(actionId: string, op: string): Promise
       );
       state.materializedActions = state.preparedActions;
       saveBrowserWorkflowState();
-      showCompletedHistoryForAction(action.id);
+      if (isChatOriginatedAction(action)) postChatActionDecisionMessage(action, 'archive');
+      else showCompletedHistoryForAction(action.id);
       pushToast('success', t('Request cancelled'), t('Saved in Done.'));
       return;
     case 'delete':
-      state.preparedActions = state.preparedActions.filter((candidate) => candidate.id !== action.id);
-      state.materializedActions = state.preparedActions;
-      state.receipts = state.receipts.filter((receipt) => receipt.actionId !== action.id);
-      saveBrowserWorkflowState();
+      // Resolve chat-origin BEFORE removing the action (the message scan still matches by id).
+      {
+        const wasChatOriginated = isChatOriginatedAction(action);
+        state.preparedActions = state.preparedActions.filter((candidate) => candidate.id !== action.id);
+        state.materializedActions = state.preparedActions;
+        state.receipts = state.receipts.filter((receipt) => receipt.actionId !== action.id);
+        saveBrowserWorkflowState();
+        if (wasChatOriginated) postChatActionDecisionMessage(action, 'delete');
+      }
       pushToast('success', t('Deleted permanently'), action.id);
       return;
     default:
@@ -51931,7 +52037,8 @@ async function runBrowserTransactionConfirm(action: PreparedAction): Promise<voi
       status: status.txStatus,
       txid,
     });
-    showCompletedHistoryForAction(action.id);
+    if (isChatOriginatedAction(action)) applyActionCompletionSideEffects(action.id);
+    else showCompletedHistoryForAction(action.id);
     replaceToast(toastId, 'success', t('Transaction confirmed'), tf('{tx} - Solscan link saved in Done.', { tx: short(txid) }), {
       linkHref: explorerUrl(txid, action.cluster),
       linkLabel: t('Open Solscan'),
@@ -52111,7 +52218,8 @@ async function clearStaleBrowserPendingTransaction(action: PreparedAction): Prom
       txStatus: 'confirmed',
       explorerUrl: explorerUrl(txid, action.cluster),
     }, 'confirmed');
-    showCompletedHistoryForAction(action.id);
+    if (isChatOriginatedAction(action)) applyActionCompletionSideEffects(action.id);
+    else showCompletedHistoryForAction(action.id);
     replaceToast(toastId, 'success', t('Transaction confirmed'), tf('{tx} - Solscan link saved in Done.', { tx: short(txid) }), {
       linkHref: explorerUrl(txid, action.cluster),
       linkLabel: t('Open Solscan'),
@@ -52425,9 +52533,10 @@ async function executeBrowserPreparedAction(action: PreparedAction): Promise<voi
       status: execution.txStatus,
       txid: execution.txid,
     });
-    // Chat-signed actions stay in Chat (the receipt message links to Done); rail
-    // actions focus the Done receipt as before.
-    if (!isChatOriginatedAction(action)) showCompletedHistoryForAction(action.id);
+    // Chat-signed actions stay in Chat (the receipt message links to Done), but still seed/close
+    // their Monitor position; rail actions focus the Done receipt (and navigate) as before.
+    if (isChatOriginatedAction(action)) applyActionCompletionSideEffects(action.id);
+    else showCompletedHistoryForAction(action.id);
     replaceToast(
       toastId,
       execution.txStatus === 'confirmed' ? 'success' : 'pending',
@@ -52635,7 +52744,10 @@ async function reconcilePendingTransactions(opts: {
             txid: record.txid,
             trigger: opts.trigger,
           });
-          showCompletedHistoryForAction(action.id);
+          // A background reconcile must never yank a chat user to Done; stay in Chat (the success
+          // message already landed via completeBrowserExecutedAction) but still seed/close the position.
+          if (isChatOriginatedAction(action)) applyActionCompletionSideEffects(action.id);
+          else showCompletedHistoryForAction(action.id);
         }
         const recordToastId = record.toastId;
         removePendingTransaction(record.id);
@@ -61077,8 +61189,143 @@ function ap2DetailRow(label: string, value: string, title = value): string {
   return acpDetailRow(label, value, title);
 }
 
-function preparedActionCard(action: PreparedAction): string {
+// The primary Approve / Check-confirmation button, shared verbatim by the full approval card and the
+// compact chat card so the execute/confirm/disabled gating never diverges. Keeps the same
+// data-action-op + data-action-id so the global delegated binder wires it with no extra code.
+function preparedActionPrimaryButtonHtml(action: PreparedAction): string {
   const executable = ['ready', 'overdue', 'failed'].includes(action.status);
+  const decisionLabels = preparedActionDecisionLabels(action);
+  const executionBlockReason = cloudExecutionBlockReason(action)
+    ?? actionRecipientPolicyBlockReason(action)
+    ?? connectorExecutionBlockReason(action);
+  const confirmable = canConfirmCloudFinalization(action) || canConfirmCloudBrowserTransaction(action) || canConfirmBrowserTransaction(action);
+  const executeDisabled = state.busy || !executable || hasPendingExecutionLedgerEntry(action) || Boolean(executionBlockReason);
+  return confirmable
+    ? `<button data-action-op="confirm" data-action-id="${action.id}" class="primary" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Check confirmation'))}</button>`
+    : `<button data-action-op="execute" data-action-id="${action.id}" class="primary" ${executeDisabled ? 'disabled' : ''} ${executionBlockReason ? `title="${escapeHtml(executionBlockReason)}"` : ''}>${escapeHtml(decisionLabels.approve)}</button>`;
+}
+
+// Compact token logo chip: monogram base layer + lazy logo overlay. Reuses the wallet-balance
+// classes so the global capture-phase error handler (bindWalletBalanceLogoFallback) hides a
+// broken/blocked logo for free, falling back to the monogram beneath.
+function tokenLogoChipHtml(value: string): string {
+  const mint = marketMintForToken(value);
+  const logo = mint ? (tokenMarketMetadata.get(mint)?.logoURI || knownTokenLogo(mint)) : '';
+  const sym = tokenDisplayLabel(value);
+  const mono = (sym.replace(/[^A-Za-z0-9]/g, '').slice(0, 3) || '?').toUpperCase();
+  return `<span class="chat-action-logo" aria-hidden="true"><span class="chat-action-mono">${escapeHtml(mono)}</span>${
+    logo ? `<img class="wallet-balance-logo-img" src="${escapeHtml(logo)}" alt="" loading="lazy" referrerpolicy="no-referrer" />` : ''
+  }</span>`;
+}
+
+// The compact, one-line hero for the chat card: logos + amounts + USD highlighted per category.
+function chatActionHeroHtml(action: PreparedAction): string {
+  if (isSignProofAction(action)) {
+    return `<span class="chat-action-leg"><strong>${escapeHtml(t('Sign proof'))}</strong></span><span class="chat-action-sub">${escapeHtml(t('Message signature, no transaction'))}</span>`;
+  }
+  const subject = marketAmountSubjectForAction(action);
+  const usd = marketUsdLabel(subject);
+  const usdHtml = usd ? `<span class="chat-action-usd">${escapeHtml(`(${usd})`)}</span>` : '';
+
+  if (action.kind === 'swap') {
+    const inTok = stringParam(action, 'inputToken') || stringParam(action, 'token');
+    const outTok = stringParam(action, 'outputToken');
+    const inAmt = formatDisplayAmountLabel(swapAmountLabel(action));
+    const outSym = swapOutputTokenLabel(action);
+    return `
+      <span class="chat-action-leg">${tokenLogoChipHtml(inTok)}<strong>${escapeHtml(inAmt)}</strong>${usdHtml}</span>
+      <span class="chat-action-arrow" aria-hidden="true">&rarr;</span>
+      <span class="chat-action-leg">${tokenLogoChipHtml(outTok)}<strong>${escapeHtml(outSym)}</strong></span>`;
+  }
+
+  if (action.kind === 'transfer_sol' || action.kind === 'transfer_spl') {
+    const tok = action.kind === 'transfer_sol' ? 'SOL' : stringParam(action, 'token');
+    const recip = recipientParam(action);
+    return `
+      <span class="chat-action-leg">${tokenLogoChipHtml(tok)}<strong>${escapeHtml(formatDisplayAmountLabel(amountLabel(action)))}</strong>${usdHtml}</span>
+      ${recip ? `<span class="chat-action-arrow" aria-hidden="true">&rarr;</span><span class="chat-action-leg"><span class="chat-action-recipient">${escapeHtml(recipientDisplayLabel(recip))}</span></span>` : ''}`;
+  }
+
+  // lend / borrow / stake / limit / dca / lp / perps / nft / governance / bridge / oracle / ...
+  const tok = subject?.token || stringParam(action, 'token') || stringParam(action, 'inputToken');
+  const amt = formatDisplayAmountLabel(amountLabel(action));
+  const verb = preparedActionMetaLabel(action);
+  return `
+    ${tok
+      ? `<span class="chat-action-leg">${tokenLogoChipHtml(tok)}<strong>${escapeHtml(amt)}</strong>${usdHtml}</span>`
+      : `<span class="chat-action-leg"><strong>${escapeHtml(amt)}</strong></span>`}
+    <span class="chat-action-sub">${escapeHtml(verb)}</span>`;
+}
+
+// Solscan block once the chat action has a txid (compact).
+function chatActionTerminalHtml(action: PreparedAction): string {
+  return action.txid ? `<div class="chat-action-tx">${txBlock(action.txid, action.cluster)}</div>` : '';
+}
+
+// The "⋯" overflow popover. Reuses the SAME data-attributes as the full card so the global handlers
+// fire unchanged. Marked template-driven (see webViewControlFix) so it auto-closes on the next morph.
+function chatActionOverflowHtml(action: PreparedAction): string {
+  const labels = preparedActionDecisionLabels(action);
+  return `
+    <details class="chat-action-menu">
+      <summary aria-label="${escapeHtml(t('More actions'))}">&#8943;</summary>
+      <div class="chat-action-menu-body">
+        <button class="utility" data-action-op="archive" data-action-id="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''} title="${escapeHtml(t('Remove from Sign Approval without signing a denial proof.'))}">${escapeHtml(t('Archive'))}</button>
+        <button class="utility danger" data-action-op="reject" data-action-id="${escapeHtml(action.id)}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(labels.reject)}</button>
+        <button class="utility danger" data-inbox-delete="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Delete'))}</button>
+      </div>
+    </details>`;
+}
+
+// The "Details" expander reuses the full card's sub-renderers (each takes only `action`) so we never
+// duplicate the wallet/route/timeline/effect markup. Collapsed by default; its open state survives
+// morphs via restoreDisclosureOpenState (keyed on the article's data-action-id).
+function chatActionDetailsHtml(action: PreparedAction): string {
+  const browserWorkflow = isBrowserWorkflowId(action.id);
+  return `
+    <details class="chat-action-details">
+      <summary><span class="chat-action-details-show">${escapeHtml(t('Details'))}</span><span class="chat-action-details-hide">${escapeHtml(t('Hide details'))}</span></summary>
+      <div class="chat-action-details-body">
+        ${inboxApprovalSummaryGrid(action)}
+        ${actionTimelineHtml(action)}
+        ${inboxApprovalNote(action)}
+        ${preparedActionAgentReviewStrip(action)}
+        <div class="approval-effect" data-approval-effect="${escapeHtml(action.workflowSource ?? (browserWorkflow ? 'browser' : 'local-bridge'))}">
+          <strong>${escapeHtml(t('What this decision does'))}</strong>
+          <p>${escapeHtml(approvalEffectCopy(action))}</p>
+        </div>
+      </div>
+    </details>`;
+}
+
+// Compact chat-only action card. Uses a fresh `.chat-action-card` namespace (NOT inbox-approval-card)
+// so the heavy route-app inbox-card overrides cannot bleed in. The full preparedActionCard keeps
+// rendering verbatim in Sign Approval / Done.
+function chatActionCard(action: PreparedAction): string {
+  const connectorMeta = resolveConnectorMetaForAction(action.kind, action.params as Record<string, unknown>);
+  const cardClass = ['chat-action-card', action.status].filter(Boolean).join(' ');
+  return `
+    <article class="${escapeHtml(cardClass)}" data-action-id="${escapeHtml(action.id)}">
+      <div class="chat-action-head">
+        <span class="status-pill ${statusTone(action.status)}">${escapeHtml(t(action.status))}</span>
+        ${connectorChip(connectorMeta?.id, connectorMeta?.name)}
+        <strong class="chat-action-title">${escapeHtml(preparedActionCardTitle(action))}</strong>
+        ${inboxActionFailurePill(action)}
+        ${action.txStatus && action.txStatus !== 'failed' ? `<span class="status-pill ${txTone(action.txStatus)}">${escapeHtml(tf('tx {status}', { status: action.txStatus }))}</span>` : ''}
+      </div>
+      <div class="chat-action-hero">${chatActionHeroHtml(action)}</div>
+      ${chatActionTerminalHtml(action)}
+      ${approvalErrorBlock(action)}
+      <div class="chat-action-controls">
+        ${preparedActionPrimaryButtonHtml(action)}
+        ${chatActionOverflowHtml(action)}
+      </div>
+      ${chatActionDetailsHtml(action)}
+    </article>
+  `;
+}
+
+function preparedActionCard(action: PreparedAction): string {
   const browserWorkflow = isBrowserWorkflowId(action.id);
   const cloudWorkflow = action.workflowSource === 'cloud';
   const acpOutbound = isAcpOutboundAction(action);
@@ -61088,21 +61335,10 @@ function preparedActionCard(action: PreparedAction): string {
   const executionBlockReason = cloudExecutionBlockReason(action)
     ?? actionRecipientPolicyBlockReason(action)
     ?? connectorExecutionBlockReason(action);
-  const confirmable = canConfirmCloudFinalization(action) || canConfirmCloudBrowserTransaction(action) || canConfirmBrowserTransaction(action);
   const pendingLedgerExecution = hasPendingExecutionLedgerEntry(action);
   const clearablePending = !cloudWorkflow &&
     isExecutableBrowserAction(action) &&
     (pendingLedgerExecution || Boolean(action.txid && action.txStatus === 'pending'));
-  // Approve and send must NEVER be gated by AI Bridge, Agentic Cloud sign-in, or any
-  // other session. The wallet signs locally; the prepare endpoint just builds unsigned
-  // tx bytes. The connector dispatcher routes through bridge stateless → cloud stateless
-  // automatically, so any executable action with a signing-capable wallet is approvable
-  // here. We only block on real reasons: a busy worker, a non-ready status, an in-flight
-  // ledger entry, or a concrete executionBlockReason (recipient policy, wallet capability).
-  const executeDisabled = state.busy ||
-    !executable ||
-    pendingLedgerExecution ||
-    Boolean(executionBlockReason);
   const connectorMeta = resolveConnectorMetaForAction(action.kind, action.params as Record<string, unknown>);
   const cardClass = [
     'inbox-item',
@@ -61133,9 +61369,7 @@ function preparedActionCard(action: PreparedAction): string {
           <div class="inbox-approval-decision">
             ${inboxApprovalHero(action)}
             <div class="inbox-actions inbox-approval-actions">
-              ${confirmable
-                ? `<button data-action-op="confirm" data-action-id="${action.id}" class="primary" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Check confirmation'))}</button>`
-                : `<button data-action-op="execute" data-action-id="${action.id}" class="primary" ${executeDisabled ? 'disabled' : ''} ${executionBlockReason ? `title="${escapeHtml(executionBlockReason)}"` : ''}>${escapeHtml(decisionLabels.approve)}</button>`}
+              ${preparedActionPrimaryButtonHtml(action)}
             </div>
           </div>
         </div>
@@ -62374,7 +62608,7 @@ function updateTokenSearchDropdown(fieldId: string): void {
 
 function bindTokenSearchSelectButtons(root: ParentNode = document): void {
   for (const button of root.querySelectorAll<HTMLButtonElement>('[data-token-search-select]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const fieldId = button.dataset.tokenSearchSelect;
       const mint = button.dataset.tokenSearchMint;
       if (!fieldId || !mint) return;
@@ -62393,6 +62627,10 @@ function bindTokenSearchSelectButtons(root: ParentNode = document): void {
         tokenSearchStates.delete(fieldId);
         clearTokenSearchTimer(fieldId);
         if (chatField === 'fromToken' || chatField === 'toToken') {
+          // Mint mode only renders the search box; flip back to the List trigger so the
+          // collapsed field shows the token we just picked (mirrors the List-tab pick path).
+          chatTokenPickerModes[chatField] = 'list';
+          chatSheetTokenOpen = null;
           applyChatTokenPickFor(
             chatField,
             selection.mint ?? selection.value,

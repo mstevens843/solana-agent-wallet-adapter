@@ -35692,6 +35692,173 @@ button.danger:hover:not(:disabled) {
    the bubble so it can't overflow horizontally on narrow phones. */
 .chat-card { min-width: 0; max-width: 100%; }
 .chat-card > * { min-width: 0; max-width: 100%; }
+
+/* --- Compact chat-only wallet-action card (chatActionCard) ---------------------------
+   A condensed approval card rendered ONLY inside chat. Deliberately namespaced
+   (.chat-action-*, NOT .inbox-approval-card) so the heavy .route-app inbox-card overrides
+   never apply. The full preparedActionCard still renders in Sign Approval / Done. */
+.chat-action-card {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.022);
+}
+.chat-action-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.chat-action-title {
+  font-size: 0.92rem;
+  font-weight: 800;
+}
+.chat-action-hero {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  font-size: 0.96rem;
+}
+.chat-action-leg {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.chat-action-leg > strong {
+  font-weight: 800;
+  white-space: nowrap;
+}
+.chat-action-usd {
+  color: rgba(196, 205, 202, 0.76);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+.chat-action-arrow {
+  color: rgba(139, 205, 170, 0.9);
+  font-weight: 900;
+}
+.chat-action-sub {
+  color: rgba(196, 205, 202, 0.7);
+  font-size: 0.8rem;
+}
+.chat-action-recipient {
+  font-weight: 700;
+  word-break: break-all;
+}
+/* Token logo chip: monogram base + img overlay (reuses .wallet-balance-logo-img). */
+.chat-action-logo {
+  flex: 0 0 auto;
+  height: 20px;
+  position: relative;
+  width: 20px;
+}
+.chat-action-mono {
+  align-items: center;
+  background: var(--accent-soft);
+  border-radius: 50%;
+  color: var(--accent);
+  display: flex;
+  font-size: 0.48rem;
+  font-weight: 900;
+  inset: 0;
+  justify-content: center;
+  position: absolute;
+}
+.chat-action-tx {
+  min-width: 0;
+}
+.chat-action-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.chat-action-controls .primary {
+  flex: 1 1 auto;
+}
+/* "⋯" overflow popover (Archive / Deny / Delete) — closes on the next morph. */
+.chat-action-menu {
+  flex: 0 0 auto;
+  position: relative;
+}
+.chat-action-menu > summary {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.038);
+  border: 1px solid rgba(224, 230, 226, 0.14);
+  border-radius: var(--app-card-radius, 8px);
+  color: rgba(242, 245, 243, 0.92);
+  cursor: pointer;
+  display: flex;
+  font-size: 1.1rem;
+  font-weight: 900;
+  height: var(--app-control-h, 42px);
+  justify-content: center;
+  letter-spacing: 0.06em;
+  list-style: none;
+  width: 44px;
+}
+.chat-action-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.chat-action-menu-body {
+  background: rgba(8, 11, 10, 0.98);
+  border: 1px solid rgba(224, 230, 226, 0.14);
+  border-radius: var(--app-card-radius, 8px);
+  bottom: calc(100% + 6px);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.36);
+  display: grid;
+  gap: 7px;
+  min-width: min(220px, calc(100vw - 48px));
+  padding: 8px;
+  position: absolute;
+  right: 0;
+  z-index: 80;
+}
+.chat-action-menu-body button {
+  justify-content: center;
+  min-height: 40px;
+  width: 100%;
+}
+/* "Details" expander reuses the full card's sub-renderers, collapsed by default. */
+.chat-action-details > summary {
+  color: rgba(196, 205, 202, 0.82);
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 700;
+  list-style: none;
+}
+.chat-action-details > summary::-webkit-details-marker {
+  display: none;
+}
+.chat-action-details > summary::after {
+  content: " \25B8";
+}
+.chat-action-details[open] > summary::after {
+  content: " \25BE";
+}
+.chat-action-details .chat-action-details-hide {
+  display: none;
+}
+.chat-action-details[open] .chat-action-details-show {
+  display: none;
+}
+.chat-action-details[open] .chat-action-details-hide {
+  display: inline;
+}
+.chat-action-details-body {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+@media (max-width: 760px) {
+  .chat-action-hero {
+    font-size: 0.9rem;
+  }
+}
 .chat-msg.user {
   align-self: flex-end;
   background: var(--surface-strong);
@@ -36116,17 +36283,19 @@ button.danger:hover:not(:disabled) {
   white-space: nowrap;
   font-size: 0.74rem;
   font-weight: 700;
-  max-width: 45%;
 }
 .chat-balances-pill:hover { border-color: var(--accent); }
 .chat-balances-pill[aria-expanded="true"] { border-color: var(--accent); }
-.chat-balances-pill-logo { width: 15px; height: 15px; border-radius: 50%; display: block; flex: 0 0 auto; }
+.chat-balances-pill-logo { width: 15px; height: 15px; border-radius: 50%; display: block; flex: 0 0 auto; object-fit: contain; }
 .chat-balances-pill-val { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-balances-pill-caret { color: var(--dim); font-size: 0.8rem; line-height: 1; }
 
 /* When both pills share the row, shrink Pending slightly and let its label ellipsize so the
    count badge always stays visible (the wallet-value pill keeps its full width). */
 .chat-actions-row-end.has-balances .chat-pending { flex: 0 1 auto; min-width: 0; }
+/* Cap the wallet-value pill ONLY when it shares the row with Pending; a lone pill sizes to its
+   content so "$x.xx ⌄" is never ellipsized down to a bare logo+caret (the strangled "circle"). */
+.chat-actions-row-end.has-balances .chat-balances-pill { max-width: 45%; }
 .chat-actions-row-end.has-balances .chat-pending-pill--sm { font-size: 0.66rem; padding: 5px 8px; gap: 5px; min-width: 0; max-width: 100%; }
 .chat-actions-row-end.has-balances .chat-pending-label {
   overflow: hidden;

@@ -25,6 +25,8 @@ export const TEMPLATE_DRIVEN_DISCLOSURE_CLASSES = new Set<string>([
   'wallet-picker-details',
   'local-bridge-ai-setup-card',
   'workspace-more',
+  // Transient "⋯" overflow popover on the compact chat action card — must reset (close) on re-render.
+  'chat-action-menu',
 ]);
 
 // Class tokens that flip across renders — stripped so the derived id is stable.
