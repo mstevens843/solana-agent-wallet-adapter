@@ -781,6 +781,7 @@ import { setCloudWalletBridge } from './cloudWalletBridge.js';
 import { mobileWorkspaceMoreMenuItems, workspaceMoreMenuItems, type WorkspaceMoreMenuItem } from './workspaceMore.js';
 import { isChatTabHiddenForSurface, type AppSurfaceType } from './chatTabFlag.js';
 import { renderChatMarkdown } from './chatMarkdown.js';
+import { morphElement } from './domMorph.js';
 import { chatSignProofStatement, isChatSignProofAction } from './chatProof.js';
 import {
   chatSessionIsCloudStub,
@@ -1701,6 +1702,9 @@ const HOSTED_CUSTOM_PROVIDER_DISABLED_REASON =
 const MOBILE_HOSTED_CUSTOM_PROVIDER_DISABLED_REASON =
   'Hosted BYOK supports preset providers only in the mobile app and mobile web.';
 const DEFAULT_ANDROID_CLOUD_API_BASE_URL = 'https://agentic-signer.com';
+const AGENTIC_IOS_APP_STORE_URL = 'https://apps.apple.com/us/app/agentic-signer/id6774866574';
+const AGENTIC_GOOGLE_PLAY_URL = 'https://play.google.com/store/apps/details?id=com.agentic.wallet';
+const AGENTIC_SOLANA_DAPP_STORE_URL = 'solanadappstore://details?id=com.agentic.wallet';
 const NATIVE_LIVE_UPDATE_VISIBLE_INTERVAL_MS = 60_000;
 const NATIVE_LIVE_UPDATE_BUILD_COMMIT_STORAGE_KEY = 'agentic:lastSeenBuildCommit';
 const NATIVE_LIVE_UPDATE_RELOAD_COMMIT_STORAGE_KEY = 'agentic:lastReloadBuildCommit';
@@ -9998,6 +10002,163 @@ function reconcileBodyScrollLockDatasetsAfterRender(): void {
 
 // ─────────────────────────────────────────────────────────────────────────
 
+// ── Chat-tab in-place morph render ────────────────────────────────────────
+// The app normally paints by replacing appRoot.innerHTML, which destroys and recreates every
+// node — a visible blink on Android/iOS and a scrollTop reset that makes the transcript jump.
+// For the Chat tab we instead morph the new #workspace markup onto the live DOM (domMorph.ts)
+// so node identity — and with it focus, scroll, text selection and CSS animation state —
+// survives. Only the chat panel + the two bottom sheets are touched; the non-chat subtrees
+// (rail, tab bars, request-context) are left exactly as they were so their (non-idempotent)
+// listeners stay intact without a rebind.
+const CHAT_MORPH_SKIP_SELECTOR = [
+  '[data-morph-skip]',
+  '[data-layout="app-rail"]',
+  '[data-layout="app-tabs-row"]',
+  '[data-layout="app-intro"]',
+  '[data-layout="request-context"]',
+  '[data-layout="android-bottom-tab-dock"]',
+  '.context-panel',
+  '[data-plan-connector-pairing-panel]',
+  '[data-connector-keys-panel]',
+].join(',');
+
+let lastRenderedToastSig = '';
+let lastRenderedChatOutsideWorkspaceHtml = '';
+
+function chatToastSignature(): string {
+  return state.toasts.map((toast) => `${toast.id}:${toast.kind}`).join('|');
+}
+
+// Markup the full render path appends AFTER #workspace: the toast stack (inside pageShell) and
+// the four wallet overlays (appended at appRoot). The Chat morph only patches #workspace, so
+// these must be unchanged for the fast path to be safe to take.
+function chatOutsideWorkspaceHtml(): string {
+  return embeddedWalletOverlayHtml(embeddedWallet.overlay)
+    + walletConnectOverlayBlock()
+    + ledgerOverlayBlock()
+    + connectorConnectSurfaceHtml();
+}
+
+// True when a render() can be served by the scoped Chat morph instead of a full rebuild:
+// we're on the Chat tab, its workspace DOM already exists (so every binder attached once on the
+// first full paint), and nothing OUTSIDE #workspace (a toast / a wallet overlay) changed since
+// the last paint.
+function canMorphChat(): boolean {
+  if (state.activeTab !== 'chat') return false;
+  if (!appRoot || typeof document === 'undefined') return false;
+  const workspace = document.getElementById('workspace');
+  if (!workspace || !workspace.querySelector('[data-layout="active-panel"] .chat-surface')) {
+    return false;
+  }
+  if (chatToastSignature() !== lastRenderedToastSig) return false;
+  if (chatOutsideWorkspaceHtml() !== lastRenderedChatOutsideWorkspaceHtml) return false;
+  return true;
+}
+
+// Single, conditional autoscroll after a morph. The morph preserved scrollTop, so we only pull
+// to the bottom for a genuinely new message / session change / explicit force — and exactly
+// once (one rAF, not the sync+rAF double-snap that made iOS thrash).
+function chatAfterMorphScroll(): void {
+  const session = activeChatSession();
+  const count = session?.messages.length ?? 0;
+  const sameSession = session ? session.id === lastRenderedChatSessionId : false;
+  const hasNewMessage = sameSession && count > lastRenderedChatMsgCount;
+  const sessionChanged = Boolean(session) && !sameSession;
+  lastRenderedChatSessionId = session?.id ?? '';
+  lastRenderedChatMsgCount = count;
+  if (chatForceScrollBottom || hasNewMessage || sessionChanged) {
+    chatForceScrollBottom = false;
+    requestAnimationFrame(() => chatScrollToBottom(true));
+  }
+}
+
+function renderChat(): void {
+  const workspace = document.getElementById('workspace');
+  if (!workspace) return;
+
+  // Chat-relevant bookkeeping, mirroring render() — keep the connector surface consistent and
+  // run the same sheet/expand-note lifecycle predicates.
+  reconcileChatConnectorSession();
+  const route = currentRoute();
+  if (shouldClearActiveMobileRailSheet({
+    activeTab: state.activeTab,
+    mobileViewport: isMobileAppViewport(),
+    route,
+    sheet: state.activeMobileRailSheet,
+  })) {
+    if (state.activeMobileRailSheet === 'chat-action') {
+      state.chatActionPicker = null;
+      state.chatComposerOpen = false;
+    }
+    state.activeMobileRailSheet = null;
+  }
+  if (state.activeExpandNoteField && !isMobileAppViewport()) {
+    state.activeExpandNoteField = null;
+  }
+
+  // Close transient menus + ABORT the sheet AbortControllers so the rebind below re-arms them
+  // cleanly (these are torn down by abort, not by an innerHTML wipe).
+  closeTemplatePickerInteractions();
+  closeDemoLanguagePickerInteractions();
+  closeArtifactPickerInteractions();
+  closeWalletBalanceOverlayInteractions();
+  closeMobileRailSheetInteractions();
+  closeExpandNoteSheetInteractions();
+
+  suppressMobileRailSheetEnterAnimation = shouldSuppressMobileRailSheetEnterAnimation({
+    currentSheet: state.activeMobileRailSheet,
+    previousSheet: lastRenderedMobileRailSheet,
+    forceSuppress: suppressMobileRailSheetEnterAnimation,
+  });
+  syncBodyScrollLockDatasets(route);
+
+  // The control the user is mid-interaction with: never let the morph overwrite its value or
+  // selection (the composer draft, or a sheet input being typed into).
+  const activeEl = document.activeElement;
+
+  morphElement(workspace, appWorkspace('app'), {
+    getNodeKey: (node) => {
+      const el = node as Element;
+      if (!el || el.nodeType !== 1 || typeof el.getAttribute !== 'function') return undefined;
+      return el.getAttribute('id') || el.getAttribute('data-chat-msg-id') || undefined;
+    },
+    onBeforeElUpdated: (fromEl) => {
+      if (fromEl.nodeType === 1 && typeof fromEl.matches === 'function' && fromEl.matches(CHAT_MORPH_SKIP_SELECTOR)) {
+        return false;
+      }
+      if (fromEl === activeEl) return false;
+      return true;
+    },
+  });
+
+  // The composer textarea renders empty (its draft is JS-injected), so the morph clears it.
+  // Re-apply the live draft unless the composer is exactly what the user is editing (then the
+  // morph skipped it above and its value/selection are already intact).
+  const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
+  if (input && input !== activeEl) {
+    input.value = chatDraft;
+    chatAutoGrow(input);
+  }
+
+  reconcileBodyScrollLockDatasetsAfterRender();
+
+  // Re-run ONLY the binders whose nodes are inside the morphed region. bindChat is idempotent
+  // (bindOnce); the two sheet binders re-arm their AbortControllers. Non-chat binders are NOT
+  // re-run — their nodes were skipped by the morph and keep the listeners from the first paint.
+  bindChat();
+  bindMobileRailSheet();
+  bindExpandNoteSheet();
+
+  chatAfterMorphScroll();
+  syncChatKeyboardInset();
+  updateTabTitleBadge();
+
+  lastRenderedMobileRailSheet = state.activeMobileRailSheet;
+  suppressMobileRailSheetEnterAnimation = false;
+  lastRenderedToastSig = chatToastSignature();
+  lastRenderedChatOutsideWorkspaceHtml = chatOutsideWorkspaceHtml();
+}
+
 function render(): void {
   if (!appRoot) return;
   // Defer re-render while the user is mid-IME-composition in the chat input: a
@@ -10011,6 +10172,16 @@ function render(): void {
   // Normalize a stranded Chat tab before any markup is built, so
   // the tab bar and active panel agree on the same active tab in this render.
   if (state.activeTab === 'chat' && (chatTabHidden() || !chatTabAiConnected())) state.activeTab = 'overview';
+  // Chat-tab fast path: patch the workspace IN PLACE (DOM morph) instead of wiping
+  // appRoot.innerHTML, so the sheet, transcript, Primary/Advanced tabs, Pending list,
+  // popovers and Receive never blink and the scroll never jumps (the Android/iOS WebView
+  // pain). The full render path below still runs for the tab's first paint, for cross-tab
+  // navigation, and whenever something OUTSIDE the workspace (a toast or a wallet overlay)
+  // must change — cases the scoped morph cannot repaint.
+  if (canMorphChat()) {
+    renderChat();
+    return;
+  }
   // Restore the New Request planner draft if the chat Connector Actions surface was left open
   // while the user navigated off the Chat tab (e.g. switched tabs without closing the desktop
   // popover) — before any markup, so New Request never renders the connector form's data.
@@ -10086,12 +10257,13 @@ function render(): void {
   });
   syncBodyScrollLockDatasets(route);
   captureChatComposerSnapshot();
-  appRoot.innerHTML =
-    pageShell(pageContent(route), route)
-    + embeddedWalletOverlayHtml(embeddedWallet.overlay)
-    + walletConnectOverlayBlock()
-    + ledgerOverlayBlock()
-    + connectorConnectSurfaceHtml();
+  const outsideWorkspaceHtml = chatOutsideWorkspaceHtml();
+  appRoot.innerHTML = pageShell(pageContent(route), route) + outsideWorkspaceHtml;
+  // Snapshots the regions that live OUTSIDE #workspace (toasts + the wallet overlays) so the
+  // Chat-tab morph fast-path (canMorphChat) can tell when one of them changed and must take
+  // the full render path instead — the scoped workspace morph cannot repaint them.
+  lastRenderedChatOutsideWorkspaceHtml = outsideWorkspaceHtml;
+  lastRenderedToastSig = chatToastSignature();
   reconcileBodyScrollLockDatasetsAfterRender();
   flushPendingSpendNavigation();
   bind();
@@ -12024,6 +12196,7 @@ function heroSection(): string {
           <span class="logo-chip" aria-label="${escapeHtml(t('Wallet Standard'))}">${brandLogo('solana', 'logo-chip-icon')}<span class="chip-label chip-label-full">${escapeHtml(t('Wallet Standard'))}</span><span class="chip-label chip-label-mobile" aria-hidden="true">Wallet Std</span></span>
           ${IS_IOS_APP ? '' : `<span class="logo-chip" aria-label="${escapeHtml(t('Mobile Wallet Adapter'))}">${brandLogo('solanaMobile', 'logo-chip-icon')}<span class="chip-label chip-label-full">${escapeHtml(t('Mobile Wallet Adapter'))}</span><span class="chip-label chip-label-mobile" aria-hidden="true">MWA</span></span>`}
         </div>
+        ${mobileStoreLinks()}
         <p class="eyebrow mini">${escapeHtml(t('Wallet authority for agents'))}</p>
         <h1 id="hero-title">
           <span>${escapeHtml(t('Let agents use your'))}</span>
@@ -12049,6 +12222,127 @@ function heroSection(): string {
       ${heroTerminalPreview()}
     </section>
   `;
+}
+
+function mobileStoreLinks(): string {
+  if (!isMobileWebStoreSurface()) return '';
+  const showIOS = isIosMobileWebStoreSurface();
+  const showAndroid = isAndroidMobileWebStoreSurface();
+  if (!showIOS && !showAndroid) return '';
+  const storeLabel = showIOS ? t('Download on iOS') : t('Download on Android');
+  return `
+    <div class="mobile-store-links" aria-label="${escapeHtml(storeLabel)}">
+      <span class="mobile-store-status" aria-label="${escapeHtml(t('App is live'))}">
+        <span class="mobile-store-status-dot" aria-hidden="true"></span>
+        <span>${escapeHtml(t('App is live'))}</span>
+      </span>
+      <p>${escapeHtml(storeLabel)}</p>
+      <div class="mobile-store-icon-row">
+        ${showIOS ? mobileStoreIconLink(
+          AGENTIC_IOS_APP_STORE_URL,
+          t('Download Agentic on the App Store'),
+          t('App Store'),
+          appleStoreIcon(),
+        ) : ''}
+        ${showAndroid ? mobileStoreIconLink(
+          AGENTIC_SOLANA_DAPP_STORE_URL,
+          t('Open Agentic in the Solana dApp Store'),
+          t('Solana dApp Store'),
+          solanaStoreIcon(),
+        ) : ''}
+        ${showAndroid ? mobileStoreIconLink(
+          AGENTIC_GOOGLE_PLAY_URL,
+          t('Download Agentic on Google Play'),
+          t('Google Play'),
+          googlePlayIcon(),
+        ) : ''}
+      </div>
+    </div>
+  `;
+}
+
+function isMobileWebStoreSurface(): boolean {
+  return !isNativeAppShellSurface() && (isIosMobileWebStoreSurface() || isAndroidMobileWebStoreSurface());
+}
+
+function isIosMobileWebStoreSurface(): boolean {
+  if (isNativeAppShellSurface()) return false;
+  const userAgent = mobileStoreUserAgent();
+  const platform = mobileStorePlatform();
+  const touchPoints = typeof navigator === 'undefined' ? 0 : navigator.maxTouchPoints || 0;
+  return /iPhone|iPad|iPod/i.test(userAgent) ||
+    /iPhone|iPad|iPod/i.test(platform) ||
+    (platform === 'MacIntel' && touchPoints > 1 && /Mobile|Safari/i.test(userAgent));
+}
+
+function isAndroidMobileWebStoreSurface(): boolean {
+  if (isNativeAppShellSurface()) return false;
+  return /Android/i.test(mobileStoreUserAgent());
+}
+
+function mobileStoreUserAgent(): string {
+  return typeof navigator === 'undefined' ? '' : navigator.userAgent || '';
+}
+
+function mobileStorePlatform(): string {
+  return typeof navigator === 'undefined' ? '' : navigator.platform || '';
+}
+
+function mobileStoreIconLink(href: string, label: string, title: string, icon: string): string {
+  return `
+    <a class="mobile-store-icon-link" href="${escapeHtml(href)}" aria-label="${escapeHtml(label)}" title="${escapeHtml(title)}">
+      ${icon}
+    </a>
+  `;
+}
+
+function appleStoreIcon(): string {
+  return `
+    <svg class="mobile-store-icon apple-store-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+      <path d="M15.769 0c.053 0 .106 0 .162.004.13 1.606-.483 2.806-1.228 3.675-.731.863-1.732 1.7-3.351 1.573-.108-1.583.506-2.694 1.25-3.561C13.292.879 14.557.16 15.769 0zm4.901 16.716v.045c-.455 1.378-1.104 2.559-1.896 3.655-.723.995-1.609 2.334-3.191 2.334-1.367 0-2.275-.879-3.676-.903-1.482-.024-2.297.735-3.652.926h-.462c-.995-.144-1.798-.932-2.383-1.642-1.725-2.098-3.058-4.808-3.306-8.277v-1.019c.105-2.482 1.311-4.5 2.914-5.478.846-.52 2.009-.963 3.304-.765.555.086 1.122.276 1.619.464.471.181 1.06.502 1.618.485.378-.011.754-.208 1.135-.347 1.116-.403 2.21-.865 3.652-.648 1.733.262 2.963 1.032 3.723 2.22-1.466.933-2.625 2.339-2.427 4.74.176 2.181 1.444 3.457 3.028 4.21z" />
+    </svg>
+  `;
+}
+
+function googlePlayIcon(): string {
+  return `
+    <svg class="mobile-store-icon google-play-icon" viewBox="0 0 512 512" aria-hidden="true" focusable="false">
+      <defs>
+        <linearGradient id="agentic-mobile-store-gp1" x1="241.7" y1="68.8" x2="35.3" y2="275.2" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#00a0ff" />
+          <stop offset=".26" stop-color="#00bdff" />
+          <stop offset=".51" stop-color="#00d2ff" />
+          <stop offset=".76" stop-color="#00dfff" />
+          <stop offset="1" stop-color="#00e3ff" />
+        </linearGradient>
+        <linearGradient id="agentic-mobile-store-gp2" x1="447.9" y1="256" x2="29.5" y2="256" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#ffe000" />
+          <stop offset=".41" stop-color="#ffbd00" />
+          <stop offset=".78" stop-color="#ffa500" />
+          <stop offset="1" stop-color="#ff9c00" />
+        </linearGradient>
+        <linearGradient id="agentic-mobile-store-gp3" x1="291.4" y1="295.6" x2="-50.1" y2="637.1" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#ff3a44" />
+          <stop offset="1" stop-color="#c31162" />
+        </linearGradient>
+        <linearGradient id="agentic-mobile-store-gp4" x1="69.6" y1="-35.5" x2="222.1" y2="116.9" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#32a071" />
+          <stop offset=".07" stop-color="#2da771" />
+          <stop offset=".48" stop-color="#15cf74" />
+          <stop offset=".8" stop-color="#06e775" />
+          <stop offset="1" stop-color="#00f076" />
+        </linearGradient>
+      </defs>
+      <path fill="url(#agentic-mobile-store-gp1)" d="M28.6 24.3c-4.7 5-7.5 12.7-7.5 22.7v418c0 10 2.8 17.7 7.5 22.7l1.4 1.4 234.2-234.2v-5.5L30 22.9z" />
+      <path fill="url(#agentic-mobile-store-gp2)" d="M342 412.4l-78-78v-5.5l78-78.1 1.8 1 92.5 52.5c26.4 15 26.4 39.6 0 54.6l-92.5 52.5z" />
+      <path fill="url(#agentic-mobile-store-gp3)" d="M343.8 411.4 264 331.6 29.9 565.7c8.7 9.2 23.1 10.4 39.3 1.2l274.6-155.5" />
+      <path fill="url(#agentic-mobile-store-gp4)" d="M343.8 256.1 69.2 100.5C53 91.3 38.6 92.5 29.9 101.7l234.1 234z" />
+    </svg>
+  `;
+}
+
+function solanaStoreIcon(): string {
+  return solanaMark('mobile-store-icon solana-store-icon');
 }
 
 function commandDeck(): string {
@@ -24756,6 +25050,41 @@ function syncChatTextareaFromDraft(): void {
   if (input) { input.value = chatDraft; chatAutoGrow(input); }
 }
 
+// Idempotent per-element listener attachment. The Chat tab paints via in-place DOM
+// morphing (renderChat → morphElement), so element nodes SURVIVE a re-render instead of
+// being wiped + recreated. That means re-running bindChat() over a morphed subtree would
+// stack a second, third, … listener on every persisted node. bindOnce attaches exactly one
+// native listener per (element, type) and routes it to the LATEST handler registered for
+// that pair — so re-binding is a no-op for persisted nodes (handler just refreshed) and a
+// fresh attach for nodes morph added, with zero duplicates and no stale closures. The
+// WeakMap auto-evicts nodes the GC reclaims, so the full-innerHTML render path (which does
+// recreate nodes) keeps binding correctly too.
+const boundChatListeners = new WeakMap<EventTarget, Map<string, (event: any) => void>>();
+function bindOnce(
+  el: EventTarget | null | undefined,
+  type: string,
+  handler: (event: any) => void,
+  options?: boolean | AddEventListenerOptions,
+): void {
+  if (!el) return;
+  let handlers = boundChatListeners.get(el);
+  if (!handlers) {
+    handlers = new Map();
+    boundChatListeners.set(el, handlers);
+  }
+  const alreadyAttached = handlers.has(type);
+  handlers.set(type, handler); // always refresh to the newest handler
+  if (alreadyAttached) return;
+  el.addEventListener(
+    type,
+    (event: Event) => {
+      const current = boundChatListeners.get(el)?.get(type);
+      if (current) current.call(el, event);
+    },
+    options,
+  );
+}
+
 function bindChat(): void {
   if (state.activeTab !== 'chat') return;
   // Ensure the native keyboard bridge is bound (Android may open chat before the
@@ -24781,8 +25110,8 @@ function bindChat(): void {
   const pillScroller = chatScroller();
   if (pill && pillScroller) {
     const syncPill = (): void => { pill.classList.toggle('visible', !chatIsPinnedToBottom(pillScroller)); };
-    pillScroller.addEventListener('scroll', syncPill, { passive: true });
-    pill.addEventListener('click', () => {
+    bindOnce(pillScroller, 'scroll', syncPill, { passive: true });
+    bindOnce(pill, 'click', () => {
       chatScrollPinned = true;
       chatForceScrollBottom = false;
       pillScroller.scrollTo({ top: pillScroller.scrollHeight, behavior: 'smooth' });
@@ -24793,13 +25122,13 @@ function bindChat(): void {
   const composer = document.querySelector<HTMLFormElement>('[data-chat-composer]');
   const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
   if (composer) {
-    composer.addEventListener('submit', (event) => {
+    bindOnce(composer, 'submit', (event) => {
       event.preventDefault();
       void submitChatMessage(chatDraft);
     });
   }
   if (input) {
-    input.addEventListener('input', () => {
+    bindOnce(input, 'input', () => {
       chatDraft = input.value;
       chatAutoGrow(input);
       // If the user hand-edits the textarea so it diverges from what the builder
@@ -24810,7 +25139,7 @@ function bindChat(): void {
         render();
       }
     });
-    input.addEventListener('keydown', (event) => {
+    bindOnce(input, 'keydown', (event) => {
       // Don't send mid-IME-composition (CJK/accent input) — Enter there commits
       // the composition, not the message. `isComposing` + keyCode 229 cover all browsers.
       if (event.isComposing || event.keyCode === 229) return;
@@ -24830,14 +25159,14 @@ function bindChat(): void {
         render();
       }
     };
-    input.addEventListener('compositionstart', () => { chatComposing = true; });
-    input.addEventListener('compositionend', endComposition);
-    input.addEventListener('blur', endComposition);
+    bindOnce(input, 'compositionstart', () => { chatComposing = true; });
+    bindOnce(input, 'compositionend', endComposition);
+    bindOnce(input, 'blur', endComposition);
   }
   const plusToggle = document.querySelector<HTMLButtonElement>('[data-chat-plus-toggle]');
   const plusMenu = document.querySelector<HTMLElement>('.chat-plus-menu');
   if (plusToggle) {
-    plusToggle.addEventListener('click', (event) => {
+    bindOnce(plusToggle, 'click', (event) => {
       event.stopPropagation();
       // The Wallet Actions menu is an upward dropdown; picking an action opens the sheet
       // (native) or the consolidated popover (desktop).
@@ -24856,25 +25185,25 @@ function bindChat(): void {
     });
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-action]')) {
-    button.addEventListener('click', () => handleChatPowerAction(button.dataset.chatAction ?? ''));
+    bindOnce(button, 'click', () => handleChatPowerAction(button.dataset.chatAction ?? ''));
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-wallet-tab]')) {
-    button.addEventListener('click', (event) => {
+    bindOnce(button, 'click', (event) => {
       event.stopPropagation();
       state.chatWalletActionTab = button.dataset.chatWalletTab === 'advanced' ? 'advanced' : 'primary';
       render();
     });
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-action-cat]')) {
-    button.addEventListener('click', () => openChatActionSurface(button.dataset.chatActionCat as ActionCategory));
+    bindOnce(button, 'click', () => openChatActionSurface(button.dataset.chatActionCat as ActionCategory));
   }
-  document.querySelector<HTMLButtonElement>('[data-chat-receive]')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-receive]'), 'click', (event) => {
     event.stopPropagation();
     handleChatReceiveAction();
   });
   // --- Chip builder: explicit click -> state -> render (WebView-safe) ---------
   for (const chip of document.querySelectorAll<HTMLButtonElement>('[data-chat-chip]')) {
-    chip.addEventListener('click', (event) => {
+    bindOnce(chip, 'click', (event) => {
       event.stopPropagation();
       const field = chip.dataset.chatChip as ChatPickerField | undefined;
       if (!field || !state.chatActionBuilder) return;
@@ -24891,7 +25220,7 @@ function bindChat(): void {
       render();
     });
   }
-  document.querySelector<HTMLButtonElement>('[data-chat-builder-clear]')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-builder-clear]'), 'click', (event) => {
     event.stopPropagation();
     resetChatActionBuilder();
     closeChatActionSheet();
@@ -24899,7 +25228,7 @@ function bindChat(): void {
   });
   // Desktop chip-picker LIST/MINT toggle (the open picker's field is in chatActionPicker).
   for (const modeBtn of document.querySelectorAll<HTMLButtonElement>('[data-chat-token-mode]')) {
-    modeBtn.addEventListener('click', (event) => {
+    bindOnce(modeBtn, 'click', (event) => {
       event.stopPropagation();
       const field = state.chatActionPicker?.field;
       if (field !== 'fromToken' && field !== 'toToken') return;
@@ -24911,7 +25240,7 @@ function bindChat(): void {
       render();
     });
   }
-  document.querySelector<HTMLButtonElement>('[data-chat-token-more]')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-token-more]'), 'click', (event) => {
     event.stopPropagation();
     const field = state.chatActionPicker?.field;
     if (field !== 'fromToken' && field !== 'toToken') return;
@@ -24921,7 +25250,7 @@ function bindChat(): void {
   });
   // Full-form sheet (native mobile): per-field LIST/MINT toggle for each token field.
   for (const modeBtn of document.querySelectorAll<HTMLButtonElement>('[data-chat-token-field-mode]')) {
-    modeBtn.addEventListener('click', (event) => {
+    bindOnce(modeBtn, 'click', (event) => {
       event.stopPropagation();
       const field = modeBtn.dataset.chatTokenField;
       if (field !== 'fromToken' && field !== 'toToken') return;
@@ -24941,7 +25270,7 @@ function bindChat(): void {
   // Full-form sheet LIST mode: tapping the collapsed token trigger expands/collapses the
   // rich owned/preset list (logo + symbol + owned amount + $). One field open at a time.
   for (const trig of document.querySelectorAll<HTMLButtonElement>('[data-chat-token-trigger]')) {
-    trig.addEventListener('click', (event) => {
+    bindOnce(trig, 'click', (event) => {
       event.stopPropagation();
       const field = trig.dataset.chatTokenTrigger;
       if (field !== 'fromToken' && field !== 'toToken') return;
@@ -24958,7 +25287,7 @@ function bindChat(): void {
   // the composer grammar then closes the sheet (the user taps Send to queue it).
   const memoInput = document.querySelector<HTMLInputElement>('[data-chat-memo-input]');
   if (memoInput) {
-    memoInput.addEventListener('input', () => {
+    bindOnce(memoInput, 'input', () => {
       if (!state.chatActionBuilder) return;
       state.chatActionBuilder.memo = memoInput.value;
       applyChatBuilderDraft();
@@ -24968,7 +25297,7 @@ function bindChat(): void {
   // picker keeps its commit-on-Set + 1–5000 validation behaviour untouched).
   const slippageLiveInput = document.querySelector<HTMLInputElement>('[data-chat-slippage-live]');
   if (slippageLiveInput) {
-    slippageLiveInput.addEventListener('input', () => {
+    bindOnce(slippageLiveInput, 'input', () => {
       if (!state.chatActionBuilder) return;
       const trimmed = slippageLiveInput.value.trim();
       if (!trimmed) { delete state.chatActionBuilder.slippageBps; }
@@ -24980,7 +25309,7 @@ function bindChat(): void {
       applyChatBuilderDraft();
     });
   }
-  document.querySelector<HTMLButtonElement>('[data-chat-action-confirm]')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-action-confirm]'), 'click', (event) => {
     event.stopPropagation();
     if (!state.chatActionBuilder) return;
     applyChatBuilderDraft();
@@ -24989,25 +25318,25 @@ function bindChat(): void {
     render();
   });
   // Web/desktop popover close (×): keep the builder + the live-compiled draft.
-  document.querySelector<HTMLButtonElement>('[data-chat-popover-close]')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-popover-close]'), 'click', (event) => {
     event.stopPropagation();
     chatActionPopoverOpen = false;
     render();
   });
-  document.querySelector<HTMLButtonElement>('[data-chat-connector-confirm]')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-connector-confirm]'), 'click', (event) => {
     event.stopPropagation();
     confirmChatConnectorAction();
   });
-  document.querySelector<HTMLButtonElement>('[data-chat-connector-popover-close]')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-connector-popover-close]'), 'click', (event) => {
     event.stopPropagation();
     closeChatConnectorSurface(true);
     render();
   });
-  document.querySelector<HTMLButtonElement>('[data-chat-recurring-confirm]')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-recurring-confirm]'), 'click', (event) => {
     event.stopPropagation();
     void confirmChatRecurringAction();
   });
-  document.querySelector<HTMLButtonElement>('[data-chat-recurring-popover-close]')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-recurring-popover-close]'), 'click', (event) => {
     event.stopPropagation();
     closeChatRecurringSurface(true);
     render();
@@ -25015,7 +25344,7 @@ function bindChat(): void {
   // "Manage in Active Repeats →" on a recurring chat card → jump to the Repeat Payments tab's
   // Active Repeats view (bind all cards in the transcript).
   for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-chat-goto-active-repeats]')) {
-    btn.addEventListener('click', (event) => {
+    bindOnce(btn, 'click', (event) => {
       event.stopPropagation();
       state.activeTab = 'schedule';
       state.recurringView = 'active';
@@ -25037,7 +25366,7 @@ function bindChat(): void {
     render();
   };
   for (const unitBtn of document.querySelectorAll<HTMLButtonElement>('[data-chat-amount-unit]')) {
-    unitBtn.addEventListener('click', (event) => {
+    bindOnce(unitBtn, 'click', (event) => {
       event.stopPropagation();
       if (!state.chatActionBuilder) return;
       const unit: ChatAmountMode = unitBtn.dataset.chatAmountUnit === 'token' ? 'token' : 'usd';
@@ -25049,12 +25378,12 @@ function bindChat(): void {
     });
   }
   for (const pctBtn of document.querySelectorAll<HTMLButtonElement>('[data-chat-pct]')) {
-    pctBtn.addEventListener('click', (event) => {
+    bindOnce(pctBtn, 'click', (event) => {
       event.stopPropagation();
       applyChatPercent(Number(pctBtn.dataset.chatPct ?? ''));
     });
   }
-  document.querySelector<HTMLButtonElement>('[data-chat-pct-apply]')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-pct-apply]'), 'click', (event) => {
     event.stopPropagation();
     const input = document.querySelector<HTMLInputElement>('[data-chat-pct-input]');
     const pct = Number((input?.value ?? '').replace(/[^\d.]/g, ''));
@@ -25062,7 +25391,7 @@ function bindChat(): void {
     applyChatPercent(pct);
   });
   for (const slipBtn of document.querySelectorAll<HTMLButtonElement>('[data-chat-slippage-mode]')) {
-    slipBtn.addEventListener('click', (event) => {
+    bindOnce(slipBtn, 'click', (event) => {
       event.stopPropagation();
       const b = state.chatActionBuilder;
       if (!b) return;
@@ -25076,7 +25405,7 @@ function bindChat(): void {
       render();
     });
   }
-  document.querySelector<HTMLButtonElement>('[data-chat-note-toggle]')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-note-toggle]'), 'click', (event) => {
     event.stopPropagation();
     chatSheetNoteOpen = true;
     suppressMobileRailSheetEnterAnimation = true;
@@ -25085,7 +25414,7 @@ function bindChat(): void {
   });
   // --- Proof/Evidence sheet: tabs, template dropdown, fields, Confirm ----------
   for (const tabBtn of document.querySelectorAll<HTMLButtonElement>('[data-chat-proof-tab]')) {
-    tabBtn.addEventListener('click', (event) => {
+    bindOnce(tabBtn, 'click', (event) => {
       event.stopPropagation();
       const tab = tabBtn.dataset.chatProofTab;
       if ((tab !== 'proof' && tab !== 'audit') || chatProofTab === tab) return;
@@ -25098,7 +25427,7 @@ function bindChat(): void {
     });
   }
   for (const sel of document.querySelectorAll<HTMLSelectElement>('select[data-chat-proof-template-select]')) {
-    sel.addEventListener('change', () => {
+    bindOnce(sel, 'change', () => {
       const tpl = chatProofTemplatesFor(chatProofTab).find((candidate) => candidate.id === sel.value);
       if (!tpl) return;
       chatProofTemplateId = tpl.id;
@@ -25108,24 +25437,24 @@ function bindChat(): void {
     });
   }
   for (const sel of document.querySelectorAll<HTMLSelectElement>('select[data-chat-proof-select]')) {
-    sel.addEventListener('change', () => {
+    bindOnce(sel, 'change', () => {
       const id = sel.dataset.chatProofSelect;
       if (id) chatProofFields[id] = sel.value;
     });
   }
   for (const fieldInput of document.querySelectorAll<HTMLElement>('[data-chat-proof-field]')) {
-    fieldInput.addEventListener('input', () => {
+    bindOnce(fieldInput, 'input', () => {
       const id = fieldInput.dataset.chatProofField;
       if (id) chatProofFields[id] = (fieldInput as HTMLInputElement | HTMLTextAreaElement).value;
     });
   }
-  document.querySelector<HTMLButtonElement>('[data-chat-proof-confirm]')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-proof-confirm]'), 'click', (event) => {
     event.stopPropagation();
     chatProofConfirm();
   });
   const recipientInput = document.querySelector<HTMLInputElement>('[data-chat-chip-recipient]');
   if (recipientInput) {
-    recipientInput.addEventListener('input', () => {
+    bindOnce(recipientInput, 'input', () => {
       if (!state.chatActionBuilder) return;
       state.chatActionBuilder.recipient = recipientInput.value.trim();
       applyChatBuilderDraft(); // recompile + mirror into textarea; no render (keep focus)
@@ -25133,14 +25462,14 @@ function bindChat(): void {
   }
   const statementInput = document.querySelector<HTMLInputElement>('[data-chat-chip-statement]');
   if (statementInput) {
-    statementInput.addEventListener('input', () => {
+    bindOnce(statementInput, 'input', () => {
       if (!state.chatActionBuilder) return;
       state.chatActionBuilder.statement = statementInput.value;
       applyChatBuilderDraft(); // recompile + mirror into textarea; no render (keep focus)
     });
   }
   for (const opt of document.querySelectorAll<HTMLButtonElement>('[data-chat-token-pick]')) {
-    opt.addEventListener('click', (event) => {
+    bindOnce(opt, 'click', (event) => {
       event.stopPropagation();
       const mint = opt.dataset.chatTokenPick ?? '';
       const symbol = opt.dataset.chatTokenSymbol ?? '';
@@ -25159,7 +25488,7 @@ function bindChat(): void {
   }
   const amountInput = document.querySelector<HTMLInputElement>('[data-chat-amount-input]');
   if (amountInput) {
-    amountInput.addEventListener('input', () => {
+    bindOnce(amountInput, 'input', () => {
       if (!state.chatActionBuilder) return;
       // The sheet's amount field renders its active unit on the input ($ default); fall back
       // to it so the first keystroke adopts the right mode (desktop has no attr → 'token').
@@ -25170,7 +25499,7 @@ function bindChat(): void {
     });
   }
   for (const tab of document.querySelectorAll<HTMLButtonElement>('[data-chat-amount-mode]')) {
-    tab.addEventListener('click', (event) => {
+    bindOnce(tab, 'click', (event) => {
       event.stopPropagation();
       if (!state.chatActionBuilder) return;
       const mode = tab.dataset.chatAmountMode as ChatAmountMode;
@@ -25182,7 +25511,7 @@ function bindChat(): void {
     });
   }
   for (const pct of document.querySelectorAll<HTMLButtonElement>('[data-chat-amount-pct]')) {
-    pct.addEventListener('click', (event) => {
+    bindOnce(pct, 'click', (event) => {
       event.stopPropagation();
       if (!state.chatActionBuilder) return;
       state.chatActionBuilder.amount = { mode: 'percent', raw: pct.dataset.chatAmountPct ?? '' };
@@ -25192,7 +25521,7 @@ function bindChat(): void {
       render();
     });
   }
-  document.querySelector<HTMLButtonElement>('[data-chat-amount-apply]')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-amount-apply]'), 'click', (event) => {
     event.stopPropagation();
     if (!state.chatActionBuilder) return;
     const input = document.querySelector<HTMLInputElement>('[data-chat-amount-input]');
@@ -25204,7 +25533,7 @@ function bindChat(): void {
     render();
   });
   for (const slip of document.querySelectorAll<HTMLButtonElement>('[data-chat-slippage-bps]')) {
-    slip.addEventListener('click', (event) => {
+    bindOnce(slip, 'click', (event) => {
       event.stopPropagation();
       if (!state.chatActionBuilder) return;
       const value = slip.dataset.chatSlippageBps ?? 'auto';
@@ -25217,7 +25546,7 @@ function bindChat(): void {
       render();
     });
   }
-  document.querySelector<HTMLButtonElement>('[data-chat-slippage-apply]')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-slippage-apply]'), 'click', (event) => {
     event.stopPropagation();
     if (!state.chatActionBuilder) return;
     const input = document.querySelector<HTMLInputElement>('[data-chat-slippage-input]');
@@ -25236,20 +25565,20 @@ function bindChat(): void {
     render();
   });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-suggest]')) {
-    button.addEventListener('click', () => void submitChatMessage(button.dataset.chatSuggest ?? ''));
+    bindOnce(button, 'click', () => void submitChatMessage(button.dataset.chatSuggest ?? ''));
   }
-  document.querySelector<HTMLButtonElement>('[data-chat-regenerate]')?.addEventListener('click', () => regenerateLastChatTurn());
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-regenerate]'), 'click', () => regenerateLastChatTurn());
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-edit]')) {
-    button.addEventListener('click', () => editChatMessageIntoComposer(button.dataset.chatEdit ?? ''));
+    bindOnce(button, 'click', () => editChatMessageIntoComposer(button.dataset.chatEdit ?? ''));
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-promote]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const action = promoteChatProposalToPreparedAction(button.dataset.chatSession ?? '', button.dataset.chatMsg ?? '');
       if (action) { chatForceScrollBottom = true; render(); }
     });
   }
   // --- Pending Approvals dropdown (web header pill + mobile actions-row control) ---
-  document.querySelector<HTMLButtonElement>('[data-chat-pending-toggle]')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-pending-toggle]'), 'click', (event) => {
     event.stopPropagation();
     state.chatPendingOpen = !state.chatPendingOpen;
     if (state.chatPendingOpen) {
@@ -25277,13 +25606,13 @@ function bindChat(): void {
     document.querySelector<HTMLButtonElement>(`[data-chat-pending-select="${CSS.escape(ids[idx] ?? '')}"]`)?.focus();
   };
   for (const row of document.querySelectorAll<HTMLButtonElement>('[data-chat-pending-select]')) {
-    row.addEventListener('click', (event) => {
+    bindOnce(row, 'click', (event) => {
       event.stopPropagation();
       const id = row.dataset.chatPendingSelect ?? '';
       state.chatPendingSelectedId = state.chatPendingSelectedId === id ? null : id; // tap again = deselect
       render();
     });
-    row.addEventListener('keydown', (event) => {
+    bindOnce(row, 'keydown', (event) => {
       const dir = event.key === 'ArrowDown' ? 'next' : event.key === 'ArrowUp' ? 'prev'
         : event.key === 'Home' ? 'first' : event.key === 'End' ? 'last' : null;
       if (!dir) return;
@@ -25293,18 +25622,18 @@ function bindChat(): void {
     });
   }
   for (const arrow of document.querySelectorAll<HTMLButtonElement>('[data-chat-pending-page]')) {
-    arrow.addEventListener('click', (event) => {
+    bindOnce(arrow, 'click', (event) => {
       event.stopPropagation();
       state.chatPendingPage += arrow.dataset.chatPendingPage === 'next' ? 1 : -1; // clamped in chatPendingPanelHtml
       render();
     });
   }
-  document.querySelector<HTMLButtonElement>('[data-chat-pending-queue]')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-pending-queue]'), 'click', (event) => {
     event.stopPropagation();
     queueChatPendingApproval(state.chatPendingSelectedId);
   });
   // History dropdown: state-driven (NOT <details> — unreliable in native WebViews).
-  document.querySelector<HTMLButtonElement>('[data-chat-history-trigger]')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-history-trigger]'), 'click', (event) => {
     event.preventDefault();
     event.stopPropagation();
     const opening = !state.chatHistoryOpen;
@@ -25318,19 +25647,21 @@ function bindChat(): void {
   });
   // Roving keyboard nav within the open history menu (Arrow/Home/End/Escape).
   const historyMenu = document.querySelector<HTMLElement>('.chat-sessions-menu');
-  historyMenu?.addEventListener('keydown', (event) => {
-    const items = [...historyMenu.querySelectorAll<HTMLButtonElement>('[data-chat-switch]')];
-    if (items.length === 0) return;
-    const current = document.activeElement as HTMLElement | null;
-    const idx = items.findIndex((b) => b === current || b.closest('.chat-session-row')?.contains(current));
-    const focusAt = (i: number): void => { event.preventDefault(); items[(i + items.length) % items.length]?.focus(); };
-    if (event.key === 'ArrowDown') focusAt(idx + 1);
-    else if (event.key === 'ArrowUp') focusAt(idx - 1);
-    else if (event.key === 'Home') focusAt(0);
-    else if (event.key === 'End') focusAt(items.length - 1);
-  });
+  if (historyMenu) {
+    bindOnce(historyMenu, 'keydown', (event) => {
+      const items = [...historyMenu.querySelectorAll<HTMLButtonElement>('[data-chat-switch]')];
+      if (items.length === 0) return;
+      const current = document.activeElement as HTMLElement | null;
+      const idx = items.findIndex((b) => b === current || b.closest('.chat-session-row')?.contains(current));
+      const focusAt = (i: number): void => { event.preventDefault(); items[(i + items.length) % items.length]?.focus(); };
+      if (event.key === 'ArrowDown') focusAt(idx + 1);
+      else if (event.key === 'ArrowUp') focusAt(idx - 1);
+      else if (event.key === 'Home') focusAt(0);
+      else if (event.key === 'End') focusAt(items.length - 1);
+    });
+  }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-switch]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const id = button.dataset.chatSwitch ?? '';
       state.chatHistoryOpen = false;
       if (!id || state.chat.activeSessionId === id) { render(); return; }
@@ -25352,7 +25683,7 @@ function bindChat(): void {
     });
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-retry-load]')) {
-    button.addEventListener('click', () => {
+    bindOnce(button, 'click', () => {
       const id = button.dataset.chatRetryLoad ?? '';
       const session = state.chat.sessions.find((s) => s.id === id);
       if (!session) return;
@@ -25364,7 +25695,7 @@ function bindChat(): void {
     });
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-del]')) {
-    button.addEventListener('click', (event) => {
+    bindOnce(button, 'click', (event) => {
       event.stopPropagation();
       if (chatStreamActive()) cancelChatStream();
       deleteChatSession(button.dataset.chatDel ?? '');
@@ -25372,18 +25703,18 @@ function bindChat(): void {
       render();
     });
   }
-  document.querySelector<HTMLButtonElement>('[data-chat-stop]')?.addEventListener('click', () => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-stop]'), 'click', () => {
     cancelChatStream();
     render();
   });
-  document.querySelector<HTMLButtonElement>('[data-chat-new]')?.addEventListener('click', () => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-new]'), 'click', () => {
     if (chatStreamActive()) cancelChatStream();
     clearChatComposerDraft();
     state.chatHistoryOpen = false;
     createChatSession();
     render();
   });
-  document.querySelector<HTMLButtonElement>('[data-chat-clear]')?.addEventListener('click', () => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-clear]'), 'click', () => {
     if (chatStreamActive()) cancelChatStream();
     clearChatComposerDraft();
     state.chatHistoryOpen = false;

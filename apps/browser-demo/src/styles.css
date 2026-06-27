@@ -437,6 +437,119 @@ code {
   width: 21px;
 }
 
+.mobile-store-links {
+  display: none;
+}
+
+.mobile-store-status {
+  align-items: center;
+  background: rgba(21, 214, 178, 0.12);
+  border: 1px solid rgba(21, 214, 178, 0.46);
+  border-radius: 999px;
+  color: rgba(104, 255, 223, 0.96);
+  display: inline-flex;
+  font-size: 0.76rem;
+  font-weight: 820;
+  gap: 7px;
+  min-height: 27px;
+  padding: 0 12px;
+}
+
+.mobile-store-status-dot {
+  background: rgba(48, 229, 203, 0.98);
+  border-radius: 999px;
+  box-shadow: 0 0 16px rgba(21, 214, 178, 0.72);
+  height: 12px;
+  position: relative;
+  width: 12px;
+}
+
+.mobile-store-status-dot::before {
+  animation: mobile-store-pulse 1.65s ease-out infinite;
+  background: rgba(48, 229, 203, 0.72);
+  border-radius: inherit;
+  content: "";
+  inset: 0;
+  position: absolute;
+}
+
+.mobile-store-links p {
+  color: rgba(186, 193, 205, 0.74);
+  font-size: 0.68rem;
+  font-weight: 820;
+  line-height: 1;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.mobile-store-icon-row {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
+.mobile-store-icon-link {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  border-radius: 999px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28);
+  color: rgba(246, 249, 247, 0.96);
+  display: inline-flex;
+  height: 48px;
+  justify-content: center;
+  min-height: 48px;
+  min-width: 48px;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
+  width: 48px;
+}
+
+.mobile-store-icon-link:hover {
+  background: rgba(125, 231, 176, 0.08);
+  border-color: rgba(125, 231, 176, 0.36);
+  color: var(--text);
+}
+
+.mobile-store-icon-link:active {
+  transform: scale(0.96);
+}
+
+.mobile-store-icon-link:focus-visible {
+  outline: 2px solid rgba(125, 231, 176, 0.75);
+  outline-offset: 3px;
+}
+
+.mobile-store-icon {
+  display: block;
+  height: 22px;
+  width: 22px;
+}
+
+.google-play-icon {
+  height: 23px;
+  width: 23px;
+}
+
+.solana-store-icon {
+  height: 17px;
+  vertical-align: 0;
+  width: 22px;
+}
+
+@keyframes mobile-store-pulse {
+  0% {
+    opacity: 0.78;
+    transform: scale(1);
+  }
+
+  80%,
+  100% {
+    opacity: 0;
+    transform: scale(2.15);
+  }
+}
+
 .homepage-hero {
   align-items: stretch;
   display: grid;
@@ -19515,6 +19628,16 @@ button.danger:hover:not(:disabled) {
   .route-home .logo-chip-icon {
     height: 22px;
     width: 22px;
+  }
+
+  .route-home .mobile-store-links {
+    align-items: center;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    justify-self: start;
+    margin: -2px 0 0;
+    width: max-content;
   }
 
   .route-home .eyebrow.mini {
