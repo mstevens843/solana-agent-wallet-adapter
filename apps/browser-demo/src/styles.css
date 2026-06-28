@@ -36169,15 +36169,161 @@ button.danger:hover:not(:disabled) {
   z-index: 36;
   box-shadow: var(--shadow);
 }
-/* The connector connect surface reuses .chat-action-popover for its visual styling, but it lives
-   inside a fixed full-screen flex overlay (.connector-connect-overlay) — NOT anchored above a
-   trigger. Reset the trigger-anchoring (absolute + bottom:calc(100%+8px) + left:0 parks the panel
-   above the viewport's top edge → invisible behind the backdrop) so the panel participates in the
-   overlay's flex layout: centered popover on web, bottom sheet on mobile. */
+.connector-connect-overlay {
+  align-items: center;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 16px;
+  position: fixed;
+  z-index: 1200;
+}
+/* The connector connect surface reuses .chat-action-popover on desktop, but it lives inside a
+   fixed full-screen flex overlay instead of anchoring above a trigger. */
 .chat-action-popover.connector-connect-popover {
+  max-width: 440px;
   position: relative;
   inset: auto;
+  width: 100%;
   max-height: min(85dvh, calc(100dvh - 32px));
+}
+.connector-connect-head {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  min-width: 0;
+}
+.connector-connect-title-row {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+}
+.connector-connect-logo {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  border-radius: 10px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 38px;
+  justify-content: center;
+  overflow: hidden;
+  padding: 6px;
+  width: 38px;
+}
+.connector-connect-title-copy {
+  min-width: 0;
+}
+.connector-connect-title-copy span {
+  color: rgba(190, 202, 197, 0.72);
+  display: block;
+  font-size: 0.66rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  line-height: 1.05;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.connector-connect-title-copy h2 {
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 900;
+  letter-spacing: 0;
+  line-height: 1.15;
+  margin: 3px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.connector-connect-close {
+  align-items: center;
+  appearance: none;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  border-radius: 999px;
+  color: rgba(242, 255, 247, 0.86);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 1.25rem;
+  font-weight: 760;
+  height: 36px;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
+  width: 36px;
+}
+.connector-connect-close:hover,
+.connector-connect-close:focus-visible {
+  border-color: rgba(125, 231, 176, 0.32);
+  color: #f4fff8;
+  outline: none;
+}
+.connector-connect-body {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+  min-width: 0;
+}
+.connector-connect-intro {
+  color: rgba(224, 230, 226, 0.82);
+  font-size: 0.92rem;
+  line-height: 1.45;
+  margin: 0;
+}
+.connector-connect-portal {
+  color: var(--accent);
+  font-size: 0.84rem;
+  font-weight: 800;
+  text-decoration: none;
+}
+.connector-connect-portal:hover,
+.connector-connect-portal:focus-visible {
+  text-decoration: underline;
+}
+.connector-connect-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 2px;
+  min-width: 0;
+}
+.connector-connect-secondary,
+.connector-connect-primary {
+  align-items: center;
+  appearance: none;
+  border-radius: 10px;
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 900;
+  justify-content: center;
+  letter-spacing: 0;
+  min-height: 44px;
+  min-width: 96px;
+  padding: 0 16px;
+  white-space: nowrap;
+}
+.connector-connect-secondary {
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  color: rgba(230, 238, 234, 0.86);
+}
+.connector-connect-secondary:hover,
+.connector-connect-secondary:focus-visible {
+  border-color: rgba(125, 231, 176, 0.28);
+  color: #f4fff8;
+  outline: none;
+}
+.connector-connect-primary {
+  border: 1px solid rgba(125, 231, 176, 0.36);
 }
 .chat-popover-head {
   display: flex;
@@ -36198,6 +36344,84 @@ button.danger:hover:not(:disabled) {
 }
 @media (max-width: 560px) {
   .chat-popover-row.pair { grid-template-columns: minmax(0, 1fr); }
+}
+
+.connector-connect-overlay.native-sheet {
+  align-items: flex-end;
+  background: rgba(5, 7, 6, 0.74);
+  backdrop-filter: blur(2px);
+  padding: 0;
+}
+
+.connector-connect-sheet {
+  animation: mobile-rail-sheet-slide-up 220ms cubic-bezier(0.2, 0.86, 0.22, 1) both;
+  background:
+    linear-gradient(180deg, rgba(30, 37, 35, 0.98), rgba(18, 22, 21, 0.99)),
+    #151918;
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  border-bottom: 0;
+  border-radius: 18px 18px 0 0;
+  box-shadow:
+    0 -24px 80px rgba(0, 0, 0, 0.54),
+    inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  max-height: calc(100dvh - 18px - env(safe-area-inset-top, 0px));
+  overflow: hidden;
+  padding:
+    8px
+    calc(18px + env(safe-area-inset-right, 0px))
+    calc(18px + env(safe-area-inset-bottom, 0px))
+    calc(18px + env(safe-area-inset-left, 0px));
+  width: 100%;
+}
+
+.connector-connect-grip {
+  background: rgba(224, 230, 226, 0.34);
+  border-radius: 999px;
+  display: block;
+  height: 4px;
+  justify-self: center;
+  margin: 2px 0 14px;
+  width: 58px;
+}
+
+.connector-connect-sheet .connector-connect-head {
+  min-height: 46px;
+}
+
+.connector-connect-sheet .connector-connect-logo {
+  height: 42px;
+  width: 42px;
+}
+
+.connector-connect-sheet .connector-connect-title-copy h2 {
+  color: #f4fff8;
+  font-size: 1.12rem;
+  line-height: 1.08;
+}
+
+.connector-connect-sheet .connector-connect-close {
+  height: 42px;
+  width: 42px;
+}
+
+.connector-connect-sheet .connector-connect-body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-top: 16px;
+}
+
+.connector-connect-sheet .connector-connect-actions {
+  display: grid;
+  grid-template-columns: minmax(104px, 0.72fr) minmax(132px, 1fr);
+  margin-top: 4px;
+}
+
+.connector-connect-sheet .connector-connect-secondary,
+.connector-connect-sheet .connector-connect-primary {
+  min-width: 0;
+  width: 100%;
 }
 
 .chat-plus-group {
@@ -36367,9 +36591,9 @@ button.danger:hover:not(:disabled) {
 /* When both pills share the row, shrink Pending slightly and let its label ellipsize so the
    count badge always stays visible (the wallet-value pill keeps its full width). */
 .chat-actions-row-end.has-balances .chat-pending { flex: 0 1 auto; min-width: 0; }
-/* Cap the wallet-value pill ONLY when it shares the row with Pending; a lone pill sizes to its
-   content so "$x.xx ⌄" is never ellipsized down to a bare logo+caret (the strangled "circle"). */
-.chat-actions-row-end.has-balances .chat-balances-pill { max-width: 45%; }
+/* Give the wallet-value pill enough room to show "$x.xx" even when Pending shares the row;
+   Pending is allowed to shrink first via its label ellipsis below. */
+.chat-actions-row-end.has-balances .chat-balances-pill { max-width: min(118px, 52%); }
 .chat-actions-row-end.has-balances .chat-pending-pill--sm { font-size: 0.66rem; padding: 5px 8px; gap: 5px; min-width: 0; max-width: 100%; }
 .chat-actions-row-end.has-balances .chat-pending-label {
   overflow: hidden;

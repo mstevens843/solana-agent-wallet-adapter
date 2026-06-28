@@ -307,6 +307,7 @@ import {
   type WalletBalancePriceInfo,
   type WalletBalanceSnapshot,
 } from './walletBalanceSummary.js';
+import { walletBalanceAssetTitle } from './walletBalanceDisplay.js';
 import {
   AndroidNativeWalletBackend,
   androidNativeCacheSummary,
@@ -3422,7 +3423,7 @@ interface DemoState {
   chatConnectorSession: ChatConnectorSession | null;
   // In-place connect surface (popover web / sheet mobile) opened when a user picks an
   // un-enabled connector in an action's "Use connector" dropdown.
-  connectorConnect: { connectorId: string; category: ActionCategory | null; surface?: 'create' | 'recurring'; draftApiKey?: string; draftBaseUrl?: string } | null;
+  connectorConnect: ConnectorConnectSession | null;
   // Jupiter Ultra Shield advisory token-safety warnings, cached per output mint.
   swapShield: Record<string, { status: 'pending' | 'done'; warnings: ShieldWarning[] }>;
   chatRecurringSession: ChatRecurringSession | null;
@@ -5460,6 +5461,11 @@ function focusInboxApprovalCard(approvalId: string): void {
 function handleGlobalKeydown(event: KeyboardEvent): void {
   // Chat: Escape closes an open menu first, then aborts an in-flight stream,
   // before any other handler — mirrors the Android back-button expectation.
+  if (event.key === 'Escape' && state.connectorConnect) {
+    event.preventDefault();
+    closeConnectorConnect();
+    return;
+  }
   // Escape first disarms an armed delete-confirm without closing the whole menu;
   // a second Escape then closes the menu via the block below.
   if (event.key === 'Escape' && state.chatDeleteConfirmId) {
@@ -10148,6 +10154,7 @@ function renderWorkspace(): void {
   // sheet/expand-note lifecycle predicates.
   reconcileChatConnectorSession();
   const route = currentRoute();
+  reconcileConnectorConnectSession(route);
   if (shouldClearActiveMobileRailSheet({
     activeTab: state.activeTab,
     mobileViewport: isMobileAppViewport(),
@@ -10262,6 +10269,7 @@ function render(): void {
   // Normalize a stranded Chat tab before any markup is built, so
   // the tab bar and active panel agree on the same active tab in this render.
   if (state.activeTab === 'chat' && (chatTabHidden() || !chatTabAiConnected())) state.activeTab = 'overview';
+  reconcileConnectorConnectSession(currentRoute());
   // Chat-tab fast path: patch the workspace IN PLACE (DOM morph) instead of wiping
   // appRoot.innerHTML, so the sheet, transcript, Primary/Advanced tabs, Pending list,
   // popovers and Receive never blink and the scroll never jumps (the Android/iOS WebView
@@ -10298,6 +10306,7 @@ function render(): void {
   if (route !== '/qr-connect' && qrConnect.pollHandle !== null) {
     stopQrConnectRelay();
   }
+  reconcileConnectorConnectSession(route);
   if (
     route !== '/aiconnectors' &&
     (
@@ -18821,7 +18830,7 @@ function walletBalanceSheetBodyHtml(): string {
 function walletBalanceAssetRowHtml(asset: WalletBalanceAsset, totalUsd = 0): string {
   const meta = tokenMarketMetadata.get(asset.mint);
   const logo = meta?.logoURI || knownTokenLogo(asset.mint);
-  const title = (meta?.name && meta.name !== asset.symbol ? meta.name : asset.symbol) || asset.symbol;
+  const title = walletBalanceAssetTitle(asset, meta);
   const mono = ((asset.symbol || '?').replace(/[^A-Za-z0-9]/g, '').slice(0, 3) || '?').toUpperCase();
   const valueText = asset.valueUsd === undefined ? t('price unavailable') : formatWalletBalanceUsd(asset.valueUsd);
   const ratio = totalUsd > 0 && asset.valueUsd !== undefined ? asset.valueUsd / totalUsd : NaN;
@@ -21297,6 +21306,16 @@ interface ChatConnectorSession {
     agentSignature: string;
     agentPreparedActionId: string;
   };
+}
+
+interface ConnectorConnectSession {
+  connectorId: string;
+  category: ActionCategory | null;
+  surface: 'create' | 'recurring';
+  openerRoute: AppRoute | null;
+  openerTab: ActiveTab;
+  draftApiKey?: string;
+  draftBaseUrl?: string;
 }
 
 // Transient editing session for the chat "Recurring / DCA" surface. Mirrors ChatConnectorSession:
@@ -39702,27 +39721,33 @@ function selectConnectorForCreate(connectorId: string): void {
 function connectProtocolConnectorThenSelect(connector: ProtocolConnector): void {
   // Open the in-place connect surface (popover on web, sheet on mobile) for the picked
   // connector. Keyless connectors get a one-tap "Enable" confirm; BYO-key connectors get an
-  // API-key form. On success the selection sticks + the action form applies; on cancel/fail
-  // the dropdown reverts to "Use connector".
+  // API-key form. On success the selection sticks + the action form applies; cancel only closes
+  // the prompt and leaves the caller's tab/surface in place.
   openConnectorConnect(connector.id, state.createActionCategory || null);
 }
 
 function openConnectorConnect(connectorId: string, category: ActionCategory | null, surface: 'create' | 'recurring' = 'create'): void {
-  state.connectorConnect = { connectorId, category, surface };
+  state.connectorConnect = {
+    connectorId,
+    category,
+    surface,
+    openerRoute: currentRoute(),
+    openerTab: state.activeTab,
+  };
   render();
 }
 
-function closeConnectorConnect(opts: { revert: boolean }): void {
-  const surface = state.connectorConnect?.surface ?? 'create';
+function closeConnectorConnect(): void {
   state.connectorConnect = null;
-  // Only the New Request (create) draft needs the template-draft rollback; the recurring draft was
-  // never mutated (the picker handler bails before readRecurringDraft), so a plain render() rebuilds
-  // the Repeat picker from its prior good connectorId.
-  if (opts.revert && surface === 'create') {
-    clearConnectorCreateSelection();
-    return;
-  }
   render();
+}
+
+function reconcileConnectorConnectSession(route: AppRoute | null = currentRoute()): void {
+  const session = state.connectorConnect;
+  if (!session) return;
+  if (route !== session.openerRoute || state.activeTab !== session.openerTab) {
+    state.connectorConnect = null;
+  }
 }
 
 function connectorConnectIsByo(id: string): boolean {
@@ -39765,40 +39790,54 @@ function connectorConnectFinish(connectorId: string, category: ActionCategory | 
 function connectorConnectSurfaceHtml(): string {
   const session = state.connectorConnect;
   if (!session) return '';
+  if (session.openerRoute !== currentRoute() || session.openerTab !== state.activeTab) return '';
   const connector = getAdapterMeta(session.connectorId as ConnectedDappId);
   if (!connector) return '';
   const byo = connectorConnectIsByo(session.connectorId);
-  const sheet = isMobileAppViewport();
+  const nativeSheet = isNativeAppShellSurface();
   const meta = byo ? BYO_KEY_CONNECTOR_META[session.connectorId as ByoKeyConnectorId] : undefined;
+  const connectorLogo = brandLogo(protocolConnectorLogoId(connector.id), 'connector-connect-logo');
+  const title = tf('Connect {name}', { name: connector.name });
+  const eyebrow = byo ? t('Connector credentials') : t('Protocol connector');
   const body = byo
     ? `
       <p class="connector-connect-intro">${escapeHtml(tf('{name} needs an API key to connect. It is stored encrypted on your account.', { name: connector.name }))}</p>
-      <label class="field compact"><span>${escapeHtml(t('API key'))}</span>
+      <label class="field compact connector-connect-field"><span>${escapeHtml(t('API key'))}</span>
         <input data-connector-connect-key type="password" autocomplete="off" spellcheck="false" value="${escapeHtml(session.draftApiKey ?? '')}" placeholder="${escapeHtml(t('Paste API key'))}" />
       </label>
-      <label class="field compact"><span>${escapeHtml(t('Base URL (optional)'))}</span>
+      <label class="field compact connector-connect-field"><span>${escapeHtml(t('Base URL (optional)'))}</span>
         <input data-connector-connect-baseurl type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(session.draftBaseUrl ?? '')}" placeholder="${escapeHtml(meta?.defaultBaseUrl ?? '')}" />
       </label>
       ${meta?.portalUrl ? `<a class="connector-connect-portal" href="${escapeHtml(meta.portalUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t('Where to get an API key'))}</a>` : ''}
-      <div class="connector-connect-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
-        <button type="button" class="chat-builder-clear" data-connector-connect-cancel>${escapeHtml(t('Cancel'))}</button>
-        <button type="button" class="primary" data-connector-connect-save>${escapeHtml(t('Connect'))}</button>
+      <div class="connector-connect-actions">
+        <button type="button" class="connector-connect-secondary" data-connector-connect-cancel>${escapeHtml(t('Cancel'))}</button>
+        <button type="button" class="connector-connect-primary primary" data-connector-connect-save>${escapeHtml(t('Connect'))}</button>
       </div>`
     : `
-      <p class="connector-connect-intro">${escapeHtml(tf('Enable {name} for this action? It needs no key. Agentic connects to it directly.', { name: connector.name }))}</p>
-      <div class="connector-connect-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
-        <button type="button" class="chat-builder-clear" data-connector-connect-cancel>${escapeHtml(t('Cancel'))}</button>
-        <button type="button" class="primary" data-connector-connect-enable>${escapeHtml(t('Enable'))}</button>
+      <p class="connector-connect-intro">${escapeHtml(tf('Enable {name} for this action. It needs no key; Agentic connects directly.', { name: connector.name }))}</p>
+      <div class="connector-connect-actions">
+        <button type="button" class="connector-connect-secondary" data-connector-connect-cancel>${escapeHtml(t('Cancel'))}</button>
+        <button type="button" class="connector-connect-primary primary" data-connector-connect-enable>${escapeHtml(t('Enable'))}</button>
       </div>`;
+  const panelClass = nativeSheet
+    ? 'connector-connect-popover connector-connect-sheet'
+    : 'chat-action-popover connector-connect-popover';
   const panel = `
-    <div class="chat-action-popover connector-connect-popover" role="dialog" aria-modal="true" style="${sheet ? 'max-width:none;width:100%;border-bottom-left-radius:0;border-bottom-right-radius:0;' : 'max-width:440px;width:100%;'}">
-      <div class="chat-popover-head">
-        <span class="chat-builder-eyebrow">${escapeHtml(tf('Connect {name}', { name: connector.name }))}</span>
-        <button type="button" class="chat-builder-clear" data-connector-connect-cancel aria-label="${escapeHtml(t('Close'))}" title="${escapeHtml(t('Close'))}">&times;</button>
+    <div class="${panelClass}" role="dialog" aria-modal="true" aria-labelledby="connectorConnectTitle">
+      ${nativeSheet ? '<span class="connector-connect-grip" aria-hidden="true"></span>' : ''}
+      <div class="connector-connect-head">
+        <div class="connector-connect-title-row">
+          ${connectorLogo}
+          <div class="connector-connect-title-copy">
+            <span>${escapeHtml(eyebrow)}</span>
+            <h2 id="connectorConnectTitle">${escapeHtml(title)}</h2>
+          </div>
+        </div>
+        <button type="button" class="connector-connect-close" data-connector-connect-cancel aria-label="${escapeHtml(t('Close'))}" title="${escapeHtml(t('Close'))}">&times;</button>
       </div>
       <div class="connector-connect-body">${body}</div>
     </div>`;
-  return `<div class="connector-connect-overlay" data-connector-connect-overlay style="position:fixed;inset:0;z-index:1200;display:flex;align-items:${sheet ? 'flex-end' : 'center'};justify-content:center;background:rgba(0,0,0,0.55);padding:${sheet ? '0' : '16px'};">${panel}</div>`;
+  return `<div class="connector-connect-overlay ${nativeSheet ? 'native-sheet' : ''}" data-connector-connect-overlay>${panel}</div>`;
 }
 
 function bindConnectorConnectSurface(): void {
@@ -39806,10 +39845,10 @@ function bindConnectorConnectSurface(): void {
   if (!session) return;
   const overlay = document.querySelector<HTMLElement>('[data-connector-connect-overlay]');
   overlay?.addEventListener('click', (event) => {
-    if (event.target === overlay) closeConnectorConnect({ revert: true });
+    if (event.target === overlay) closeConnectorConnect();
   });
   for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-connector-connect-cancel]')) {
-    btn.addEventListener('click', () => closeConnectorConnect({ revert: true }));
+    btn.addEventListener('click', () => closeConnectorConnect());
   }
   const connectorName = getAdapterMeta(session.connectorId as ConnectedDappId)?.name ?? session.connectorId;
   // Live-sync the key/base-URL inputs into the session draft so any re-render (e.g. a toast
