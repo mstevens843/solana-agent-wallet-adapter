@@ -1,6 +1,7 @@
 {
   "language": "ru",
   "entries": {
+    "Back to demo": "Назад к демо",
     "Amount exceeds your balance.": "Сумма превышает ваш баланс.",
     "Enter an amount or shares.": "Введите сумму или доли.",
     "Health factor is too low.": "Коэффициент здоровья слишком низкий.",

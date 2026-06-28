@@ -425,6 +425,235 @@ export async function requestBirdeyeWalletTokenList(
   });
 }
 
+export type BirdeyePnlDuration = 'all' | '90d' | '30d' | '7d' | '24h';
+export type BirdeyeTopTraderTimeFrame =
+  | '30m' | '1h' | '2h' | '4h' | '6h' | '8h' | '12h' | '24h'
+  | '2d' | '3d' | '7d' | '14d' | '30d' | '60d' | '90d';
+export type BirdeyeTopTraderSortBy =
+  | 'volume' | 'trade' | 'total_pnl' | 'unrealized_pnl' | 'realized_pnl' | 'volume_usd';
+export type BirdeyeMintBurnType = 'all' | 'mint' | 'burn';
+
+// Wallet current net worth + holdings (sorted by USD value).
+export async function requestBirdeyeWalletNetWorth(
+  wallet: string,
+  options: { limit?: number; offset?: number; env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch } = {},
+): Promise<Record<string, unknown>> {
+  return requestBirdeye('/wallet/v2/current-net-worth', {
+    query: {
+      wallet: requireTrimmed(wallet, 'wallet'),
+      sort_by: 'value',
+      sort_type: 'desc',
+      limit: boundedInteger(options.limit, 20, 1, 100),
+      offset: Math.max(0, Math.trunc(options.offset ?? 0)),
+    },
+    env: options.env,
+    fetchImpl: options.fetchImpl,
+  });
+}
+
+// Wallet realized/unrealized PnL summary. Path is the /pnl/summary sub-path (mirrors tx/first-funded).
+export async function requestBirdeyeWalletPnlSummary(
+  wallet: string,
+  options: {
+    duration?: BirdeyePnlDuration;
+    positionScope?: 'duration_only' | 'cumulative';
+    env?: NodeJS.ProcessEnv;
+    fetchImpl?: typeof fetch;
+  } = {},
+): Promise<Record<string, unknown>> {
+  return requestBirdeye('/wallet/v2/pnl/summary', {
+    query: {
+      wallet: requireTrimmed(wallet, 'wallet'),
+      duration: options.duration ?? 'all',
+      position_scope: options.positionScope ?? 'duration_only',
+    },
+    env: options.env,
+    fetchImpl: options.fetchImpl,
+  });
+}
+
+// Wallet first funding transaction (origin / funder). POST with a wallets[] body.
+export async function requestBirdeyeWalletFirstFunded(
+  wallet: string,
+  options: { tokenAddress?: string; env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch } = {},
+): Promise<Record<string, unknown>> {
+  return requestBirdeye('/wallet/v2/tx/first-funded', {
+    method: 'POST',
+    body: {
+      wallets: [requireTrimmed(wallet, 'wallet')],
+      ...(options.tokenAddress?.trim() ? { token_address: options.tokenAddress.trim() } : {}),
+    },
+    env: options.env,
+    fetchImpl: options.fetchImpl,
+  });
+}
+
+// Top traders of a token (by volume / PnL over a time frame). BirdEye caps limit at 10.
+export async function requestBirdeyeTokenTopTraders(
+  address: string,
+  options: {
+    timeFrame?: BirdeyeTopTraderTimeFrame;
+    sortBy?: BirdeyeTopTraderSortBy;
+    sortType?: 'asc' | 'desc';
+    limit?: number;
+    offset?: number;
+    env?: NodeJS.ProcessEnv;
+    fetchImpl?: typeof fetch;
+  } = {},
+): Promise<Record<string, unknown>> {
+  return requestBirdeye('/defi/v2/tokens/top_traders', {
+    query: {
+      address: requireTrimmed(address, 'address'),
+      time_frame: options.timeFrame ?? '24h',
+      sort_by: options.sortBy ?? 'volume',
+      sort_type: options.sortType ?? 'desc',
+      limit: boundedInteger(options.limit, 10, 1, 10),
+      offset: Math.max(0, Math.trunc(options.offset ?? 0)),
+    },
+    env: options.env,
+    fetchImpl: options.fetchImpl,
+  });
+}
+
+// Token mint/burn transactions — supply changes (dilution / rug signal).
+export async function requestBirdeyeTokenMintBurnTxs(
+  address: string,
+  options: {
+    type?: BirdeyeMintBurnType;
+    sortType?: 'asc' | 'desc';
+    limit?: number;
+    offset?: number;
+    afterTime?: number;
+    beforeTime?: number;
+    env?: NodeJS.ProcessEnv;
+    fetchImpl?: typeof fetch;
+  } = {},
+): Promise<Record<string, unknown>> {
+  return requestBirdeye('/defi/v3/token/mint-burn-txs', {
+    query: {
+      address: requireTrimmed(address, 'address'),
+      sort_by: 'block_time',
+      sort_type: options.sortType ?? 'desc',
+      type: options.type ?? 'all',
+      limit: boundedInteger(options.limit, 50, 1, 100),
+      offset: Math.max(0, Math.trunc(options.offset ?? 0)),
+      after_time: options.afterTime,
+      before_time: options.beforeTime,
+    },
+    env: options.env,
+    fetchImpl: options.fetchImpl,
+  });
+}
+
+export type BirdeyeSmartMoneyInterval = '1d' | '7d' | '30d';
+export type BirdeyeSmartMoneyStyle = 'all' | 'risk_averse' | 'risk_balancers' | 'trenchers';
+export type BirdeyeSmartMoneySortBy = 'net_flow' | 'smart_traders_no' | 'market_cap';
+export type BirdeyeGainersLosersType = 'yesterday' | 'today' | '1W' | '30d' | '90d';
+export type BirdeyeGainersLosersSortBy = 'PnL' | 'realized_pnl' | 'unrealized_pnl';
+export type BirdeyeNetWorthInterval = '1h' | '1d';
+
+// Rich multi-timeframe token trade stats (price change %, volume, buy/sell split, unique wallets, trades).
+export async function requestBirdeyeTokenTradeData(
+  address: string,
+  options: { env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch } = {},
+): Promise<Record<string, unknown>> {
+  return requestBirdeye('/defi/v3/token/trade-data/single', {
+    query: { address: requireTrimmed(address, 'address') },
+    env: options.env,
+    fetchImpl: options.fetchImpl,
+  });
+}
+
+// Tokens accumulated by smart-money traders (premium tier).
+export async function requestBirdeyeSmartMoneyTokens(
+  options: {
+    interval?: BirdeyeSmartMoneyInterval;
+    traderStyle?: BirdeyeSmartMoneyStyle;
+    sortBy?: BirdeyeSmartMoneySortBy;
+    sortType?: 'asc' | 'desc';
+    limit?: number;
+    offset?: number;
+    env?: NodeJS.ProcessEnv;
+    fetchImpl?: typeof fetch;
+  } = {},
+): Promise<Record<string, unknown>> {
+  return requestBirdeye('/smart-money/v1/token/list', {
+    query: {
+      interval: options.interval ?? '1d',
+      trader_style: options.traderStyle ?? 'all',
+      sort_by: options.sortBy ?? 'smart_traders_no',
+      sort_type: options.sortType ?? 'desc',
+      limit: boundedInteger(options.limit, 20, 1, 20),
+      offset: Math.max(0, Math.trunc(options.offset ?? 0)),
+    },
+    env: options.env,
+    fetchImpl: options.fetchImpl,
+  });
+}
+
+// Top gaining / losing traders leaderboard (premium tier).
+export async function requestBirdeyeGainersLosers(
+  options: {
+    type?: BirdeyeGainersLosersType;
+    sortBy?: BirdeyeGainersLosersSortBy;
+    sortType?: 'asc' | 'desc';
+    limit?: number;
+    offset?: number;
+    env?: NodeJS.ProcessEnv;
+    fetchImpl?: typeof fetch;
+  } = {},
+): Promise<Record<string, unknown>> {
+  return requestBirdeye('/trader/gainers-losers', {
+    query: {
+      type: options.type ?? '1W',
+      sort_by: options.sortBy ?? 'PnL',
+      sort_type: options.sortType ?? 'desc',
+      limit: boundedInteger(options.limit, 20, 1, 100),
+      offset: Math.max(0, Math.trunc(options.offset ?? 0)),
+    },
+    env: options.env,
+    fetchImpl: options.fetchImpl,
+  });
+}
+
+// Historical net worth of a wallet by date (chart). Distinct from current-net-worth.
+export async function requestBirdeyeWalletNetWorthHistory(
+  wallet: string,
+  options: {
+    count?: number;
+    direction?: 'back' | 'forward';
+    interval?: BirdeyeNetWorthInterval;
+    time?: number;
+    env?: NodeJS.ProcessEnv;
+    fetchImpl?: typeof fetch;
+  } = {},
+): Promise<Record<string, unknown>> {
+  return requestBirdeye('/wallet/v2/net-worth', {
+    query: {
+      wallet: requireTrimmed(wallet, 'wallet'),
+      count: boundedInteger(options.count, 7, 1, 90),
+      direction: options.direction ?? 'back',
+      type: options.interval ?? '1d',
+      sort_type: 'desc',
+      time: options.time,
+    },
+    env: options.env,
+    fetchImpl: options.fetchImpl,
+  });
+}
+
+// Pair (pool / market) overview stats for a specific pair address.
+export async function requestBirdeyePairOverview(
+  address: string,
+  options: { env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch } = {},
+): Promise<Record<string, unknown>> {
+  return requestBirdeye('/defi/v3/pair/overview/single', {
+    query: { address: requireTrimmed(address, 'address') },
+    env: options.env,
+    fetchImpl: options.fetchImpl,
+  });
+}
+
 export type BirdeyePriceVolumeType = '1h' | '2h' | '4h' | '8h' | '24h';
 export type BirdeyeHistoryPriceType = '1m' | '5m' | '15m' | '30m' | '1H' | '2H' | '4H' | '8H' | '12H' | '1D';
 export type BirdeyeOhlcvType = '1m' | '3m' | '5m' | '15m' | '30m' | '1H' | '2H' | '4H' | '6H' | '8H' | '12H' | '1D' | '1W';

@@ -802,6 +802,78 @@ describe('render web hosted BYOK API', () => {
     });
   });
 
+  it('proxies the new wallet/token-intelligence reads for ANY wallet/token (no session)', async () => {
+    const upstreamCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubEnv('BIRDEYE_API_KEY', 'birdeye-test-key');
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      upstreamCalls.push({ url: String(url), init });
+      return jsonResponse({ data: { items: [] } });
+    }));
+
+    await withServer(async (port) => {
+      const wallet = 'So11111111111111111111111111111111111111112';
+      const netWorth = await postJson(port, '/api/birdeye/wallet-net-worth', { wallet });
+      expect(netWorth.status).toBe(200);
+      expect(upstreamCalls[0]?.url).toContain('/wallet/v2/current-net-worth');
+      expect(upstreamCalls[0]?.url).toContain(`wallet=${wallet}`);
+      expect(new Headers(upstreamCalls[0]?.init?.headers).get('x-api-key')).toBe('birdeye-test-key');
+
+      const pnl = await postJson(port, '/api/birdeye/wallet-pnl', { wallet, duration: '7d' });
+      expect(pnl.status).toBe(200);
+      expect(upstreamCalls[1]?.url).toContain('/wallet/v2/pnl/summary');
+      expect(upstreamCalls[1]?.url).toContain('duration=7d');
+
+      const traders = await postJson(port, '/api/birdeye/token-top-traders', { address: wallet });
+      expect(traders.status).toBe(200);
+      expect(upstreamCalls[2]?.url).toContain('/defi/v2/tokens/top_traders');
+      expect(upstreamCalls[2]?.url).toContain(`address=${wallet}`);
+
+      const mintBurn = await postJson(port, '/api/birdeye/token-mint-burn', { address: wallet });
+      expect(mintBurn.status).toBe(200);
+      expect(upstreamCalls[3]?.url).toContain('/defi/v3/token/mint-burn-txs');
+
+      const holders = await postJson(port, '/api/birdeye/token-holders', { address: wallet });
+      expect(holders.status).toBe(200);
+      expect(upstreamCalls[4]?.url).toContain('/defi/v3/token/holder');
+      expect(new Headers(upstreamCalls[4]?.init?.headers).get('x-api-key')).toBe('birdeye-test-key');
+    });
+  });
+
+  it('proxies the Round-2 activity / pair / alpha / net-worth-history reads', async () => {
+    const upstreamCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubEnv('BIRDEYE_API_KEY', 'birdeye-test-key');
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      upstreamCalls.push({ url: String(url), init });
+      return jsonResponse({ data: { items: [] } });
+    }));
+
+    await withServer(async (port) => {
+      const addr = 'So11111111111111111111111111111111111111112';
+      const activity = await postJson(port, '/api/birdeye/token-activity', { address: addr });
+      expect(activity.status).toBe(200);
+      expect(upstreamCalls[0]?.url).toContain('/defi/v3/token/trade-data/single');
+      expect(new Headers(upstreamCalls[0]?.init?.headers).get('x-api-key')).toBe('birdeye-test-key');
+
+      const pair = await postJson(port, '/api/birdeye/pair-overview', { address: addr });
+      expect(pair.status).toBe(200);
+      expect(upstreamCalls[1]?.url).toContain('/defi/v3/pair/overview/single');
+
+      const smart = await postJson(port, '/api/birdeye/smart-money-tokens', {});
+      expect(smart.status).toBe(200);
+      expect(upstreamCalls[2]?.url).toContain('/smart-money/v1/token/list');
+
+      const gl = await postJson(port, '/api/birdeye/gainers-losers', { type: 'today' });
+      expect(gl.status).toBe(200);
+      expect(upstreamCalls[3]?.url).toContain('/trader/gainers-losers');
+      expect(upstreamCalls[3]?.url).toContain('type=today');
+
+      const nwh = await postJson(port, '/api/birdeye/wallet-net-worth-history', { wallet: addr });
+      expect(nwh.status).toBe(200);
+      expect(upstreamCalls[4]?.url).toContain('/wallet/v2/net-worth');
+      expect(upstreamCalls[4]?.url).toContain(`wallet=${addr}`);
+    });
+  });
+
   it('requires a wallet session before relaying Hosted BYOK drafting', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
@@ -1051,6 +1123,33 @@ describe('render web hosted BYOK API', () => {
         params: ['11111111111111111111111111111111', { direction: 'any', limit: 10 }],
       });
       expect(new Headers(upstreamCalls[0]?.init?.headers).get('x-api-key')).toBe('helius-test-key');
+    });
+  });
+
+  it('proxies session-less Helius priority-fee + parse-transaction reads', async () => {
+    const upstreamCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubEnv('HELIUS_API_KEY', 'helius-test-key');
+    vi.stubEnv('HELIUS_RPC_URL', 'https://helius.example');
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url);
+      upstreamCalls.push({ url: u, init });
+      if (u.includes('/v0/transactions')) {
+        return jsonResponse([{ signature: 'sig1', type: 'SWAP', source: 'JUPITER', description: 'Swapped', fee: 5000, timestamp: 1700000000, tokenTransfers: [], nativeTransfers: [] }]);
+      }
+      return jsonResponse({ result: { priorityFeeEstimate: 60000, priorityFeeLevels: { min: 1, low: 1000, medium: 50000, high: 120000, veryHigh: 500000, unsafeMax: 9000000 } } });
+    }));
+
+    await withServer(async (port) => {
+      const pf = await postJson(port, '/api/helius/priority-fee', {});
+      expect(pf.status).toBe(200);
+      expect(pf.body.recommendedMicroLamports).toBe(60000);
+      expect((pf.body.levels as Record<string, unknown>).high).toBe(120000);
+      expect(JSON.parse(String(upstreamCalls[0]?.init?.body ?? '{}')).method).toBe('getPriorityFeeEstimate');
+
+      const tx = await postJson(port, '/api/helius/parse-transaction', { signature: 'sig1' });
+      expect(tx.status).toBe(200);
+      expect((tx.body.transaction as Record<string, unknown>).type).toBe('SWAP');
+      expect(upstreamCalls.some((c) => c.url.includes('/v0/transactions'))).toBe(true);
     });
   });
 

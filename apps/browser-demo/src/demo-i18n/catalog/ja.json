@@ -1,6 +1,7 @@
 {
   "language": "ja",
   "entries": {
+    "Back to demo": "デモに戻る",
     "Amount exceeds your balance.": "金額が残高を超えています。",
     "Enter an amount or shares.": "金額またはシェアを入力してください。",
     "Health factor is too low.": "ヘルスファクターが低すぎます。",

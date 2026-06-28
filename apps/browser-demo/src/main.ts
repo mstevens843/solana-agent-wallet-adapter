@@ -12236,7 +12236,20 @@ function notFoundPage(): string {
   `;
 }
 
+function appBackPill(): string {
+  // Native /app only: a compact floating "‹ Demo" pill replaces the full website nav
+  // so the workspace content can move up and reclaim the nav band. Plain <a href="/demo">
+  // — bindRouteLinks() already intercepts it for SPA navigation (no extra binding needed).
+  return `
+    <a class="app-back-pill" href="/demo" data-site-link="/demo" aria-label="${escapeHtml(t('Back to demo'))}">
+      <span class="app-back-pill-chevron" aria-hidden="true">&#8249;</span>
+      <span class="app-back-pill-label">${escapeHtml(t('Demo'))}</span>
+    </a>
+  `;
+}
+
 function homepageNav(activeRoute: AppRoute | null): string {
+  if (activeRoute === '/app' && isNativeAppShellSurface()) return appBackPill();
   const isTauri = state.tauriNativeEnvironment.isTauriNative;
   const visibleNavItems = isTauri
     ? NAV_ITEMS.filter((item) => !item.hideInTauri)
@@ -23570,6 +23583,13 @@ function isChatReasoningLevel(value: unknown): value is ChatReasoningLevel {
 
 function buildClientChatToolDeps(): ClientChatToolDeps {
   return {
+    // Canonical-first token resolution (mirrors the swap path): a known symbol maps to its
+    // canonical mint so the price/market tools can't pick a higher-liquidity same-symbol sibling
+    // (the "JUP" → jlUSDC $1.05 bug). Unknown symbols fall through to searchTokens.
+    canonicalToken: (value) => {
+      const known = KNOWN_BROWSER_TOKENS[value.trim().replace(/^\$/, '').toUpperCase()];
+      return known ? { mint: known.mint, symbol: known.symbol } : null;
+    },
     searchTokens: async (query) =>
       (await searchTokens(query)).map((r): ClientResolvedToken => ({
         mint: r.mint,
@@ -23759,8 +23779,312 @@ function buildClientChatToolDeps(): ClientChatToolDeps {
         return { unavailable: true, error: err instanceof Error ? err.message : String(err) };
       }
     },
-    // coinMarket / trendingCoins (CoinGecko cross-chain) are intentionally left unwired on
-    // the direct-browser device path — they work on the BYOK-hosted / bridge / single-shot
+    // Wallet/token intelligence via the existing BirdEye proxy (bridge → cloud). Each projects the
+    // raw envelope to the SAME compact shape as the server resolver so every chat path matches.
+    walletPortfolio: async (wallet) => {
+      try {
+        const raw = await tokenMarketRequest('/wallet-net-worth', { wallet, limit: 15 });
+        const data = asRecord(raw.data) ?? raw;
+        const items = Array.isArray(data.items) ? data.items : [];
+        const holdings = items.slice(0, 10).map((entry) => {
+          const it = asRecord(entry) ?? {};
+          return {
+            symbol: stringField(it.symbol) ?? null,
+            mint: stringField(it.address ?? it.mint) ?? null,
+            valueUsd: numberField(it.value ?? it.valueUsd ?? it.value_usd) ?? null,
+            uiAmount: numberField(it.uiAmount ?? it.ui_amount) ?? null,
+          };
+        });
+        return {
+          wallet,
+          netWorthUsd: numberField(data.totalUsd ?? data.total_usd ?? data.netWorth ?? data.net_worth ?? data.totalValueUsd ?? data.value) ?? null,
+          holdings,
+          source: 'birdeye',
+        };
+      } catch (err) {
+        return { wallet, unavailable: true, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    walletPnl: async (wallet, duration) => {
+      try {
+        const raw = await tokenMarketRequest('/wallet-pnl', { wallet, duration });
+        const data = asRecord(raw.data) ?? raw;
+        return {
+          wallet,
+          duration,
+          realizedPnlUsd: numberField(data.realizedPnlUsd ?? data.realized_pnl ?? data.realizedPnl) ?? null,
+          unrealizedPnlUsd: numberField(data.unrealizedPnlUsd ?? data.unrealized_pnl ?? data.unrealizedPnl) ?? null,
+          totalPnlUsd: numberField(data.totalPnlUsd ?? data.total_pnl ?? data.totalPnl ?? data.pnl) ?? null,
+          roiPct: numberField(data.roi ?? data.roiPct ?? data.roi_percent) ?? null,
+          winRatePct: numberField(data.winRate ?? data.win_rate ?? data.winRatePct) ?? null,
+          tradeCount: numberField(data.tradeCount ?? data.trade_count ?? data.totalTrades) ?? null,
+          source: 'birdeye',
+        };
+      } catch (err) {
+        return { wallet, unavailable: true, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    walletOrigin: async (wallet) => {
+      try {
+        const raw = await tokenMarketRequest('/wallet-first-funded', { wallet });
+        const data = asRecord(raw.data) ?? raw;
+        const items = Array.isArray(data.items) ? data.items : [];
+        const entry = asRecord(data[wallet]) ?? asRecord(items[0]) ?? data;
+        const ts = numberField(entry.blockTime ?? entry.block_time ?? entry.timestamp ?? entry.blockUnixTime ?? entry.block_unix_time);
+        return {
+          wallet,
+          funder: stringField(entry.from ?? entry.source ?? entry.funder ?? entry.owner ?? entry.fromAddress ?? entry.from_address) ?? null,
+          txHash: stringField(entry.txHash ?? entry.tx_hash ?? entry.signature ?? entry.tx) ?? null,
+          fundedAt: stringField(entry.blockHumanTime) ?? (ts !== undefined ? new Date(ts * 1000).toISOString() : null),
+          amount: numberField(entry.uiAmount ?? entry.ui_amount ?? entry.amount) ?? null,
+          source: 'birdeye',
+        };
+      } catch (err) {
+        return { wallet, unavailable: true, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    tokenTopTraders: async (mint) => {
+      try {
+        const raw = await tokenMarketRequest('/token-top-traders', { address: mint });
+        const data = asRecord(raw.data) ?? raw;
+        const items = Array.isArray(data.items) ? data.items : [];
+        const traders = items.slice(0, 10).map((entry) => {
+          const it = asRecord(entry) ?? {};
+          return {
+            address: stringField(it.owner ?? it.address ?? it.wallet ?? it.trader) ?? null,
+            volumeUsd: numberField(it.volume ?? it.volumeUsd ?? it.volume_usd) ?? null,
+            trades: numberField(it.trade ?? it.trades ?? it.tradeCount ?? it.trade_count) ?? null,
+            pnlUsd: numberField(it.total_pnl ?? it.totalPnl ?? it.pnl) ?? null,
+          };
+        });
+        return { mint, timeFrame: '24h', count: traders.length, traders, source: 'birdeye' };
+      } catch (err) {
+        return { mint, unavailable: true, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    tokenSupplyChanges: async (mint) => {
+      try {
+        const raw = await tokenMarketRequest('/token-mint-burn', { address: mint, type: 'all' });
+        const data = asRecord(raw.data) ?? raw;
+        const items = Array.isArray(data.items) ? data.items : [];
+        let mintCount = 0;
+        let burnCount = 0;
+        const changes = items.slice(0, 15).map((entry) => {
+          const it = asRecord(entry) ?? {};
+          const type = stringField(it.type ?? it.txType ?? it.tx_type) ?? null;
+          if (type === 'mint') mintCount += 1;
+          else if (type === 'burn') burnCount += 1;
+          const ts = numberField(it.blockTime ?? it.block_time ?? it.blockUnixTime ?? it.block_unix_time);
+          return {
+            type,
+            uiAmount: numberField(it.uiAmount ?? it.ui_amount ?? it.amount) ?? null,
+            txHash: stringField(it.txHash ?? it.tx_hash ?? it.signature) ?? null,
+            time: stringField(it.blockHumanTime) ?? (ts !== undefined ? new Date(ts * 1000).toISOString() : null),
+          };
+        });
+        return { mint, mintCount, burnCount, count: changes.length, changes, source: 'birdeye' };
+      } catch (err) {
+        return { mint, unavailable: true, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    tokenActivity: async (mint) => {
+      try {
+        const raw = await tokenMarketRequest('/token-activity', { address: mint });
+        const d = asRecord(raw.data) ?? raw;
+        return {
+          mint,
+          price: numberField(d.price) ?? null,
+          priceChangePct: {
+            '1h': numberField(d.price_change_1h_percent) ?? null,
+            '4h': numberField(d.price_change_4h_percent) ?? null,
+            '24h': numberField(d.price_change_24h_percent) ?? null,
+          },
+          volumeUsd: { '1h': numberField(d.volume_1h_usd) ?? null, '24h': numberField(d.volume_24h_usd) ?? null },
+          buyVsSell24hUsd: { buy: numberField(d.volume_buy_24h_usd) ?? null, sell: numberField(d.volume_sell_24h_usd) ?? null },
+          uniqueWallets24h: numberField(d.unique_wallet_24h) ?? null,
+          trades24h: numberField(d.trade_24h) ?? null,
+          buys24h: numberField(d.buy_24h) ?? null,
+          sells24h: numberField(d.sell_24h) ?? null,
+          holders: numberField(d.holder) ?? null,
+          markets: numberField(d.market) ?? null,
+          source: 'birdeye',
+        };
+      } catch (err) {
+        return { mint, unavailable: true, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    pairOverview: async (address) => {
+      try {
+        const raw = await tokenMarketRequest('/pair-overview', { address });
+        const d = asRecord(raw.data) ?? raw;
+        return {
+          pair: address,
+          name: stringField(d.name) ?? null,
+          dex: stringField(d.source ?? d.dex ?? d.amm) ?? null,
+          liquidityUsd: numberField(d.liquidity) ?? null,
+          volume24hUsd: numberField(d.volume_24h ?? d.volume_24h_usd ?? d.v24hUSD) ?? null,
+          price: numberField(d.price ?? d.current_price) ?? null,
+          trades24h: numberField(d.trade_24h ?? d.trades_24h) ?? null,
+          source: 'birdeye',
+        };
+      } catch (err) {
+        return { pair: address, unavailable: true, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    smartMoneyTokens: async () => {
+      try {
+        const raw = await tokenMarketRequest('/smart-money-tokens', { limit: 15 });
+        const d = asRecord(raw.data) ?? raw;
+        const rows = Array.isArray(d.items) ? d.items : Array.isArray(d.tokens) ? d.tokens : [];
+        const tokens = rows.slice(0, 15).map((entry) => {
+          const it = asRecord(entry) ?? {};
+          return {
+            symbol: stringField(it.symbol) ?? null,
+            mint: stringField(it.address ?? it.mint ?? it.token_address) ?? null,
+            name: stringField(it.name) ?? null,
+            smartTraders: numberField(it.smart_traders_no ?? it.smartTradersNo ?? it.smart_traders) ?? null,
+            netFlowUsd: numberField(it.net_flow ?? it.netFlow ?? it.net_flow_usd) ?? null,
+            marketCap: numberField(it.market_cap ?? it.marketCap ?? it.mc) ?? null,
+          };
+        });
+        return { count: tokens.length, tokens, note: 'tokens accumulated by smart-money traders', source: 'birdeye' };
+      } catch (err) {
+        return { unavailable: true, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    gainersLosers: async (type) => {
+      try {
+        const raw = await tokenMarketRequest('/gainers-losers', { type });
+        const d = asRecord(raw.data) ?? raw;
+        const rows = Array.isArray(d.items) ? d.items : Array.isArray(d.traders) ? d.traders : [];
+        const traders = rows.slice(0, 15).map((entry) => {
+          const it = asRecord(entry) ?? {};
+          return {
+            address: stringField(it.owner ?? it.address ?? it.wallet ?? it.trader) ?? null,
+            pnlUsd: numberField(it.pnl ?? it.total_pnl ?? it.pnl_usd ?? it.PnL) ?? null,
+            volumeUsd: numberField(it.volume ?? it.volume_usd ?? it.trade_volume) ?? null,
+            trades: numberField(it.trade_count ?? it.trades ?? it.trade) ?? null,
+          };
+        });
+        return { type, count: traders.length, traders, source: 'birdeye' };
+      } catch (err) {
+        return { unavailable: true, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    walletNetWorthHistory: async (wallet) => {
+      try {
+        const raw = await tokenMarketRequest('/wallet-net-worth-history', { wallet, count: 30 });
+        const d = asRecord(raw.data) ?? raw;
+        const rows = Array.isArray(d.items) ? d.items : Array.isArray(d.history) ? d.history : [];
+        const points = rows.map((entry) => {
+          const it = asRecord(entry) ?? {};
+          const ts = numberField(it.unixTime ?? it.unix_time ?? it.timestamp);
+          return {
+            time: stringField(it.dateHuman ?? it.date ?? it.human_time) ?? (ts !== undefined ? new Date(ts * 1000).toISOString() : null),
+            netWorthUsd: numberField(it.value ?? it.netWorth ?? it.net_worth ?? it.totalUsd ?? it.total_usd) ?? null,
+          };
+        }).filter((p) => p.netWorthUsd !== null);
+        const current = points[0]?.netWorthUsd ?? null;
+        const earliest = points[points.length - 1]?.netWorthUsd ?? null;
+        const changePct = current !== null && earliest !== null && earliest !== 0 ? ((current - earliest) / earliest) * 100 : null;
+        return { wallet, points: points.length, current, earliest, changePct, series: points.slice(0, 8), source: 'birdeye' };
+      } catch (err) {
+        return { wallet, unavailable: true, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    // Network conditions (Helius priority fee) via the helius-action proxy; projects to the SAME
+    // shape as the server resolveChatPriorityFee (incl. derived congestion label).
+    priorityFee: async () => {
+      try {
+        const raw = await heliusActionRequest('priority-fee', {});
+        const d = asRecord(raw.data) ?? raw;
+        const levels = asRecord(d.levels) ?? {};
+        const recommended = numberField(d.recommendedMicroLamports) ?? null;
+        const high = numberField(levels.high) ?? null;
+        const ref = recommended ?? high;
+        const congestion = ref === null ? null : ref >= 1_000_000 ? 'very high' : ref >= 200_000 ? 'high' : ref >= 50_000 ? 'moderate' : 'low';
+        return {
+          recommendedMicroLamports: recommended,
+          levels: {
+            min: numberField(levels.min) ?? null,
+            low: numberField(levels.low) ?? null,
+            medium: numberField(levels.medium) ?? null,
+            high,
+            veryHigh: numberField(levels.veryHigh) ?? null,
+            unsafeMax: numberField(levels.unsafeMax) ?? null,
+          },
+          congestion,
+          note: 'priority fee in micro-lamports per compute unit; as of now (changes within seconds)',
+          source: 'helius',
+        };
+      } catch (err) {
+        return { unavailable: true, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    // Explain a transaction (Helius enhanced parse) via the helius-action proxy; same compact shape
+    // as the server resolveChatTransaction.
+    transaction: async (signature) => {
+      try {
+        const raw = await heliusActionRequest('parse-transaction', { signature });
+        const tx = asRecord(raw.transaction) ?? asRecord(raw.data) ?? raw;
+        if (!tx || tx.unavailable) return { signature, unavailable: true, reason: 'not_found' };
+        const ts = numberField(tx.timestamp);
+        const fee = numberField(tx.fee);
+        const tokenTransfers = Array.isArray(tx.tokenTransfers) ? tx.tokenTransfers.slice(0, 8).map((entry) => {
+          const t = asRecord(entry) ?? {};
+          return {
+            from: stringField(t.fromUserAccount) ?? null,
+            to: stringField(t.toUserAccount) ?? null,
+            amount: numberField(t.tokenAmount) ?? null,
+            mint: stringField(t.mint) ?? null,
+          };
+        }) : [];
+        const nativeTransfers = Array.isArray(tx.nativeTransfers) ? tx.nativeTransfers.slice(0, 8).map((entry) => {
+          const t = asRecord(entry) ?? {};
+          return {
+            from: stringField(t.fromUserAccount) ?? null,
+            to: stringField(t.toUserAccount) ?? null,
+            lamports: numberField(t.amount) ?? null,
+          };
+        }) : [];
+        return {
+          signature,
+          type: stringField(tx.type) ?? null,
+          source: stringField(tx.source) ?? null,
+          description: stringField(tx.description) ?? null,
+          feeSol: fee !== undefined ? fee / 1e9 : null,
+          timestamp: ts !== undefined ? new Date(ts * 1000).toISOString() : null,
+          ...(stringField(tx.transactionError ?? tx.error) ? { failed: true } : {}),
+          tokenTransfers,
+          nativeTransfers,
+          provider: 'helius',
+        };
+      } catch (err) {
+        return { signature, unavailable: true, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    // Top holders via the existing BirdEye token-holders proxy; same compact shape as the server resolver.
+    tokenHolders: async (mint) => {
+      try {
+        const raw = await tokenMarketRequest('/token-holders', { address: mint });
+        const d = asRecord(raw.data) ?? raw;
+        const rows = Array.isArray(d.items) ? d.items : [];
+        const holders = rows.slice(0, 10).map((entry) => {
+          const it = asRecord(entry) ?? {};
+          return {
+            owner: stringField(it.owner ?? it.ownerAddress ?? it.owner_address ?? it.address) ?? null,
+            uiAmount: numberField(it.uiAmount ?? it.ui_amount ?? it.amount) ?? null,
+            pct: numberField(it.percentage ?? it.pct ?? it.percent ?? it.share) ?? null,
+          };
+        });
+        const topHoldersPct = holders.reduce((sum, h) => sum + (typeof h.pct === 'number' ? h.pct : 0), 0) || null;
+        return { mint, count: holders.length, topHoldersPct, holders, source: 'birdeye' };
+      } catch (err) {
+        return { mint, unavailable: true, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    // coinMarket / trendingCoins / coinCategories (CoinGecko cross-chain) are intentionally left
+    // unwired on the direct-browser device path — they work on the BYOK-hosted / bridge / single-shot
     // server paths; on-device they degrade to graceful "unavailable".
   };
 }
@@ -24891,7 +25215,20 @@ function promoteChatProposalToPreparedAction(sessionId: string, messageId: strin
   try {
     action = createBrowserPreparedActionFromProposal(message.proposal);
   } catch (err) {
-    pushToast('error', t('Could not prepare action'), redactSecrets(err instanceof Error ? err.message : String(err)));
+    const reason = redactSecrets(err instanceof Error ? err.message : String(err));
+    pushToast('error', t('Could not prepare action'), reason);
+    // Surface the prepare failure in chat too, so the proposal doesn't look like it silently did nothing.
+    appendChatMessage(session.id, {
+      id: newId('chat-msg'),
+      role: 'assistant',
+      content: tf('Could not prepare this action: {reason}', { reason }),
+      createdAt: new Date().toISOString(),
+      status: 'error',
+    });
+    session.updatedAt = new Date().toISOString();
+    chatForceScrollBottom = true;
+    saveChatHistoryState();
+    if (state.activeTab === 'chat') render();
     return null;
   }
   state.preparedActions = mergePreparedActions([action], state.preparedActions);
@@ -24924,6 +25261,14 @@ const chatActionInterimPosted = new Set<string>();
 // would otherwise fall through to the proposal branch and wrongly re-offer "Prepare for approval";
 // this lets it render a tidy "Deleted." note instead.
 const chatDeletedActionIds = new Set<string>();
+
+// Clear the interim/terminal message dedup for an action so a FRESH execution attempt (after a
+// decline, a failed tx, or a stale-pending recovery) posts its own "Submitted…"/confirmation again
+// instead of being suppressed by a stale flag from the previous attempt.
+function resetChatActionMessageDedup(actionId: string): void {
+  chatActionInterimPosted.delete(actionId);
+  chatActionResultPosted.delete(actionId);
+}
 
 type ChatActionParse =
   | { kind: 'none' } // not a wallet-action message -> fall through to the agent
@@ -50979,6 +51324,18 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
   if (isBrowserWorkflowId(actionId)) {
     await run('inbox', async () => {
       await runBrowserPreparedActionOp(actionId, op);
+    }, {
+      // Safety net: any error thrown OUT of a chat op (device-unsupported, pruned/"not found", a
+      // future throw) is otherwise only a toast. Surface it in chat too — without double-posting:
+      // execute failures are handled inside executeBrowserPreparedAction (no throw); proof failures
+      // throw with `toastShown` set (they already posted their own chat failure) and are skipped here.
+      onError: (message, err) => {
+        const handled = Boolean((err as { toastShown?: boolean } | undefined)?.toastShown);
+        if (!handled) pushToast('error', t('Action failed'), message);
+        if (handled) return;
+        const act = state.preparedActions.find((candidate) => candidate.id === actionId);
+        if (act && isChatOriginatedAction(act)) postChatActionFailureMessage(act, message);
+      },
     });
     return;
   }
@@ -51907,8 +52264,11 @@ async function runBrowserPreparedActionOp(actionId: string, op: string): Promise
         const proofSignature = await signBrowserWorkflowDecision(action, 'approved');
         completeBrowserPreparedAction(action, 'approved', proofSignature);
         // Chat-card ops stay in Chat but still seed/close any position; rail ops navigate to Done.
-        if (isChatOriginatedAction(action)) applyActionCompletionSideEffects(action.id);
-        else showCompletedHistoryForAction(action.id);
+        if (isChatOriginatedAction(action)) {
+          applyActionCompletionSideEffects(action.id);
+          // Unlike the sign-proof path, completeBrowserPreparedAction posts no chat message — do it here.
+          postChatActionSuccessMessage(action, { txStatus: 'confirmed' });
+        } else showCompletedHistoryForAction(action.id);
         completeProofSigningToast(proofToastId, 'success', t('Decision proof saved'), t('Wallet proof saved in Done. No transaction was submitted.'));
       } catch (err) {
         const message = redactSecrets(err instanceof Error ? err.message : String(err));
@@ -52077,6 +52437,9 @@ async function runBrowserTransactionConfirm(action: PreparedAction): Promise<voi
         linkHref: explorerUrl(txid, action.cluster),
         linkLabel: t('Open Solscan'),
       });
+      // The confirm catch handles in-place (no re-throw), so the run() error net never sees this —
+      // post the chat failure here so a chat-originated confirm never fails silently.
+      if (isChatOriginatedAction(action)) postChatActionFailureMessage(action, toastCopy.message, txid);
       return;
     }
     replaceToast(toastId, 'pending', toastCopy.title, toastCopy.message, {
@@ -52422,6 +52785,9 @@ async function executeBrowserPreparedAction(action: PreparedAction): Promise<voi
   if (policyError) {
     throw new Error(policyError);
   }
+  // A fresh sign attempt (Approve clicked again after a decline / failed tx / stale-pending
+  // recovery) must be free to re-post its "Submitted…"/confirmation messages in chat.
+  resetChatActionMessageDedup(action.id);
   const priorStatus: PreparedActionStatus = action.status === 'overdue' ? 'overdue' : 'ready';
 
   // Pre-flight only resumes a transaction the UI already treats as pending.
@@ -61998,6 +62364,36 @@ async function heliusDasRequest(body: Record<string, unknown>): Promise<Record<s
   }
   try {
     const response = await fetch('/api/helius/das', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json().catch(() => null) as unknown;
+    if (!response.ok) throw new Error(cloudErrorMessage(payload, response.status));
+    return asRecord(payload) ?? {};
+  } catch (err) {
+    if (bridgeError) throw bridgeError;
+    throw err;
+  }
+}
+
+// Generic Helius action proxy (bridge → cloud), parameterized by route suffix. Bridge route is
+// `/bridge/action/helius-{path}`, cloud is `/api/helius/{path}` (e.g. 'priority-fee', 'parse-transaction').
+async function heliusActionRequest(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  let bridgeError: unknown;
+  if (state.bridgeActive && state.bridgeToken && isTrustedBridgeUrl(state.bridgeUrl)) {
+    try {
+      return await bridgeRequest<Record<string, unknown>>(`/bridge/action/helius-${path}`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      bridgeError = err;
+    }
+  }
+  try {
+    const response = await fetch(`/api/helius/${path}`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'content-type': 'application/json' },

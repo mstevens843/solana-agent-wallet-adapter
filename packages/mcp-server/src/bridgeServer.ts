@@ -31,20 +31,40 @@ import { makeTransactionSimulator } from './simulationDigest.js';
 import {
   birdeyeConfigFromEnv,
   requestBirdeyeExitLiquidityMulti,
+  requestBirdeyeGainersLosers,
   requestBirdeyeHistoryPrice,
   requestBirdeyeNewListings,
   requestBirdeyeOhlcv,
+  requestBirdeyePairOverview,
   requestBirdeyePriceMulti,
   requestBirdeyePriceVolumeMulti,
   requestBirdeyePriceVolumeSingle,
   requestBirdeyeSearch,
+  requestBirdeyeSmartMoneyTokens,
   requestBirdeyeTokenCreationInfo,
   requestBirdeyeTokenHolders,
   requestBirdeyeTokenListV3,
   requestBirdeyeTokenMetadata,
+  requestBirdeyeTokenMintBurnTxs,
   requestBirdeyeTokenSecurity,
+  requestBirdeyeTokenTopTraders,
+  requestBirdeyeTokenTradeData,
   requestBirdeyeTrendingTokens,
+  requestBirdeyeWalletFirstFunded,
+  requestBirdeyeWalletNetWorth,
+  requestBirdeyeWalletNetWorthHistory,
+  requestBirdeyeWalletPnlSummary,
   requestBirdeyeWalletTokenList,
+  type BirdeyeGainersLosersSortBy,
+  type BirdeyeGainersLosersType,
+  type BirdeyeMintBurnType,
+  type BirdeyeNetWorthInterval,
+  type BirdeyePnlDuration,
+  type BirdeyeSmartMoneyInterval,
+  type BirdeyeSmartMoneySortBy,
+  type BirdeyeSmartMoneyStyle,
+  type BirdeyeTopTraderSortBy,
+  type BirdeyeTopTraderTimeFrame,
   type BirdeyeHistoryPriceType,
   type BirdeyeOhlcvType,
   type BirdeyePriceVolumeType,
@@ -57,7 +77,7 @@ import {
   requestCoinGeckoGlobal,
   requestCoinGeckoSolanaTokenEvidence,
 } from './coingecko.js';
-import { heliusConfigFromEnv, sendRawTransactionWithRebate, getHeliusAssetsByOwner, getHeliusAsset } from './helius.js';
+import { heliusConfigFromEnv, sendRawTransactionWithRebate, getHeliusAssetsByOwner, getHeliusAsset, getHeliusPriorityFeeLevels, parseHeliusTransactions } from './helius.js';
 import { defaultRpcUrl, getPhoenixVulcanPolicy, type AgentWalletConfig } from './config.js';
 import { normalizeConnectorSecretBaseUrl } from './connectorSecretUrl.js';
 import { parseDecimalAmount } from './amounts.js';
@@ -764,6 +784,84 @@ async function handleRequest(
       writeJson(res, 200, await requestBirdeyeExitLiquidityMulti(requireStringArray(body.addresses, 'addresses')));
       return;
     }
+    // Wallet-intelligence reads accept an ARBITRARY wallet (public on-chain analytics), unlike
+    // wallet-token-list which is self-scoped. Rate-limited via the 'capped' tier.
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/wallet-net-worth') {
+      const body = (await readJson(req)) as { wallet?: unknown; walletAddress?: unknown; limit?: number; offset?: number };
+      const wallet = requireString(body.wallet ?? body.walletAddress, 'wallet');
+      writeJson(res, 200, await requestBirdeyeWalletNetWorth(wallet, { limit: body.limit, offset: body.offset }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/wallet-pnl') {
+      const body = (await readJson(req)) as { wallet?: unknown; walletAddress?: unknown; duration?: BirdeyePnlDuration; positionScope?: 'duration_only' | 'cumulative' };
+      const wallet = requireString(body.wallet ?? body.walletAddress, 'wallet');
+      writeJson(res, 200, await requestBirdeyeWalletPnlSummary(wallet, { duration: body.duration, positionScope: body.positionScope }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/wallet-first-funded') {
+      const body = (await readJson(req)) as { wallet?: unknown; walletAddress?: unknown; tokenAddress?: unknown };
+      const wallet = requireString(body.wallet ?? body.walletAddress, 'wallet');
+      writeJson(res, 200, await requestBirdeyeWalletFirstFunded(wallet, {
+        tokenAddress: typeof body.tokenAddress === 'string' ? body.tokenAddress : undefined,
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/token-top-traders') {
+      const body = (await readJson(req)) as {
+        address?: unknown; timeFrame?: BirdeyeTopTraderTimeFrame; sortBy?: BirdeyeTopTraderSortBy; sortType?: 'asc' | 'desc'; limit?: number; offset?: number;
+      };
+      writeJson(res, 200, await requestBirdeyeTokenTopTraders(requireString(body.address, 'address'), {
+        timeFrame: body.timeFrame, sortBy: body.sortBy, sortType: body.sortType, limit: body.limit, offset: body.offset,
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/token-mint-burn') {
+      const body = (await readJson(req)) as {
+        address?: unknown; type?: BirdeyeMintBurnType; sortType?: 'asc' | 'desc'; limit?: number; offset?: number;
+      };
+      writeJson(res, 200, await requestBirdeyeTokenMintBurnTxs(requireString(body.address, 'address'), {
+        type: body.type, sortType: body.sortType, limit: body.limit, offset: body.offset,
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/token-activity') {
+      const body = (await readJson(req)) as { address?: unknown };
+      writeJson(res, 200, await requestBirdeyeTokenTradeData(requireString(body.address, 'address')));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/pair-overview') {
+      const body = (await readJson(req)) as { address?: unknown };
+      writeJson(res, 200, await requestBirdeyePairOverview(requireString(body.address, 'address')));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/smart-money-tokens') {
+      const body = (await readJson(req)) as {
+        interval?: BirdeyeSmartMoneyInterval; traderStyle?: BirdeyeSmartMoneyStyle; sortBy?: BirdeyeSmartMoneySortBy; sortType?: 'asc' | 'desc'; limit?: number; offset?: number;
+      };
+      writeJson(res, 200, await requestBirdeyeSmartMoneyTokens({
+        interval: body.interval, traderStyle: body.traderStyle, sortBy: body.sortBy, sortType: body.sortType, limit: body.limit, offset: body.offset,
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/gainers-losers') {
+      const body = (await readJson(req)) as {
+        type?: BirdeyeGainersLosersType; sortBy?: BirdeyeGainersLosersSortBy; sortType?: 'asc' | 'desc'; limit?: number; offset?: number;
+      };
+      writeJson(res, 200, await requestBirdeyeGainersLosers({
+        type: body.type, sortBy: body.sortBy, sortType: body.sortType, limit: body.limit, offset: body.offset,
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/wallet-net-worth-history') {
+      const body = (await readJson(req)) as {
+        wallet?: unknown; walletAddress?: unknown; count?: number; direction?: 'back' | 'forward'; interval?: BirdeyeNetWorthInterval;
+      };
+      const wallet = requireString(body.wallet ?? body.walletAddress, 'wallet');
+      writeJson(res, 200, await requestBirdeyeWalletNetWorthHistory(wallet, {
+        count: body.count, direction: body.direction, interval: body.interval,
+      }));
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/bridge/action/helius-das') {
       const body = (await readJson(req)) as { op?: string; address?: string; mint?: string; tokenType?: string; limit?: number };
       if (body.op === 'asset') {
@@ -776,6 +874,17 @@ async function handleRequest(
         const tokenType = body.tokenType === 'fungible' || body.tokenType === 'all' ? body.tokenType : 'nonFungible';
         writeJson(res, 200, await getHeliusAssetsByOwner(address, { tokenType, limit: body.limit }));
       }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/action/helius-priority-fee') {
+      writeJson(res, 200, await getHeliusPriorityFeeLevels());
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/action/helius-parse-transaction') {
+      const body = (await readJson(req)) as { signature?: unknown };
+      const sig = requireString(body.signature, 'signature');
+      const parsed = await parseHeliusTransactions([sig]);
+      writeJson(res, 200, { transaction: parsed[0] ?? null });
       return;
     }
     if (req.method === 'POST' && url.pathname === '/bridge/birdeye/price-volume') {
@@ -1712,6 +1821,8 @@ function requiredTier(method: string, pathname: string): AgentTier | null {
     if (pathname === '/bridge/action/token-lists') return 'capped';
     if (pathname === '/bridge/action/token-safety-evidence') return 'capped';
     if (pathname === '/bridge/action/helius-history') return 'capped';
+    if (pathname === '/bridge/action/helius-priority-fee') return 'capped';
+    if (pathname === '/bridge/action/helius-parse-transaction') return 'capped';
     if (pathname.startsWith('/bridge/coingecko/')) return 'capped';
     if (pathname.startsWith('/bridge/jupiter/')) return 'capped';
     if (pathname === '/bridge/solana/latest-blockhash') return 'full';

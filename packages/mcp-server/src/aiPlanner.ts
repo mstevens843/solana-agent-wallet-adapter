@@ -1,6 +1,7 @@
 import {
   customOpenAiCompatibleBaseUrlError,
   ProtocolError,
+  walletBalancePriceInfoMapFromBirdeye,
 } from '@solana-agent-wallet-adapter/core';
 import {
   appendReviewFinding,
@@ -53,7 +54,15 @@ import {
   type SimulationDigest,
   type TxGateContext,
 } from '@solana-agent-wallet-adapter/workflow';
-import { sanitizeUserTextOrEmpty, streamAgentChat, validateChatProposedAction } from '@solana-agent-wallet-adapter/workflow';
+import {
+  chatFactHasCategory,
+  chatMentionsOwnWalletText as workflowChatMentionsOwnWalletText,
+  chatTextNeedsWebResearch as workflowChatTextNeedsWebResearch,
+  classifyChatFactText,
+  sanitizeUserTextOrEmpty,
+  streamAgentChat,
+  validateChatProposedAction,
+} from '@solana-agent-wallet-adapter/workflow';
 import {
   buildConnectorContext,
   clampConnectorFacts,
@@ -74,16 +83,38 @@ import {
 } from './connectorCli.js';
 import { connectorRegistryPromptContext } from './connectorRegistry.js';
 import { BLINK_CLASSIFIER_REVIEW_PROMPT } from './blinkClassification.js';
-import { createMcpCapabilityResolver } from './agentResolvers/index.js';
+import { createMcpCapabilityResolver, mintForSymbol, coingeckoIdForSymbol } from './agentResolvers/index.js';
 import { getJupiterPriceBatch } from './adapters/jupiter/prices.js';
 import { getJupiterTokenCategory, getJupiterTokenSearch } from './adapters/jupiter/tokens.js';
 import { getJupiterTokenRiskEvidence } from './adapters/jupiter/tokenEvidence.js';
-import { requestCoinGeckoGlobal, requestCoinGecko, requestCoinGeckoCoinMarket, requestCoinGeckoTrending } from './coingecko.js';
-import { requestBirdeyeNewListings } from './birdeye.js';
-import { getMintCreationTxForMint, getHeliusTransactionHistory, getHeliusAsset, getHeliusAssetsByOwner } from './helius.js';
+import { requestCoinGeckoGlobal, requestCoinGecko, requestCoinGeckoCoinMarket, requestCoinGeckoTrending, requestCoinGeckoEndpoint } from './coingecko.js';
+import {
+  requestBirdeyeGainersLosers,
+  requestBirdeyeNewListings,
+  requestBirdeyePairOverview,
+  requestBirdeyePrice,
+  requestBirdeyePriceMulti,
+  requestBirdeyeSmartMoneyTokens,
+  requestBirdeyeSearch,
+  requestBirdeyeTokenCreationInfo,
+  requestBirdeyeTokenHolders,
+  requestBirdeyeTokenMintBurnTxs,
+  requestBirdeyeTokenSecurity,
+  requestBirdeyeTokenTopTraders,
+  requestBirdeyeTokenTradeData,
+  requestBirdeyeTrendingTokens,
+  requestBirdeyeWalletFirstFunded,
+  requestBirdeyeWalletNetWorth,
+  requestBirdeyeWalletNetWorthHistory,
+  requestBirdeyeWalletPnlSummary,
+  type BirdeyeGainersLosersType,
+  type BirdeyePnlDuration,
+} from './birdeye.js';
+import { getMintCreationTxForMint, getHeliusTransactionHistory, getHeliusAsset, getHeliusAssetsByOwner, getHeliusPriorityFeeLevels, parseHeliusTransactions } from './helius.js';
 import { AlternativeMeClient } from './adapters/alternative_me/index.js';
 import { DEFAULT_CONFIG, type AgentWalletConfig } from './config.js';
 import type { TransactionSimulator } from './simulationDigest.js';
+import { chatFactErrorMessage, resolveChatFactChain } from './chatFacts.js';
 
 export type AiApiFormat = 'openai-compatible' | 'anthropic';
 type AiTransport = 'anthropic-messages' | 'openai-responses' | 'gemini-native' | 'openai-compatible' | 'cli-agent';
@@ -1236,35 +1267,189 @@ export class BridgeAiPlanner {
       const data = await resolveChatNewListings();
       return { summary: 'New listings', data };
     }
+    if (name === 'get_wallet_portfolio') {
+      const wallet = typeof input.wallet === 'string' && input.wallet.trim() ? input.wallet.trim() : walletAddress.trim();
+      if (!wallet) return { summary: 'No wallet provided.', data: { error: 'a wallet address is required' } };
+      const data = await resolveChatWalletPortfolio(wallet);
+      return { summary: `Portfolio for ${wallet.slice(0, 8)}…`, data };
+    }
+    if (name === 'get_wallet_pnl') {
+      const wallet = typeof input.wallet === 'string' && input.wallet.trim() ? input.wallet.trim() : walletAddress.trim();
+      if (!wallet) return { summary: 'No wallet provided.', data: { error: 'a wallet address is required' } };
+      const data = await resolveChatWalletPnl(wallet, typeof input.duration === 'string' ? input.duration : 'all');
+      return { summary: `PnL for ${wallet.slice(0, 8)}…`, data };
+    }
+    if (name === 'get_wallet_origin') {
+      const wallet = typeof input.wallet === 'string' && input.wallet.trim() ? input.wallet.trim() : walletAddress.trim();
+      if (!wallet) return { summary: 'No wallet provided.', data: { error: 'a wallet address is required' } };
+      const data = await resolveChatWalletOrigin(wallet);
+      return { summary: `Funding origin for ${wallet.slice(0, 8)}…`, data };
+    }
+    if (name === 'get_token_top_traders') {
+      const mint = await this.chatResolveMint(config, typeof input.mint === 'string' ? input.mint : query);
+      if (!mint) return { summary: 'No token resolved.', data: { error: 'a token symbol or mint is required' } };
+      const data = await resolveChatTokenTopTraders(mint);
+      return { summary: `Top traders for ${mint.slice(0, 8)}…`, data };
+    }
+    if (name === 'get_token_supply_changes') {
+      const mint = await this.chatResolveMint(config, typeof input.mint === 'string' ? input.mint : query);
+      if (!mint) return { summary: 'No token resolved.', data: { error: 'a token symbol or mint is required' } };
+      const data = await resolveChatTokenSupplyChanges(mint);
+      return { summary: `Supply changes for ${mint.slice(0, 8)}…`, data };
+    }
+    if (name === 'get_token_activity') {
+      const mint = await this.chatResolveMint(config, typeof input.mint === 'string' ? input.mint : query);
+      if (!mint) return { summary: 'No token resolved.', data: { error: 'a token symbol or mint is required' } };
+      const data = await resolveChatTokenActivity(mint);
+      return { summary: `Activity for ${mint.slice(0, 8)}…`, data };
+    }
+    if (name === 'get_pair_overview') {
+      const address = typeof input.address === 'string' && input.address.trim()
+        ? input.address.trim()
+        : (typeof input.mint === 'string' ? input.mint.trim() : query);
+      if (!address) return { summary: 'No pair provided.', data: { error: 'a pair/pool address is required' } };
+      const data = await resolveChatPairOverview(address);
+      return { summary: `Pair overview for ${address.slice(0, 8)}…`, data };
+    }
+    if (name === 'get_smart_money_tokens') {
+      const data = await resolveChatSmartMoneyTokens();
+      return { summary: 'Smart-money tokens', data };
+    }
+    if (name === 'get_gainers_losers') {
+      const data = await resolveChatGainersLosers(typeof input.type === 'string' ? input.type : '1W');
+      return { summary: 'Top traders (gainers/losers)', data };
+    }
+    if (name === 'get_wallet_net_worth_history') {
+      const wallet = typeof input.wallet === 'string' && input.wallet.trim() ? input.wallet.trim() : walletAddress.trim();
+      if (!wallet) return { summary: 'No wallet provided.', data: { error: 'a wallet address is required' } };
+      const data = await resolveChatWalletNetWorthHistory(wallet);
+      return { summary: `Net-worth history for ${wallet.slice(0, 8)}…`, data };
+    }
+    if (name === 'get_priority_fee') {
+      const data = await resolveChatPriorityFee();
+      return { summary: 'Priority fee / network conditions', data };
+    }
+    if (name === 'get_transaction') {
+      const sig = typeof input.signature === 'string' ? input.signature.trim() : (typeof input.query === 'string' ? input.query.trim() : '');
+      if (!sig) return { summary: 'No signature provided.', data: { error: 'a transaction signature is required' } };
+      const data = await resolveChatTransaction(sig);
+      return { summary: `Transaction ${sig.slice(0, 8)}…`, data };
+    }
+    if (name === 'get_token_holders') {
+      const mint = await this.chatResolveMint(config, typeof input.mint === 'string' ? input.mint : query);
+      if (!mint) return { summary: 'No token resolved.', data: { error: 'a token symbol or mint is required' } };
+      const data = await resolveChatTokenHolders(mint);
+      return { summary: `Top holders for ${mint.slice(0, 8)}…`, data };
+    }
+    if (name === 'get_coin_categories') {
+      const data = await resolveChatCoinCategories(typeof input.category === 'string' ? input.category : '');
+      return { summary: 'Crypto sector / category performance', data };
+    }
     if (name === 'search_tokens') {
       if (!query) return { summary: 'No query provided.', data: { error: 'query is required' } };
-      try {
-        const result = await getJupiterTokenSearch(config, { query, limit: 5 });
-        const tokens = result.tokens.slice(0, 5).map((token) => ({
-          symbol: token.symbol,
-          name: token.name,
-          mint: token.id,
-          isVerified: token.isVerified ?? null,
-          organicScoreLabel: token.organicScoreLabel ?? null,
-          usdPrice: token.usdPrice ?? null,
-        }));
-        return { summary: `Found ${tokens.length} token(s) for "${query}".`, data: { query, tokens } };
-      } catch (err) {
-        return { summary: 'Token search unavailable.', data: { error: redactText(err instanceof Error ? err.message : String(err)) } };
-      }
+      const result = await resolveChatFactChain([
+        {
+          provider: 'jupiter',
+          endpoint: 'token_search',
+          run: async () => {
+            const search = await getJupiterTokenSearch(config, { query, limit: 5 });
+            const tokens = search.tokens.slice(0, 5).map((token) => ({
+              symbol: token.symbol,
+              name: token.name,
+              mint: token.id,
+              isVerified: token.isVerified ?? null,
+              organicScoreLabel: token.organicScoreLabel ?? null,
+              usdPrice: token.usdPrice ?? null,
+            }));
+            return { query, tokens, source: 'jupiter' };
+          },
+          isUsable: (data) => Array.isArray(data.tokens) && data.tokens.length > 0,
+        },
+        {
+          provider: 'birdeye',
+          endpoint: 'search',
+          run: async () => projectBirdeyeSearch(query, await requestBirdeyeSearch(query, { limit: 5 })),
+          isUsable: (data) => Array.isArray(data.tokens) && data.tokens.length > 0,
+        },
+      ]);
+      const tokens = Array.isArray(result.data.tokens) ? result.data.tokens : [];
+      return { summary: tokens.length ? `Found ${tokens.length} token(s) for "${query}".` : 'Token search unavailable.', data: result.data };
     }
     if (name === 'get_token_price') {
       if (!query) return { summary: 'No token provided.', data: { error: 'query is required' } };
       try {
+        const bare = query.replace(/^\$/, '');
+        // Cross-chain asset (BTC/ETH/…): price via CoinGecko, NEVER the Solana token search (which
+        // would return a low-liquidity wrapper like wBTC). Echo source + symbol so it's self-evident.
+        if (coingeckoIdForSymbol(bare) && !mintForSymbol(bare)) {
+          const coin = await resolveChatCoinMarket(bare);
+          const usd = typeof (coin as Record<string, unknown>).usdPrice === 'number' ? ((coin as Record<string, unknown>).usdPrice as number) : null;
+          return {
+            summary: usd != null ? `${bare}: $${usd} (CoinGecko, cross-chain)` : `No CoinGecko price for "${bare}".`,
+            data: { query: bare, source: 'coingecko', resolvedSymbol: bare, crossChain: true, usdPrice: usd, note: 'Cross-chain asset priced via CoinGecko, not a Solana wrapper.' },
+          };
+        }
         const mints = await this.resolveChatTokenMints(config, query);
         if (mints.length === 0) return { summary: `No token matched "${query}".`, data: { found: false, query } };
-        const batch = await getJupiterPriceBatch(config, { mints });
-        const prices = batch.prices.map((price) => ({ mint: price.mint, usdPrice: price.usdPrice ?? null, priceChange24h: price.priceChange24h ?? null, status: price.status }));
+        const result = await resolveChatFactChain([
+          {
+            provider: 'jupiter',
+            endpoint: 'price',
+            run: async () => {
+              const batch = await getJupiterPriceBatch(config, { mints });
+              const prices = batch.prices.map((price) => ({
+                mint: price.mint,
+                usdPrice: price.usdPrice ?? null,
+                priceChange24h: price.priceChange24h ?? null,
+                status: price.status,
+              }));
+              return { query, resolvedMint: prices[0]?.mint ?? null, prices, source: 'jupiter' };
+            },
+            isUsable: (data) => Array.isArray(data.prices) && data.prices.some((price) => {
+              const p = price as Record<string, unknown>;
+              return typeof p.usdPrice === 'number';
+            }),
+          },
+          {
+            provider: 'coingecko',
+            endpoint: 'simple.token_price',
+            run: async () => {
+              const cg = await requestCoinGecko('/simple/token_price/solana', {
+                query: {
+                  contract_addresses: mints.join(','),
+                  vs_currencies: 'usd',
+                  include_24hr_change: true,
+                },
+              });
+              const prices = mints.map((mint) => {
+                const row = cg[mint.toLowerCase()] ?? cg[mint];
+                const rec = row && typeof row === 'object' ? row as Record<string, unknown> : {};
+                const usd = numOrNull(rec.usd);
+                return {
+                  mint,
+                  usdPrice: usd,
+                  priceChange24h: numOrNull(rec.usd_24h_change),
+                  status: usd !== null ? 'priced' : 'unavailable',
+                };
+              });
+              return { query, resolvedMint: prices[0]?.mint ?? null, prices, source: 'coingecko' };
+            },
+            isUsable: (data) => Array.isArray(data.prices) && data.prices.some((price) => typeof (price as Record<string, unknown>).usdPrice === 'number'),
+          },
+          {
+            provider: 'birdeye',
+            endpoint: 'price_multi',
+            run: async () => projectBirdeyePriceBatch(query, mints, await requestBirdeyePriceMulti(mints, { includeLiquidity: true })),
+            isUsable: (data) => Array.isArray(data.prices) && data.prices.some((price) => typeof (price as Record<string, unknown>).usdPrice === 'number'),
+          },
+        ], { webSearchOnExhausted: true });
+        const prices = Array.isArray(result.data.prices) ? result.data.prices as Array<{ mint: string; usdPrice: number | null; priceChange24h?: number | null; status?: string }> : [];
         const top = prices[0];
-        const summary = top?.usdPrice != null ? `${query}: $${top.usdPrice}` : `No price for "${query}".`;
-        return { summary, data: { query, prices } };
+        // Echo the resolved mint so a wrong-token answer (e.g. JUP→jlUSDC) is visible to model + user.
+        const summary = top?.usdPrice != null ? `${query}: $${top.usdPrice} (mint ${top.mint.slice(0, 8)}…)` : `No price for "${query}".`;
+        return { summary, data: result.data };
       } catch (err) {
-        return { summary: 'Price lookup unavailable.', data: { error: redactText(err instanceof Error ? err.message : String(err)) } };
+        return { summary: 'Price lookup unavailable.', data: { error: chatFactErrorMessage(err) } };
       }
     }
     if (name === 'get_connector_facts') {
@@ -1307,9 +1492,31 @@ export class BridgeAiPlanner {
   // Resolve a symbol or mint to one or more mint addresses for price lookup.
   private async resolveChatTokenMints(config: AgentWalletConfig, query: string): Promise<string[]> {
     if (BASE58_MINT_PATTERN.test(query)) return [query];
+    const bare = query.replace(/^\$/, '');
+    // Cross-chain asset (BTC/ETH/…): has a CoinGecko id but NO canonical Solana mint. Do NOT fall
+    // through to the Solana token search — it would return a low-liquidity wrapper (wBTC/cbBTC…).
+    // get_token_price routes these to CoinGecko; the Solana-only tools correctly find no token.
+    if (coingeckoIdForSymbol(bare) && !mintForSymbol(bare)) return [];
+    // Canonical-first: a known symbol resolves to its canonical mint (same registry the swap path
+    // uses) so a fuzzy search can't pick a higher-liquidity same-symbol sibling (e.g. "JUP" → jlUSDC).
+    const canonical = mintForSymbol(bare);
+    if (canonical) return [canonical];
     try {
-      const result = await getJupiterTokenSearch(config, { query, limit: 3 });
-      return result.tokens.map((token) => token.id).filter((mint): mint is string => typeof mint === 'string' && mint.length > 0).slice(0, 3);
+      const result = await getJupiterTokenSearch(config, { query, limit: 10 });
+      const tokens = result.tokens.filter((token) => typeof token.id === 'string' && token.id.length > 0);
+      // Prefer EXACT (case-insensitive) symbol matches over substring matches the search ranks higher.
+      const exact = tokens.filter((token) => typeof token.symbol === 'string' && token.symbol.toLowerCase() === bare.toLowerCase());
+      const resolved = (exact.length ? exact : tokens).map((token) => token.id).slice(0, 3);
+      if (resolved.length > 0) return resolved;
+    } catch { /* fall through to BirdEye */ }
+    try {
+      const birdeye = projectBirdeyeSearch(query, await requestBirdeyeSearch(query, { limit: 10 }));
+      const rows = Array.isArray(birdeye.tokens) ? birdeye.tokens as Array<Record<string, unknown>> : [];
+      const exact = rows.filter((token) => typeof token.symbol === 'string' && token.symbol.toLowerCase() === bare.toLowerCase());
+      return (exact.length ? exact : rows)
+        .map((token) => (typeof token.mint === 'string' ? token.mint : ''))
+        .filter(Boolean)
+        .slice(0, 3);
     } catch {
       return [];
     }
@@ -1324,26 +1531,41 @@ export class BridgeAiPlanner {
   private async enrichSingleShotChatContext(request: Required<AiChatRequest>): Promise<void> {
     const lastUser = [...request.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
     if (!lastUser) return;
-    const text = lastUser.toLowerCase();
-    const wantSafety = /\b(safe|safety|rug|honeypot|mint authority|freeze authority|can (?:they|the issuer|someone|anyone) freeze|verified)\b/.test(text);
-    const wantAge = /\b(how old|token age|days? old|fresh launch|newly? launched|just launched|when (?:was|did)\b.*\b(launch|created|mint))\b/.test(text);
-    const wantRegime = /\b(fear (?:and|&|\/) ?greed|btc dominance|bitcoin dominance|market regime|total (?:crypto )?market cap|market sentiment)\b/.test(text);
-    const wantHistory = /\b(my (?:recent )?(?:transactions?|txns?|history|activity)|recent (?:transactions?|activity)|what did i (?:do|send|swap|buy)|last (?:few )?(?:transactions?|txns?))\b/.test(text);
-    const wantMarket = /\b(liquidity|market cap|mcap|fdv|fully diluted|24h volume|trading volume|holder count|how many holders|top holders?|concentration|price change|24h change)\b/.test(text);
-    const wantTrending = /\b(trending|what'?s hot|hot tokens?|popular tokens?|top (?:gainers|movers|tokens))\b/.test(text);
-    const wantNfts = /\b(my nfts?|nfts? (?:do i|i)\s*(?:own|have|hold)|my collectibles?|what nfts?)\b/.test(text);
-    const wantCoin = /\b(market cap rank|mcap rank|ranked\b|all[-\s]?time high|\bath\b|circulating supply|max supply|how far from)\b/.test(text);
-    const wantTrendingCoins = /\b(trending coins?|trending (?:in )?crypto|cross[-\s]?chain trending|trending overall)\b/.test(text);
-    const wantNewListings = /\b(new listings?|newly listed|just launched|new tokens?|recent listings?|what just launched)\b/.test(text);
+    const classification = classifyChatFactText(lastUser);
+    const wants = (category: Parameters<typeof chatFactHasCategory>[1]) => chatFactHasCategory(classification, category);
+    const wantSafety = wants('token_safety');
+    const wantAge = wants('token_age');
+    const wantRegime = wants('market_regime');
+    const wantHistory = wants('wallet_history');
+    const wantMarket = wants('token_market');
+    const wantTrending = wants('trending_tokens');
+    const wantNfts = wants('wallet_nfts');
+    const wantCoin = wants('coin_market');
+    const wantTrendingCoins = wants('trending_coins');
+    const wantNewListings = wants('new_listings');
+    const wantWalletPortfolio = wants('wallet_portfolio');
+    const wantWalletPnl = wants('wallet_pnl');
+    const wantWalletOrigin = wants('wallet_origin');
+    const wantTopTraders = wants('token_top_traders');
+    const wantSupplyChanges = wants('token_supply_changes');
+    const wantActivity = wants('token_activity');
+    const wantSmartMoney = wants('smart_money_tokens');
+    const wantGainersLosers = wants('gainers_losers');
+    const wantNetWorthHistory = wants('wallet_net_worth_history');
+    const wantPairOverview = wants('pair_overview');
+    const wantPriorityFee = wants('priority_fee');
+    const wantTransaction = wants('transaction');
+    const wantTokenHolders = wants('token_holders');
+    const wantCategories = wants('coin_categories');
     // Connector-action intent (Jupiter lend/borrow/limit/dca/perps/prediction). Requires
     // BOTH a connector token and an action alias (findConnectorAtomByIntent), so it never
     // hijacks generic questions. Only runs when a fact resolver is wired.
     const connectorAtom = this.connectorFactResolver ? findConnectorAtomByIntent(lastUser) : undefined;
     const wantConnector = Boolean(connectorAtom?.factSpec);
-    if (!wantSafety && !wantAge && !wantRegime && !wantHistory && !wantConnector && !wantMarket && !wantTrending && !wantNfts && !wantCoin && !wantTrendingCoins && !wantNewListings) return;
+    if (!wantSafety && !wantAge && !wantRegime && !wantHistory && !wantConnector && !wantMarket && !wantTrending && !wantNfts && !wantCoin && !wantTrendingCoins && !wantNewListings && !wantWalletPortfolio && !wantWalletPnl && !wantWalletOrigin && !wantTopTraders && !wantSupplyChanges && !wantActivity && !wantSmartMoney && !wantGainersLosers && !wantNetWorthHistory && !wantPairOverview && !wantPriorityFee && !wantTransaction && !wantTokenHolders && !wantCategories) return;
     const config = this.toolConfig();
     let mint = '';
-    if (wantSafety || wantAge || wantMarket) {
+    if (wantSafety || wantAge || wantMarket || wantTopTraders || wantSupplyChanges || wantActivity || wantTokenHolders) {
       try { mint = await this.chatResolveMint(config, extractChatTokenRef(lastUser)); } catch { mint = ''; }
     }
     const specs: Array<{ key: string; run: () => Promise<Record<string, unknown>> }> = [];
@@ -1361,6 +1583,33 @@ export class BridgeAiPlanner {
     }
     if (wantTrendingCoins) specs.push({ key: 'trendingCoins', run: () => resolveChatTrendingCoins() });
     if (wantNewListings) specs.push({ key: 'newListings', run: () => resolveChatNewListings() });
+    if (wantTopTraders && mint) specs.push({ key: 'tokenTopTraders', run: () => resolveChatTokenTopTraders(mint) });
+    if (wantSupplyChanges && mint) specs.push({ key: 'tokenSupplyChanges', run: () => resolveChatTokenSupplyChanges(mint) });
+    if (wantActivity && mint) specs.push({ key: 'tokenActivity', run: () => resolveChatTokenActivity(mint) });
+    if (wantPairOverview) {
+      const pair = lastUser.match(/\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/)?.[0];
+      if (pair) specs.push({ key: 'pairOverview', run: () => resolveChatPairOverview(pair) });
+    }
+    if (wantSmartMoney) specs.push({ key: 'smartMoneyTokens', run: () => resolveChatSmartMoneyTokens() });
+    if (wantGainersLosers) specs.push({ key: 'gainersLosers', run: () => resolveChatGainersLosers('1W') });
+    if (wantTokenHolders && mint) specs.push({ key: 'tokenHolders', run: () => resolveChatTokenHolders(mint) });
+    if (wantCategories) specs.push({ key: 'coinCategories', run: () => resolveChatCoinCategories('') });
+    if (wantPriorityFee) specs.push({ key: 'priorityFee', run: () => resolveChatPriorityFee() });
+    if (wantTransaction) {
+      // A Solana signature is 64-88 base58 chars — longer than a 32-44 mint/address.
+      const sig = lastUser.match(/\b[1-9A-HJ-NP-Za-km-z]{64,88}\b/)?.[0];
+      if (sig) specs.push({ key: 'transaction', run: () => resolveChatTransaction(sig) });
+    }
+    if (wantWalletPortfolio || wantWalletPnl || wantWalletOrigin || wantNetWorthHistory) {
+      // Use an explicit wallet from the prompt (analyze ANY wallet) or fall back to the connected one.
+      const w = lastUser.match(/\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/)?.[0] ?? effectiveChatWalletAddress(request) ?? '';
+      if (w) {
+        if (wantWalletPortfolio) specs.push({ key: 'walletPortfolio', run: () => resolveChatWalletPortfolio(w) });
+        if (wantWalletPnl) specs.push({ key: 'walletPnl', run: () => resolveChatWalletPnl(w, 'all') });
+        if (wantWalletOrigin) specs.push({ key: 'walletOrigin', run: () => resolveChatWalletOrigin(w) });
+        if (wantNetWorthHistory) specs.push({ key: 'walletNetWorthHistory', run: () => resolveChatWalletNetWorthHistory(w) });
+      }
+    }
     if (wantRegime) specs.push({ key: 'marketRegime', run: () => resolveChatMarketRegime() });
     if (wantHistory) {
       const wallet = effectiveChatWalletAddress(request);
@@ -2585,17 +2834,7 @@ function collectKnownTokenSymbols(request: Required<AiReviewRequest>): string[] 
 }
 
 function textNeedsWebResearch(text: string): boolean {
-  const normalized = text.toLowerCase();
-  if (!normalized.trim()) return false;
-  return (
-    // H6.1 — bare generic time-words (`current`/`currently`/`now`) were dropped: they
-    // collide with everyday wallet/market phrasing ("my CURRENT balance", "price NOW")
-    // and wrongly routed tool-answerable questions to the single-shot web path. Keep the
-    // stronger fresh-fact signals.
-    /\b(latest|today|tonight|tomorrow|yesterday|real[-\s]?time|up[-\s]?to[-\s]?date|as of)\b/.test(normalized) ||
-    /\b(price|cost|fee|rate|plan|subscription|monthly|per\s+month|market\s+cap|liquidity|apr|apy|weather|news|status|available|availability|outage|exploit|hack|incident|upgrade|governance|vote|sec|sanctions|ofac|kyc|issuer|jailed|tps|slot|withdrawals?|paused|offline)\b/.test(normalized) && /\b(check|find|look\s+up|search|verify|how\s+much|whether|if|less\s+than|more\s+than|under|over|above|below|approve|deny|reject)\b/.test(normalized) ||
-    /\$\s*\d+/.test(normalized) && /\b(less\s+than|more\s+than|under|over|approve|deny|per\s+month|monthly)\b/.test(normalized)
-  );
+  return workflowChatTextNeedsWebResearch(text);
 }
 
 // Whether the user's message is about their OWN wallet (balances / holdings / address /
@@ -2603,13 +2842,7 @@ function textNeedsWebResearch(text: string): boolean {
 // so they must NEVER detour to the single-shot web path. Ported from the client's
 // `chatMentionsOwnWallet` (apps/browser-demo/src/chatRequest.ts).
 function chatMentionsOwnWalletText(text: string): boolean {
-  const t = text.toLowerCase();
-  if (!t.trim()) return false;
-  const balance = /\b(balance|balances|portfolio|holdings?|worth|value)\b/.test(t) &&
-    /\b(my|wallet|current|sol|usdc|token|tokens|portfolio)\b/.test(t);
-  if (balance) return true;
-  return /\b(my|wallet)\b/.test(t) &&
-    /\b(address|account|history|activity|transactions?|positions?|nfts?)\b/.test(t);
+  return workflowChatMentionsOwnWalletText(text);
 }
 
 function openAiWebSearchTool(): Record<string, unknown> {
@@ -2894,6 +3127,7 @@ const chatToolCache = new Map<string, { at: number; data: Record<string, unknown
 const CHAT_SAFETY_TTL_MS = 5 * 60 * 1000;
 const CHAT_AGE_TTL_MS = 30 * 60 * 1000; // mint creation time never changes
 const CHAT_REGIME_TTL_MS = 60 * 1000;
+const CHAT_WALLET_TTL_MS = 45 * 1000; // wallet net worth / PnL drift slowly; cache briefly to cap BirdEye spend
 const CHAT_TOOL_CACHE_MAX_ENTRIES = 500; // bound memory; evict oldest when exceeded
 function chatToolCacheGet(key: string, ttlMs: number): Record<string, unknown> | undefined {
   const hit = chatToolCache.get(key);
@@ -2914,61 +3148,181 @@ function chatToolCachePut(key: string, data: Record<string, unknown>): Record<st
   return data;
 }
 
-async function resolveChatTokenSafety(config: AgentWalletConfig, mint: string): Promise<Record<string, unknown>> {
-  const cached = chatToolCacheGet(`safety:${mint}`, CHAT_SAFETY_TTL_MS);
-  if (cached) return cached;
-  try {
-    const ev = await getJupiterTokenRiskEvidence(config, { mint, includePrice: false });
-    const audit = (ev.audit && typeof ev.audit === 'object') ? ev.audit as Record<string, unknown> : {};
-    const boolOrNull = (v: unknown): boolean | null => (typeof v === 'boolean' ? v : null);
-    const result: Record<string, unknown> = {
+function chatBoolOrNull(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
+
+function projectJupiterSafety(mint: string, ev: Awaited<ReturnType<typeof getJupiterTokenRiskEvidence>>): Record<string, unknown> {
+  const audit = (ev.audit && typeof ev.audit === 'object') ? ev.audit as Record<string, unknown> : {};
+  return {
+    mint,
+    found: ev.tokenFound,
+    ...(ev.symbol ? { symbol: ev.symbol } : {}),
+    verified: typeof ev.isVerified === 'boolean' ? ev.isVerified : null,
+    organicScore: typeof ev.organicScore === 'number' ? ev.organicScore : null,
+    ...(ev.organicScoreLabel ? { organicScoreLabel: ev.organicScoreLabel } : {}),
+    mintAuthorityDisabled: chatBoolOrNull(audit.mintAuthorityDisabled),
+    freezeAuthorityDisabled: chatBoolOrNull(audit.freezeAuthorityDisabled),
+    source: 'jupiter',
+  };
+}
+
+function projectBirdeyeSafety(mint: string, payload: Record<string, unknown>): Record<string, unknown> {
+  const data = birdeyeDataNode(payload);
+  const authorityDisabled = (key: string): boolean | null => {
+    if (!(key in data)) return null;
+    const value = data[key];
+    if (value === null) return true;
+    if (typeof value === 'string') return value.trim() === '';
+    return null;
+  };
+  return {
+    mint,
+    found: true,
+    ...(strOrNull(data.symbol) ? { symbol: strOrNull(data.symbol) } : {}),
+    verified: typeof data.isTrueToken === 'boolean' ? data.isTrueToken : null,
+    organicScore: null,
+    mintAuthorityDisabled: authorityDisabled('mintAuthority'),
+    freezeAuthorityDisabled: authorityDisabled('freezeAuthority'),
+    source: 'birdeye',
+  };
+}
+
+function projectJupiterMarket(mint: string, ev: Awaited<ReturnType<typeof getJupiterTokenRiskEvidence>>): Record<string, unknown> {
+  const s = ev.stats?.stats24h;
+  const vol = s ? (typeof s.buyVolume === 'number' ? s.buyVolume : 0) + (typeof s.sellVolume === 'number' ? s.sellVolume : 0) : undefined;
+  return {
+    mint,
+    found: ev.tokenFound,
+    ...(ev.symbol ? { symbol: ev.symbol } : {}),
+    usdPrice: numOrNull(ev.usdPrice),
+    liquidity: numOrNull(ev.liquidity),
+    marketCap: numOrNull(ev.mcap),
+    fdv: numOrNull(ev.fdv),
+    volume24h: typeof vol === 'number' && vol > 0 ? vol : null,
+    holderCount: numOrNull(ev.holderCount),
+    topHoldersPercentage: numOrNull(ev.topHoldersPercentage),
+    priceChange24h: numOrNull(ev.priceChange24h),
+    organicScore: numOrNull(ev.organicScore),
+    ...(ev.organicScoreLabel ? { organicScoreLabel: ev.organicScoreLabel } : {}),
+    source: 'jupiter',
+  };
+}
+
+function projectBirdeyeMarket(mint: string, pricePayload: Record<string, unknown>, activityPayload?: Record<string, unknown>): Record<string, unknown> {
+  const price = birdeyeDataNode(pricePayload);
+  const activity = activityPayload ? birdeyeDataNode(activityPayload) : {};
+  return {
+    mint,
+    found: true,
+    ...(strOrNull(price.symbol ?? activity.symbol) ? { symbol: strOrNull(price.symbol ?? activity.symbol) } : {}),
+    usdPrice: numOrNull(price.value ?? price.price ?? activity.price),
+    liquidity: numOrNull(price.liquidity ?? price.liquidityUsd ?? price.liquidity_usd),
+    marketCap: numOrNull(price.marketCap ?? price.market_cap ?? activity.market_cap ?? activity.mc),
+    fdv: numOrNull(price.fdv ?? activity.fdv),
+    volume24h: numOrNull(price.volume24h ?? price.v24hUSD ?? price.volume_24h ?? activity.volume_24h_usd),
+    holderCount: numOrNull(price.holder ?? price.holderCount ?? activity.holder),
+    topHoldersPercentage: null,
+    priceChange24h: numOrNull(price.priceChange24h ?? price.price_change_24h ?? activity.price_change_24h_percent),
+    organicScore: null,
+    source: 'birdeye',
+  };
+}
+
+function projectBirdeyePriceBatch(query: string, mints: string[], payload: Record<string, unknown>): Record<string, unknown> {
+  const parsed = walletBalancePriceInfoMapFromBirdeye(payload);
+  const prices = mints.map((mint) => {
+    const info = parsed.get(mint);
+    return {
       mint,
-      found: ev.tokenFound,
-      ...(ev.symbol ? { symbol: ev.symbol } : {}),
-      verified: typeof ev.isVerified === 'boolean' ? ev.isVerified : null,
-      organicScore: typeof ev.organicScore === 'number' ? ev.organicScore : null,
-      ...(ev.organicScoreLabel ? { organicScoreLabel: ev.organicScoreLabel } : {}),
-      mintAuthorityDisabled: boolOrNull(audit.mintAuthorityDisabled),
-      freezeAuthorityDisabled: boolOrNull(audit.freezeAuthorityDisabled),
-      source: 'jupiter',
+      usdPrice: info?.priceUsd ?? null,
+      priceChange24h: null,
+      status: info?.priceUsd !== undefined ? 'priced' : 'unavailable',
+      ...(info?.liquidityUsd !== undefined ? { liquidity: info.liquidityUsd } : {}),
     };
-    return chatToolCachePut(`safety:${mint}`, result);
-  } catch (err) {
-    return { mint, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
-  }
+  });
+  const top = prices.find((price) => price.usdPrice != null) ?? prices[0];
+  return { query, resolvedMint: top?.mint ?? null, prices, source: 'birdeye' };
+}
+
+function projectBirdeyeSearch(query: string, payload: Record<string, unknown>): Record<string, unknown> {
+  const rows = birdeyeItems(birdeyeDataNode(payload));
+  const tokens = rows.slice(0, 5).map((entry) => ({
+    symbol: strOrNull(entry.symbol),
+    name: strOrNull(entry.name),
+    mint: strOrNull(entry.address ?? entry.mint),
+    isVerified: typeof entry.verified === 'boolean' ? entry.verified : typeof entry.isTrueToken === 'boolean' ? entry.isTrueToken : null,
+    organicScoreLabel: strOrNull(entry.organicScoreLabel ?? entry.organic_score_label),
+    usdPrice: numOrNull(entry.price ?? entry.priceUsd ?? entry.price_usd ?? entry.value),
+  })).filter((token) => token.mint);
+  return { query, tokens, source: 'birdeye' };
+}
+
+function projectBirdeyeTrending(payload: Record<string, unknown>, interval: string): Record<string, unknown> {
+  const tokens = birdeyeItems(birdeyeDataNode(payload)).slice(0, 12).map((entry) => ({
+    symbol: strOrNull(entry.symbol),
+    mint: strOrNull(entry.address ?? entry.mint),
+    usdPrice: numOrNull(entry.price ?? entry.value),
+    priceChange24h: numOrNull(entry.price24hChangePercent ?? entry.priceChange24h ?? entry.price_change_24h_percent),
+    marketCap: numOrNull(entry.marketcap ?? entry.marketCap ?? entry.market_cap),
+    volume24h: numOrNull(entry.volume24hUSD ?? entry.v24hUSD ?? entry.volume_24h_usd),
+  }));
+  return { interval, count: tokens.length, tokens, source: 'birdeye' };
+}
+
+async function resolveChatWithChain(
+  key: string,
+  ttlMs: number,
+  specs: Parameters<typeof resolveChatFactChain>[0],
+  options: { webSearchOnExhausted?: boolean } = {},
+): Promise<Record<string, unknown>> {
+  const cached = chatToolCacheGet(key, ttlMs);
+  if (cached) return cached;
+  const result = await resolveChatFactChain(specs, { ...options });
+  return chatToolCachePut(key, result.data);
+}
+
+async function resolveChatTokenSafety(config: AgentWalletConfig, mint: string): Promise<Record<string, unknown>> {
+  return resolveChatWithChain(`safety:${mint}`, CHAT_SAFETY_TTL_MS, [
+    {
+      provider: 'jupiter',
+      endpoint: 'token_evidence',
+      run: async () => projectJupiterSafety(mint, await getJupiterTokenRiskEvidence(config, { mint, includePrice: false })),
+      isUsable: (data) => data.found !== false,
+    },
+    {
+      provider: 'birdeye',
+      endpoint: 'token_security',
+      run: async () => projectBirdeyeSafety(mint, await requestBirdeyeTokenSecurity(mint)),
+      isUsable: (data) => data.found !== false,
+    },
+  ]);
 }
 
 // Token market-quality metrics for the get_token_market chat tool (the numeric counterpart
 // to get_token_safety). Reuses the Jupiter token-evidence bundle — same data the
 // token_metric policy gates resolve from.
 async function resolveChatTokenMarket(config: AgentWalletConfig, mint: string): Promise<Record<string, unknown>> {
-  const cached = chatToolCacheGet(`market:${mint}`, CHAT_SAFETY_TTL_MS);
-  if (cached) return cached;
-  try {
-    const ev = await getJupiterTokenRiskEvidence(config, { mint, includePrice: true });
-    const s = ev.stats?.stats24h;
-    const vol = s ? (typeof s.buyVolume === 'number' ? s.buyVolume : 0) + (typeof s.sellVolume === 'number' ? s.sellVolume : 0) : undefined;
-    const numOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
-    const result: Record<string, unknown> = {
-      mint,
-      found: ev.tokenFound,
-      ...(ev.symbol ? { symbol: ev.symbol } : {}),
-      usdPrice: numOrNull(ev.usdPrice),
-      liquidity: numOrNull(ev.liquidity),
-      marketCap: numOrNull(ev.mcap),
-      fdv: numOrNull(ev.fdv),
-      volume24h: typeof vol === 'number' && vol > 0 ? vol : null,
-      holderCount: numOrNull(ev.holderCount),
-      topHoldersPercentage: numOrNull(ev.topHoldersPercentage),
-      priceChange24h: numOrNull(ev.priceChange24h),
-      organicScore: numOrNull(ev.organicScore),
-      ...(ev.organicScoreLabel ? { organicScoreLabel: ev.organicScoreLabel } : {}),
-      source: 'jupiter',
-    };
-    return chatToolCachePut(`market:${mint}`, result);
-  } catch (err) {
-    return { mint, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
-  }
+  return resolveChatWithChain(`market:${mint}`, CHAT_SAFETY_TTL_MS, [
+    {
+      provider: 'jupiter',
+      endpoint: 'token_evidence',
+      run: async () => projectJupiterMarket(mint, await getJupiterTokenRiskEvidence(config, { mint, includePrice: true })),
+      isUsable: (data) => data.found !== false && ['usdPrice', 'liquidity', 'marketCap', 'volume24h', 'holderCount'].some((key) => data[key] != null),
+    },
+    {
+      provider: 'birdeye',
+      endpoint: 'price+trade-data',
+      run: async () => {
+        const [price, activity] = await Promise.all([
+          requestBirdeyePrice(mint, { includeLiquidity: true }),
+          requestBirdeyeTokenTradeData(mint).catch(() => undefined),
+        ]);
+        return projectBirdeyeMarket(mint, price, activity);
+      },
+      isUsable: (data) => ['usdPrice', 'liquidity', 'marketCap', 'volume24h', 'holderCount'].some((key) => data[key] != null),
+    },
+  ], { webSearchOnExhausted: true });
 }
 
 // Trending Solana tokens for the get_trending_tokens chat tool, via the Jupiter token
@@ -2978,26 +3332,35 @@ async function resolveChatTrending(config: AgentWalletConfig, interval: string):
   const iv: (typeof VALID_INTERVALS)[number] = (VALID_INTERVALS as ReadonlyArray<string>).includes(interval)
     ? (interval as (typeof VALID_INTERVALS)[number])
     : '24h';
-  const cached = chatToolCacheGet(`trending:${iv}`, CHAT_REGIME_TTL_MS);
-  if (cached) return cached;
-  try {
-    const result = await getJupiterTokenCategory(config, { category: 'toptrending', interval: iv, limit: 12 });
-    const tokens = result.tokens.slice(0, 12).map((t) => {
-      const s = t.stats24h;
-      const vol = s ? (typeof s.buyVolume === 'number' ? s.buyVolume : 0) + (typeof s.sellVolume === 'number' ? s.sellVolume : 0) : undefined;
-      return {
-        symbol: t.symbol ?? null,
-        mint: t.id,
-        usdPrice: typeof t.usdPrice === 'number' ? t.usdPrice : null,
-        priceChange24h: s && typeof s.priceChange === 'number' ? s.priceChange : null,
-        marketCap: typeof t.mcap === 'number' ? t.mcap : null,
-        volume24h: typeof vol === 'number' && vol > 0 ? vol : null,
-      };
-    });
-    return chatToolCachePut(`trending:${iv}`, { interval: iv, count: tokens.length, tokens, source: 'jupiter' });
-  } catch (err) {
-    return { unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
-  }
+  return resolveChatWithChain(`trending:${iv}`, CHAT_REGIME_TTL_MS, [
+    {
+      provider: 'jupiter',
+      endpoint: 'token_category.toptrending',
+      run: async () => {
+        const result = await getJupiterTokenCategory(config, { category: 'toptrending', interval: iv, limit: 12 });
+        const tokens = result.tokens.slice(0, 12).map((t) => {
+          const s = t.stats24h;
+          const vol = s ? (typeof s.buyVolume === 'number' ? s.buyVolume : 0) + (typeof s.sellVolume === 'number' ? s.sellVolume : 0) : undefined;
+          return {
+            symbol: t.symbol ?? null,
+            mint: t.id,
+            usdPrice: typeof t.usdPrice === 'number' ? t.usdPrice : null,
+            priceChange24h: s && typeof s.priceChange === 'number' ? s.priceChange : null,
+            marketCap: typeof t.mcap === 'number' ? t.mcap : null,
+            volume24h: typeof vol === 'number' && vol > 0 ? vol : null,
+          };
+        });
+        return { interval: iv, count: tokens.length, tokens, source: 'jupiter' };
+      },
+      isUsable: (data) => Number(data.count ?? 0) > 0,
+    },
+    {
+      provider: 'birdeye',
+      endpoint: 'token_trending',
+      run: async () => projectBirdeyeTrending(await requestBirdeyeTrendingTokens({ limit: 12 }), iv),
+      isUsable: (data) => Number(data.count ?? 0) > 0,
+    },
+  ], { webSearchOnExhausted: true });
 }
 
 async function resolveChatMarketRegime(): Promise<Record<string, unknown>> {
@@ -3022,18 +3385,45 @@ async function resolveChatMarketRegime(): Promise<Record<string, unknown>> {
 }
 
 async function resolveChatTokenAge(mint: string): Promise<Record<string, unknown>> {
-  const cached = chatToolCacheGet(`age:${mint}`, CHAT_AGE_TTL_MS);
-  if (cached) return cached;
-  try {
-    const res = await getMintCreationTxForMint(mint);
-    const tx = res.ok && res.tx && typeof res.tx === 'object' ? res.tx as Record<string, unknown> : null;
-    const ts = tx && typeof tx.timestamp === 'number' ? tx.timestamp : undefined;
-    if (!ts) return { mint, unavailable: true, reason: res.reason ?? 'no_creation_tx' };
-    const ageSeconds = Math.max(0, Math.floor(Date.now() / 1000) - ts);
-    return chatToolCachePut(`age:${mint}`, { mint, createdAt: new Date(ts * 1000).toISOString(), ageSeconds, source: 'helius' });
-  } catch (err) {
-    return { mint, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
-  }
+  return resolveChatWithChain(`age:${mint}`, CHAT_AGE_TTL_MS, [
+    {
+      provider: 'helius',
+      endpoint: 'mint_creation',
+      run: async () => {
+        const res = await getMintCreationTxForMint(mint);
+        const tx = res.ok && res.tx && typeof res.tx === 'object' ? res.tx as Record<string, unknown> : null;
+        const ts = tx && typeof tx.timestamp === 'number' ? tx.timestamp : undefined;
+        if (!ts) return { mint, unavailable: true, reason: res.reason ?? 'no_creation_tx' };
+        const ageSeconds = Math.max(0, Math.floor(Date.now() / 1000) - ts);
+        return { mint, createdAt: new Date(ts * 1000).toISOString(), ageSeconds, source: 'helius' };
+      },
+      isUsable: (data) => typeof data.ageSeconds === 'number',
+    },
+    {
+      provider: 'birdeye',
+      endpoint: 'token_creation_info',
+      run: async () => {
+        const data = birdeyeDataNode(await requestBirdeyeTokenCreationInfo(mint));
+        const ts = numOrNull(data.blockUnixTime ?? data.block_unix_time ?? data.creationTime ?? data.creation_time ?? data.createdAt);
+        if (ts === null) return { mint, unavailable: true, reason: 'no_creation_time' };
+        const ageSeconds = Math.max(0, Math.floor(Date.now() / 1000) - ts);
+        return { mint, createdAt: new Date(ts * 1000).toISOString(), ageSeconds, source: 'birdeye' };
+      },
+      isUsable: (data) => typeof data.ageSeconds === 'number',
+    },
+    {
+      provider: 'birdeye',
+      endpoint: 'token_security',
+      run: async () => {
+        const data = birdeyeDataNode(await requestBirdeyeTokenSecurity(mint));
+        const ts = numOrNull(data.creationTime ?? data.creation_time);
+        if (ts === null) return { mint, unavailable: true, reason: 'no_creation_time' };
+        const ageSeconds = Math.max(0, Math.floor(Date.now() / 1000) - ts);
+        return { mint, createdAt: new Date(ts * 1000).toISOString(), ageSeconds, source: 'birdeye' };
+      },
+      isUsable: (data) => typeof data.ageSeconds === 'number',
+    },
+  ], { webSearchOnExhausted: true });
 }
 
 async function resolveChatWalletHistory(wallet: string): Promise<Record<string, unknown>> {
@@ -3095,11 +3485,18 @@ async function resolveChatCoinMarket(query: string): Promise<Record<string, unkn
     if (BASE58_MINT_PATTERN.test(q)) {
       ref = { mint: q, network: 'solana' };
     } else {
-      const search = await requestCoinGecko('/search', { query: { query: q } });
-      const coins = Array.isArray(search.coins) ? search.coins : [];
-      const first = coins[0] && typeof coins[0] === 'object' ? (coins[0] as Record<string, unknown>) : undefined;
-      const id = first && typeof first.id === 'string' ? first.id : undefined;
-      if (id) ref = { id };
+      // Canonical-first: a known Solana symbol resolves via its canonical mint (contract endpoint)
+      // so a fuzzy CoinGecko /search can't pick a same-symbol sibling (the "JUP" ambiguity).
+      const canonicalMint = mintForSymbol(q.replace(/^\$/, ''));
+      if (canonicalMint) {
+        ref = { mint: canonicalMint, network: 'solana' };
+      } else {
+        const search = await requestCoinGecko('/search', { query: { query: q } });
+        const coins = Array.isArray(search.coins) ? search.coins : [];
+        const first = coins[0] && typeof coins[0] === 'object' ? (coins[0] as Record<string, unknown>) : undefined;
+        const id = first && typeof first.id === 'string' ? first.id : undefined;
+        if (id) ref = { id };
+      }
     }
     if (!ref) return { query: q, unavailable: true, reason: 'not_found' };
     const m = await requestCoinGeckoCoinMarket(ref);
@@ -3142,6 +3539,387 @@ async function resolveChatNewListings(): Promise<Record<string, unknown>> {
     return chatToolCachePut('new-listings', { count: tokens.length, tokens, note: 'newly listed — unvetted, high-risk; verify safety before acting', source: 'birdeye' });
   } catch (err) {
     return { unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+// --- Wallet & token intelligence (BirdEye) -------------------------------------------------
+// All read ARBITRARY wallets/tokens (public on-chain analytics). Defensive projections tolerate
+// BirdEye field-name drift (camelCase + snake_case) and never throw on an unexpected shape.
+
+const numOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+const strOrNull = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v : null);
+const birdeyeDataNode = (raw: Record<string, unknown>): Record<string, unknown> =>
+  (raw && typeof raw.data === 'object' && raw.data !== null) ? raw.data as Record<string, unknown> : raw;
+const birdeyeItems = (data: Record<string, unknown>): Record<string, unknown>[] =>
+  Array.isArray(data?.items) ? data.items as Record<string, unknown>[]
+    : Array.isArray(data) ? data as unknown as Record<string, unknown>[] : [];
+
+async function resolveChatWalletPortfolio(wallet: string): Promise<Record<string, unknown>> {
+  const key = `wallet-net-worth:${wallet}`;
+  const cached = chatToolCacheGet(key, CHAT_WALLET_TTL_MS);
+  if (cached) return cached;
+  try {
+    const data = birdeyeDataNode(await requestBirdeyeWalletNetWorth(wallet, { limit: 15 }));
+    const holdings = birdeyeItems(data).slice(0, 10).map((it) => ({
+      symbol: strOrNull(it.symbol),
+      mint: strOrNull(it.address ?? it.mint),
+      valueUsd: numOrNull(it.value ?? it.valueUsd ?? it.value_usd),
+      uiAmount: numOrNull(it.uiAmount ?? it.ui_amount),
+    }));
+    const netWorthUsd = numOrNull(data?.totalUsd ?? data?.total_usd ?? data?.netWorth ?? data?.net_worth ?? data?.totalValueUsd ?? data?.value);
+    return chatToolCachePut(key, { wallet, netWorthUsd, holdings, source: 'birdeye' });
+  } catch (err) {
+    return { wallet, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+async function resolveChatWalletPnl(wallet: string, duration: string): Promise<Record<string, unknown>> {
+  const d: BirdeyePnlDuration = (['all', '90d', '30d', '7d', '24h'] as const).includes(duration as BirdeyePnlDuration)
+    ? (duration as BirdeyePnlDuration)
+    : 'all';
+  const key = `wallet-pnl:${wallet}:${d}`;
+  const cached = chatToolCacheGet(key, CHAT_WALLET_TTL_MS);
+  if (cached) return cached;
+  try {
+    const data = birdeyeDataNode(await requestBirdeyeWalletPnlSummary(wallet, { duration: d }));
+    return chatToolCachePut(key, {
+      wallet,
+      duration: d,
+      realizedPnlUsd: numOrNull(data?.realizedPnlUsd ?? data?.realized_pnl ?? data?.realizedPnl),
+      unrealizedPnlUsd: numOrNull(data?.unrealizedPnlUsd ?? data?.unrealized_pnl ?? data?.unrealizedPnl),
+      totalPnlUsd: numOrNull(data?.totalPnlUsd ?? data?.total_pnl ?? data?.totalPnl ?? data?.pnl),
+      roiPct: numOrNull(data?.roi ?? data?.roiPct ?? data?.roi_percent),
+      winRatePct: numOrNull(data?.winRate ?? data?.win_rate ?? data?.winRatePct),
+      tradeCount: numOrNull(data?.tradeCount ?? data?.trade_count ?? data?.totalTrades),
+      source: 'birdeye',
+    });
+  } catch (err) {
+    return { wallet, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+async function resolveChatWalletOrigin(wallet: string): Promise<Record<string, unknown>> {
+  const key = `wallet-first-funded:${wallet}`;
+  const cached = chatToolCacheGet(key, CHAT_AGE_TTL_MS); // a wallet's first funding never changes
+  if (cached) return cached;
+  try {
+    const data = birdeyeDataNode(await requestBirdeyeWalletFirstFunded(wallet));
+    // Response may key by wallet, expose items[], or be a single object.
+    const byWallet = data && typeof data[wallet] === 'object' ? data[wallet] as Record<string, unknown> : undefined;
+    const entry = byWallet ?? birdeyeItems(data)[0] ?? data ?? {};
+    const ts = numOrNull(entry.blockTime ?? entry.block_time ?? entry.timestamp ?? entry.blockUnixTime ?? entry.block_unix_time);
+    return chatToolCachePut(key, {
+      wallet,
+      funder: strOrNull(entry.from ?? entry.source ?? entry.funder ?? entry.owner ?? entry.fromAddress ?? entry.from_address),
+      txHash: strOrNull(entry.txHash ?? entry.tx_hash ?? entry.signature ?? entry.tx),
+      fundedAt: strOrNull(entry.blockHumanTime) ?? (ts !== null ? new Date(ts * 1000).toISOString() : null),
+      amount: numOrNull(entry.uiAmount ?? entry.ui_amount ?? entry.amount),
+      source: 'birdeye',
+    });
+  } catch (err) {
+    return { wallet, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+async function resolveChatTokenTopTraders(mint: string): Promise<Record<string, unknown>> {
+  const key = `top-traders:${mint}`;
+  const cached = chatToolCacheGet(key, CHAT_REGIME_TTL_MS);
+  if (cached) return cached;
+  try {
+    const data = birdeyeDataNode(await requestBirdeyeTokenTopTraders(mint, { limit: 10, timeFrame: '24h', sortBy: 'volume' }));
+    const traders = birdeyeItems(data).slice(0, 10).map((it) => ({
+      address: strOrNull(it.owner ?? it.address ?? it.wallet ?? it.trader),
+      volumeUsd: numOrNull(it.volume ?? it.volumeUsd ?? it.volume_usd),
+      trades: numOrNull(it.trade ?? it.trades ?? it.tradeCount ?? it.trade_count),
+      pnlUsd: numOrNull(it.total_pnl ?? it.totalPnl ?? it.pnl),
+    }));
+    return chatToolCachePut(key, { mint, timeFrame: '24h', count: traders.length, traders, source: 'birdeye' });
+  } catch (err) {
+    return { mint, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+async function resolveChatTokenSupplyChanges(mint: string): Promise<Record<string, unknown>> {
+  const key = `mint-burn:${mint}`;
+  const cached = chatToolCacheGet(key, CHAT_REGIME_TTL_MS);
+  if (cached) return cached;
+  try {
+    const data = birdeyeDataNode(await requestBirdeyeTokenMintBurnTxs(mint, { limit: 20, type: 'all' }));
+    let mintCount = 0;
+    let burnCount = 0;
+    const changes = birdeyeItems(data).slice(0, 15).map((it) => {
+      const type = strOrNull(it.type ?? it.txType ?? it.tx_type);
+      if (type === 'mint') mintCount += 1;
+      else if (type === 'burn') burnCount += 1;
+      const ts = numOrNull(it.blockTime ?? it.block_time ?? it.blockUnixTime ?? it.block_unix_time);
+      return {
+        type,
+        uiAmount: numOrNull(it.uiAmount ?? it.ui_amount ?? it.amount),
+        txHash: strOrNull(it.txHash ?? it.tx_hash ?? it.signature),
+        time: strOrNull(it.blockHumanTime) ?? (ts !== null ? new Date(ts * 1000).toISOString() : null),
+      };
+    });
+    return chatToolCachePut(key, { mint, mintCount, burnCount, count: changes.length, changes, source: 'birdeye' });
+  } catch (err) {
+    return { mint, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+// Rich multi-timeframe token activity (trade-data/single) — the momentum/flow counterpart to
+// get_token_market. Projects a compact subset of the ~200-field BirdEye payload.
+async function resolveChatTokenActivity(mint: string): Promise<Record<string, unknown>> {
+  const key = `activity:${mint}`;
+  const cached = chatToolCacheGet(key, CHAT_REGIME_TTL_MS);
+  if (cached) return cached;
+  try {
+    const d = birdeyeDataNode(await requestBirdeyeTokenTradeData(mint));
+    return chatToolCachePut(key, {
+      mint,
+      price: numOrNull(d.price),
+      priceChangePct: {
+        '1h': numOrNull(d.price_change_1h_percent),
+        '4h': numOrNull(d.price_change_4h_percent),
+        '24h': numOrNull(d.price_change_24h_percent),
+      },
+      volumeUsd: { '1h': numOrNull(d.volume_1h_usd), '24h': numOrNull(d.volume_24h_usd) },
+      buyVsSell24hUsd: { buy: numOrNull(d.volume_buy_24h_usd), sell: numOrNull(d.volume_sell_24h_usd) },
+      uniqueWallets24h: numOrNull(d.unique_wallet_24h),
+      trades24h: numOrNull(d.trade_24h),
+      buys24h: numOrNull(d.buy_24h),
+      sells24h: numOrNull(d.sell_24h),
+      holders: numOrNull(d.holder),
+      markets: numOrNull(d.market),
+      source: 'birdeye',
+    });
+  } catch (err) {
+    return { mint, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+async function resolveChatPairOverview(address: string): Promise<Record<string, unknown>> {
+  const key = `pair:${address}`;
+  const cached = chatToolCacheGet(key, CHAT_REGIME_TTL_MS);
+  if (cached) return cached;
+  try {
+    const d = birdeyeDataNode(await requestBirdeyePairOverview(address));
+    return chatToolCachePut(key, {
+      pair: address,
+      name: strOrNull(d.name),
+      dex: strOrNull(d.source ?? d.dex ?? d.amm),
+      liquidityUsd: numOrNull(d.liquidity),
+      volume24hUsd: numOrNull(d.volume_24h ?? d.volume_24h_usd ?? d.v24hUSD),
+      price: numOrNull(d.price ?? d.current_price),
+      trades24h: numOrNull(d.trade_24h ?? d.trades_24h),
+      source: 'birdeye',
+    });
+  } catch (err) {
+    return { pair: address, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+async function resolveChatSmartMoneyTokens(): Promise<Record<string, unknown>> {
+  const key = 'smart-money';
+  const cached = chatToolCacheGet(key, CHAT_SAFETY_TTL_MS);
+  if (cached) return cached;
+  try {
+    const d = birdeyeDataNode(await requestBirdeyeSmartMoneyTokens({ limit: 15 }));
+    const rows = Array.isArray(d.items) ? d.items as Record<string, unknown>[]
+      : Array.isArray(d.tokens) ? d.tokens as Record<string, unknown>[] : [];
+    const tokens = rows.slice(0, 15).map((it) => ({
+      symbol: strOrNull(it.symbol),
+      mint: strOrNull(it.address ?? it.mint ?? it.token_address),
+      name: strOrNull(it.name),
+      smartTraders: numOrNull(it.smart_traders_no ?? it.smartTradersNo ?? it.smart_traders),
+      netFlowUsd: numOrNull(it.net_flow ?? it.netFlow ?? it.net_flow_usd),
+      marketCap: numOrNull(it.market_cap ?? it.marketCap ?? it.mc),
+    }));
+    return chatToolCachePut(key, { count: tokens.length, tokens, note: 'tokens accumulated by smart-money traders', source: 'birdeye' });
+  } catch (err) {
+    return { unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+async function resolveChatGainersLosers(type: string): Promise<Record<string, unknown>> {
+  const t: BirdeyeGainersLosersType = (['yesterday', 'today', '1W', '30d', '90d'] as const).includes(type as BirdeyeGainersLosersType)
+    ? (type as BirdeyeGainersLosersType)
+    : '1W';
+  const key = `gainers-losers:${t}`;
+  const cached = chatToolCacheGet(key, CHAT_SAFETY_TTL_MS);
+  if (cached) return cached;
+  try {
+    const d = birdeyeDataNode(await requestBirdeyeGainersLosers({ type: t, limit: 15 }));
+    const rows = Array.isArray(d.items) ? d.items as Record<string, unknown>[]
+      : Array.isArray(d.traders) ? d.traders as Record<string, unknown>[] : [];
+    const traders = rows.slice(0, 15).map((it) => ({
+      address: strOrNull(it.owner ?? it.address ?? it.wallet ?? it.trader),
+      pnlUsd: numOrNull(it.pnl ?? it.total_pnl ?? it.pnl_usd ?? it.PnL),
+      volumeUsd: numOrNull(it.volume ?? it.volume_usd ?? it.trade_volume),
+      trades: numOrNull(it.trade_count ?? it.trades ?? it.trade),
+    }));
+    return chatToolCachePut(key, { type: t, count: traders.length, traders, source: 'birdeye' });
+  } catch (err) {
+    return { unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+async function resolveChatWalletNetWorthHistory(wallet: string): Promise<Record<string, unknown>> {
+  const key = `net-worth-history:${wallet}`;
+  const cached = chatToolCacheGet(key, CHAT_SAFETY_TTL_MS);
+  if (cached) return cached;
+  try {
+    const d = birdeyeDataNode(await requestBirdeyeWalletNetWorthHistory(wallet, { count: 30 }));
+    const rows = Array.isArray(d.items) ? d.items as Record<string, unknown>[]
+      : Array.isArray(d.history) ? d.history as Record<string, unknown>[] : [];
+    const points = rows.map((it) => {
+      const ts = numOrNull(it.unixTime ?? it.unix_time ?? it.timestamp);
+      return {
+        time: strOrNull(it.dateHuman ?? it.date ?? it.human_time) ?? (ts !== null ? new Date(ts * 1000).toISOString() : null),
+        netWorthUsd: numOrNull(it.value ?? it.netWorth ?? it.net_worth ?? it.totalUsd ?? it.total_usd),
+      };
+    }).filter((p) => p.netWorthUsd !== null);
+    // BirdEye defaults to desc (newest first): the first point is "current", the last is "earliest".
+    const current = points[0]?.netWorthUsd ?? null;
+    const earliest = points[points.length - 1]?.netWorthUsd ?? null;
+    const changePct = current !== null && earliest !== null && earliest !== 0 ? ((current - earliest) / earliest) * 100 : null;
+    return chatToolCachePut(key, { wallet, points: points.length, current, earliest, changePct, series: points.slice(0, 8), source: 'birdeye' });
+  } catch (err) {
+    return { wallet, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+// --- Network (Helius) -----------------------------------------------------------------------
+
+async function resolveChatPriorityFee(): Promise<Record<string, unknown>> {
+  const cached = chatToolCacheGet('priority-fee', 12 * 1000); // moves fast — short TTL
+  if (cached) return cached;
+  try {
+    const data = await getHeliusPriorityFeeLevels();
+    const levels = (data.levels && typeof data.levels === 'object') ? data.levels as Record<string, unknown> : {};
+    const recommended = numOrNull(data.recommendedMicroLamports);
+    const high = numOrNull(levels.high);
+    // Derive a rough congestion label from the recommended/high level (micro-lamports per CU).
+    const ref = recommended ?? high;
+    const congestion = ref === null ? null : ref >= 1_000_000 ? 'very high' : ref >= 200_000 ? 'high' : ref >= 50_000 ? 'moderate' : 'low';
+    return chatToolCachePut('priority-fee', {
+      recommendedMicroLamports: recommended,
+      levels,
+      congestion,
+      note: 'priority fee in micro-lamports per compute unit; as of now (changes within seconds)',
+      source: 'helius',
+    });
+  } catch (err) {
+    return { unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+async function resolveChatTransaction(signature: string): Promise<Record<string, unknown>> {
+  const key = `tx:${signature}`;
+  const cached = chatToolCacheGet(key, CHAT_AGE_TTL_MS); // a confirmed tx is immutable
+  if (cached) return cached;
+  try {
+    const parsed = await parseHeliusTransactions([signature]);
+    const tx = (Array.isArray(parsed) && parsed[0] && typeof parsed[0] === 'object') ? parsed[0] as Record<string, unknown> : null;
+    if (!tx) return { signature, unavailable: true, reason: 'not_found' };
+    const ts = numOrNull(tx.timestamp);
+    const fee = numOrNull(tx.fee);
+    const transfers = Array.isArray(tx.tokenTransfers) ? (tx.tokenTransfers as Record<string, unknown>[]).slice(0, 8).map((t) => ({
+      from: strOrNull(t.fromUserAccount),
+      to: strOrNull(t.toUserAccount),
+      amount: numOrNull(t.tokenAmount),
+      mint: strOrNull(t.mint),
+    })) : [];
+    const nativeTransfers = Array.isArray(tx.nativeTransfers) ? (tx.nativeTransfers as Record<string, unknown>[]).slice(0, 8).map((t) => ({
+      from: strOrNull(t.fromUserAccount),
+      to: strOrNull(t.toUserAccount),
+      lamports: numOrNull(t.amount),
+    })) : [];
+    return chatToolCachePut(key, {
+      signature,
+      type: strOrNull(tx.type),
+      source: strOrNull(tx.source),
+      description: strOrNull(tx.description),
+      feeSol: fee !== null ? fee / 1e9 : null,
+      timestamp: ts !== null ? new Date(ts * 1000).toISOString() : null,
+      ...(strOrNull(tx.transactionError ?? (tx as Record<string, unknown>).error) ? { failed: true } : {}),
+      tokenTransfers: transfers,
+      nativeTransfers,
+      provider: 'helius',
+    });
+  } catch (err) {
+    return { signature, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+// Top holders (owner wallets + %) for a token — the holder LIST, vs the aggregate topHoldersPercentage
+// in get_token_market. Backed by the existing BirdEye holder client.
+async function resolveChatTokenHolders(mint: string): Promise<Record<string, unknown>> {
+  return resolveChatWithChain(`holders:${mint}`, CHAT_SAFETY_TTL_MS, [
+    {
+      provider: 'birdeye',
+      endpoint: 'token_holders',
+      run: async () => {
+        const data = birdeyeDataNode(await requestBirdeyeTokenHolders(mint, { limit: 10 }));
+        const holders = birdeyeItems(data).slice(0, 10).map((it) => ({
+          owner: strOrNull(it.owner ?? it.ownerAddress ?? it.owner_address ?? it.address),
+          uiAmount: numOrNull(it.uiAmount ?? it.ui_amount ?? it.amount),
+          pct: numOrNull(it.percentage ?? it.pct ?? it.percent ?? it.share),
+        }));
+        const topHoldersPct = holders.reduce((sum, h) => sum + (typeof h.pct === 'number' ? h.pct : 0), 0) || null;
+        return { mint, count: holders.length, topHoldersPct, holders, source: 'birdeye' };
+      },
+      isUsable: (data) => Number(data.count ?? 0) > 0,
+    },
+    {
+      provider: 'coingecko',
+      endpoint: 'onchain.token_top_holders',
+      run: async () => {
+        const result = await requestCoinGeckoEndpoint({
+          endpointId: 'onchain.token_top_holders',
+          pathParams: { network: 'solana', address: mint },
+        });
+        const data = result.data && typeof result.data === 'object' ? result.data as Record<string, unknown> : result;
+        const rows = Array.isArray(data.data) ? data.data as Record<string, unknown>[] : [];
+        const holders = rows.slice(0, 10).map((row) => {
+          const attrs = row.attributes && typeof row.attributes === 'object' ? row.attributes as Record<string, unknown> : row;
+          return {
+            owner: strOrNull(attrs.address ?? attrs.holder_address ?? attrs.owner),
+            uiAmount: numOrNull(attrs.amount ?? attrs.balance),
+            pct: numOrNull(attrs.percentage ?? attrs.share ?? attrs.percent),
+          };
+        });
+        const topHoldersPct = holders.reduce((sum, h) => sum + (typeof h.pct === 'number' ? h.pct : 0), 0) || null;
+        return { mint, count: holders.length, topHoldersPct, holders, source: 'coingecko' };
+      },
+      isUsable: (data) => Number(data.count ?? 0) > 0,
+    },
+  ], { webSearchOnExhausted: true });
+}
+
+// --- Market sectors (CoinGecko categories) ---------------------------------------------------
+async function resolveChatCoinCategories(category: string): Promise<Record<string, unknown>> {
+  const key = `categories:${category || 'top'}`;
+  const cached = chatToolCacheGet(key, CHAT_REGIME_TTL_MS);
+  if (cached) return cached;
+  try {
+    const result = await requestCoinGeckoEndpoint({ endpointId: 'coins.categories', query: { order: 'market_cap_desc' } });
+    const arr = Array.isArray(result.data) ? result.data as Record<string, unknown>[] : [];
+    const project = (c: Record<string, unknown>) => ({
+      id: strOrNull(c.id),
+      name: strOrNull(c.name),
+      marketCapUsd: numOrNull(c.market_cap),
+      marketCapChange24hPct: numOrNull(c.market_cap_change_24h),
+      volume24hUsd: numOrNull(c.volume_24h),
+      topCoins: Array.isArray(c.top_3_coins_id) ? (c.top_3_coins_id as unknown[]).map((x) => (typeof x === 'string' ? x : null)).filter(Boolean).slice(0, 3) : [],
+    });
+    const wanted = category.trim().toLowerCase();
+    if (wanted) {
+      const match = arr.find((c) => strOrNull(c.id)?.toLowerCase() === wanted || strOrNull(c.name)?.toLowerCase().includes(wanted));
+      if (!match) return { category, unavailable: true, reason: 'not_found' };
+      return chatToolCachePut(key, { category, ...project(match), source: 'coingecko' });
+    }
+    return chatToolCachePut(key, { count: arr.length, categories: arr.slice(0, 12).map(project), source: 'coingecko' });
+  } catch (err) {
+    return { category: category || null, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
   }
 }
 

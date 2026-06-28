@@ -28,6 +28,20 @@ export const CHAT_TOOL_NAMES = new Set([
   'get_coin_market',
   'get_trending_coins',
   'get_new_listings',
+  'get_wallet_portfolio',
+  'get_wallet_pnl',
+  'get_wallet_origin',
+  'get_token_top_traders',
+  'get_token_supply_changes',
+  'get_token_activity',
+  'get_pair_overview',
+  'get_smart_money_tokens',
+  'get_gainers_losers',
+  'get_wallet_net_worth_history',
+  'get_priority_fee',
+  'get_transaction',
+  'get_token_holders',
+  'get_coin_categories',
 ]);
 export const CHAT_PROPOSAL_KINDS = new Set(['transfer_sol', 'transfer_spl', 'swap', 'sign_proof']);
 export const CHAT_BASE58_MINT_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -117,6 +131,38 @@ export function chatToolStatusLabel(name: string, input: Record<string, unknown>
   }
   if (name === 'get_trending_coins') return 'Checking trending coins…';
   if (name === 'get_new_listings') return 'Checking new listings…';
+  if (name === 'get_wallet_portfolio') return 'Checking wallet net worth…';
+  if (name === 'get_wallet_pnl') return 'Checking wallet PnL…';
+  if (name === 'get_wallet_origin') return 'Checking wallet funding origin…';
+  if (name === 'get_token_top_traders') {
+    const mint = typeof input.mint === 'string' ? input.mint : '';
+    return mint ? `Checking ${mint} top traders…` : 'Checking top traders…';
+  }
+  if (name === 'get_token_supply_changes') {
+    const mint = typeof input.mint === 'string' ? input.mint : '';
+    return mint ? `Checking ${mint} mint/burn…` : 'Checking supply changes…';
+  }
+  if (name === 'get_token_activity') {
+    const mint = typeof input.mint === 'string' ? input.mint : '';
+    return mint ? `Checking ${mint} activity…` : 'Checking token activity…';
+  }
+  if (name === 'get_pair_overview') return 'Checking pair stats…';
+  if (name === 'get_smart_money_tokens') return 'Checking smart-money tokens…';
+  if (name === 'get_gainers_losers') return 'Checking top traders…';
+  if (name === 'get_wallet_net_worth_history') return 'Checking net-worth history…';
+  if (name === 'get_priority_fee') return 'Checking network priority fee…';
+  if (name === 'get_transaction') {
+    const sig = typeof input.signature === 'string' ? input.signature : '';
+    return sig ? `Explaining transaction ${sig.slice(0, 8)}…` : 'Explaining transaction…';
+  }
+  if (name === 'get_token_holders') {
+    const mint = typeof input.mint === 'string' ? input.mint : '';
+    return mint ? `Checking ${mint} top holders…` : 'Checking top holders…';
+  }
+  if (name === 'get_coin_categories') {
+    const cat = typeof input.category === 'string' ? input.category : '';
+    return cat ? `Checking ${cat} sector…` : 'Checking crypto sectors…';
+  }
   return `Running ${name}…`;
 }
 
@@ -242,6 +288,76 @@ export function chatToolsAnthropic(): Array<Record<string, unknown>> {
       name: 'get_new_listings',
       description: "Get newly-listed Solana tokens (symbol, mint, name, liquidity, listed time). Call this for 'what just launched / new tokens / recent listings'. WARNING: these are unvetted and high-risk - always pair with get_token_safety / get_token_market before acting.",
       input_schema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'get_wallet_portfolio',
+      description: "Get a wallet's net worth (total USD) and top holdings (token, USD value, amount). Call this for 'what's wallet X worth / what's in this wallet / its holdings / portfolio value'. Works for ANY wallet address; omit `wallet` to use the connected wallet.",
+      input_schema: { type: 'object', properties: { wallet: { type: 'string', description: "Base58 wallet address to analyze; omit for the user's connected wallet" } }, required: [] },
+    },
+    {
+      name: 'get_wallet_pnl',
+      description: "Get a wallet's trading PnL: realized + unrealized USD, total PnL, ROI %, win rate %, trade count. Call this for 'how is wallet X doing / its PnL / profit and loss / is it profitable'. Works for ANY wallet; omit `wallet` for the connected wallet.",
+      input_schema: { type: 'object', properties: { wallet: { type: 'string', description: "Base58 wallet address; omit for the connected wallet" }, duration: { type: 'string', description: "Window: 'all' | '90d' | '30d' | '7d' | '24h' (default all)" } }, required: [] },
+    },
+    {
+      name: 'get_wallet_origin',
+      description: "Get how a wallet was first funded: the funder/source address, funding tx, time, and amount. Call this for 'who funded this wallet / where did it come from / is it a fresh wallet / wallet creator'. Works for ANY wallet; omit `wallet` for the connected wallet.",
+      input_schema: { type: 'object', properties: { wallet: { type: 'string', description: "Base58 wallet address; omit for the connected wallet" } }, required: [] },
+    },
+    {
+      name: 'get_token_top_traders',
+      description: "Get a token's top traders over the last 24h (trader address, USD volume, trade count, PnL). Call this for 'who are the top/biggest traders of X / smart money / whales trading X'. Accepts a symbol or base58 mint.",
+      input_schema: { type: 'object', properties: { mint: { type: 'string', description: 'Token symbol or base58 mint address' } }, required: ['mint'] },
+    },
+    {
+      name: 'get_token_supply_changes',
+      description: "Get a token's recent mint/burn transactions (type, amount, tx, time) plus mint/burn counts. Call this for 'is X's supply being minted/burned / is it being diluted / supply changes / new supply'. A dilution / rug signal; pair with get_token_safety. Accepts a symbol or base58 mint.",
+      input_schema: { type: 'object', properties: { mint: { type: 'string', description: 'Token symbol or base58 mint address' } }, required: ['mint'] },
+    },
+    {
+      name: 'get_token_activity',
+      description: "Get a token's multi-timeframe trading activity: price + price-change % over 1h/4h/24h, 1h/24h volume (USD), 24h buy-vs-sell volume, unique wallets, trades, holders, market count. Call this for momentum / 'how is X moving over 1h/4h', 'buy or sell pressure', 'how many traders/wallets', '% change'. Richer than get_token_market (which is 24h only). Accepts a symbol or base58 mint.",
+      input_schema: { type: 'object', properties: { mint: { type: 'string', description: 'Token symbol or base58 mint address' } }, required: ['mint'] },
+    },
+    {
+      name: 'get_pair_overview',
+      description: "Get stats for a specific liquidity pool / trading pair by its pair address: name, DEX, liquidity (USD), 24h volume, price, 24h trades. Call this for 'stats for this pool/pair', 'pool overview', 'LP pool metrics'. Takes a base58 PAIR/POOL address (not a token mint).",
+      input_schema: { type: 'object', properties: { address: { type: 'string', description: 'Base58 pair / pool address' } }, required: ['address'] },
+    },
+    {
+      name: 'get_smart_money_tokens',
+      description: "Get tokens currently being accumulated by smart-money traders (symbol, mint, smart-trader count, net flow USD, market cap). Call this for 'what is smart money buying / accumulating', 'smart wallets', 'alpha plays'. May be unavailable on the current API tier.",
+      input_schema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'get_gainers_losers',
+      description: "Get the top gaining / losing TRADERS leaderboard (trader address, PnL USD, volume, trades). Call this for 'top gainers/losers', 'who's up/down the most', 'best/worst traders today'. Distinct from get_token_top_traders (which is per-token). May be unavailable on the current API tier.",
+      input_schema: { type: 'object', properties: { type: { type: 'string', description: "Window: 'today' | 'yesterday' | '1W' | '30d' | '90d' (default 1W)" } }, required: [] },
+    },
+    {
+      name: 'get_wallet_net_worth_history',
+      description: "Get a wallet's net-worth trend over time (current, earliest, change %, recent points). Call this for 'net worth over time / portfolio history / how has wallet X grown'. Pairs with get_wallet_portfolio (current snapshot). Works for ANY wallet; omit `wallet` for the connected wallet.",
+      input_schema: { type: 'object', properties: { wallet: { type: 'string', description: "Base58 wallet address; omit for the connected wallet" } }, required: [] },
+    },
+    {
+      name: 'get_priority_fee',
+      description: "Get the current Solana priority-fee estimate (recommended micro-lamports per compute unit + low/medium/high/veryHigh levels + a congestion label). Call this for 'what priority fee should I use', 'is the network congested/busy', 'why is my transaction slow', 'gas right now'. The value changes within seconds - present it as 'as of now'.",
+      input_schema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'get_transaction',
+      description: "Explain a single Solana transaction by its signature: type, source/program, human description, fee, time, and token/SOL transfers. Call this for 'what happened in tx <sig>', 'explain this transaction', 'decode this signature'. For a wallet's recent activity use get_wallet_history instead.",
+      input_schema: { type: 'object', properties: { signature: { type: 'string', description: 'Base58 transaction signature' } }, required: ['signature'] },
+    },
+    {
+      name: 'get_token_holders',
+      description: "Get a token's top holders (owner wallet addresses + amount + % of supply) and combined top-holder %. Call this for 'who are the top/biggest holders of X', 'whale wallets holding X', 'which wallets hold X', 'is X whale-concentrated'. The aggregate concentration % alone is in get_token_market; this returns the actual wallet list. Accepts a symbol or base58 mint.",
+      input_schema: { type: 'object', properties: { mint: { type: 'string', description: 'Token symbol or base58 mint address' } }, required: ['mint'] },
+    },
+    {
+      name: 'get_coin_categories',
+      description: "Get crypto sector/category market performance (name, market cap, 24h change %, volume, top coins). Call this for 'best/worst performing sector or narrative', 'how are AI tokens / memecoins / DeFi / gaming / L1s doing'. Pass `category` to focus one (e.g. 'artificial-intelligence', 'meme-token', 'gaming'); omit for the top sectors by market cap.",
+      input_schema: { type: 'object', properties: { category: { type: 'string', description: "Optional category id/name to filter (e.g. 'artificial-intelligence', 'gaming'); omit for top sectors" } }, required: [] },
     },
     {
       name: 'propose_wallet_action',

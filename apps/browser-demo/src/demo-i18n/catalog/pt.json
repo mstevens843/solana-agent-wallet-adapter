@@ -1,6 +1,7 @@
 {
   "language": "pt",
   "entries": {
+    "Back to demo": "Voltar para a demo",
     "Amount exceeds your balance.": "O valor excede o seu saldo.",
     "Enter an amount or shares.": "Insira um valor ou cotas.",
     "Health factor is too low.": "O fator de saúde está muito baixo.",

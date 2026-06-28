@@ -15,24 +15,46 @@ import {
   getTransfersByAddress,
   getHeliusAssetsByOwner,
   getHeliusAsset,
+  getHeliusPriorityFeeLevels,
+  parseHeliusTransactions,
   listCoinGeckoEndpointCatalog,
   listConnectorCapabilities,
   normalizeConnectorSecretBaseUrl,
   requestBirdeyeExitLiquidityMulti,
+  requestBirdeyeGainersLosers,
   requestBirdeyeHistoryPrice,
   requestBirdeyeNewListings,
   requestBirdeyeOhlcv,
+  requestBirdeyePairOverview,
   requestBirdeyePriceMulti,
   requestBirdeyePriceVolumeMulti,
   requestBirdeyePriceVolumeSingle,
   requestBirdeyeSearch,
+  requestBirdeyeSmartMoneyTokens,
   requestBirdeyeTokenCreationInfo,
   requestBirdeyeTokenHolders,
   requestBirdeyeTokenListV3,
   requestBirdeyeTokenMetadata,
+  requestBirdeyeTokenMintBurnTxs,
   requestBirdeyeTokenSecurity,
+  requestBirdeyeTokenTopTraders,
+  requestBirdeyeTokenTradeData,
   requestBirdeyeTrendingTokens,
+  requestBirdeyeWalletFirstFunded,
+  requestBirdeyeWalletNetWorth,
+  requestBirdeyeWalletNetWorthHistory,
+  requestBirdeyeWalletPnlSummary,
   requestBirdeyeWalletTokenList,
+  type BirdeyeGainersLosersSortBy,
+  type BirdeyeGainersLosersType,
+  type BirdeyeMintBurnType,
+  type BirdeyeNetWorthInterval,
+  type BirdeyePnlDuration,
+  type BirdeyeSmartMoneyInterval,
+  type BirdeyeSmartMoneySortBy,
+  type BirdeyeSmartMoneyStyle,
+  type BirdeyeTopTraderSortBy,
+  type BirdeyeTopTraderTimeFrame,
   requestCoinGeckoEndpoint,
   requestCoinGeckoGlobal,
   requestCoinGeckoSolanaTokenEvidence,
@@ -312,8 +334,20 @@ const REGISTERED_API_ROUTES = [
   'POST /api/birdeye/new-listings',
   'POST /api/birdeye/token-list-v3',
   'POST /api/birdeye/wallet-token-list',
+  'POST /api/birdeye/wallet-net-worth',
+  'POST /api/birdeye/wallet-pnl',
+  'POST /api/birdeye/wallet-first-funded',
+  'POST /api/birdeye/token-top-traders',
+  'POST /api/birdeye/token-mint-burn',
+  'POST /api/birdeye/token-activity',
+  'POST /api/birdeye/pair-overview',
+  'POST /api/birdeye/smart-money-tokens',
+  'POST /api/birdeye/gainers-losers',
+  'POST /api/birdeye/wallet-net-worth-history',
   'POST /api/helius/transfers-by-address',
   'POST /api/helius/das',
+  'POST /api/helius/priority-fee',
+  'POST /api/helius/parse-transaction',
   'GET /api/coingecko/endpoints',
   'GET /api/coingecko/global',
   'POST /api/coingecko/read',
@@ -1493,6 +1527,66 @@ async function routeApiRequest(
     return;
   }
 
+  if (url.pathname === '/api/birdeye/wallet-net-worth') {
+    requireMethod(req, 'POST');
+    await handleBirdeyeWalletNetWorth(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/wallet-pnl') {
+    requireMethod(req, 'POST');
+    await handleBirdeyeWalletPnl(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/wallet-first-funded') {
+    requireMethod(req, 'POST');
+    await handleBirdeyeWalletFirstFunded(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/token-top-traders') {
+    requireMethod(req, 'POST');
+    await handleBirdeyeTokenTopTraders(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/token-mint-burn') {
+    requireMethod(req, 'POST');
+    await handleBirdeyeTokenMintBurn(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/token-activity') {
+    requireMethod(req, 'POST');
+    await handleBirdeyeTokenActivity(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/pair-overview') {
+    requireMethod(req, 'POST');
+    await handleBirdeyePairOverview(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/smart-money-tokens') {
+    requireMethod(req, 'POST');
+    await handleBirdeyeSmartMoneyTokens(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/gainers-losers') {
+    requireMethod(req, 'POST');
+    await handleBirdeyeGainersLosers(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/wallet-net-worth-history') {
+    requireMethod(req, 'POST');
+    await handleBirdeyeWalletNetWorthHistory(req, res);
+    return;
+  }
+
   if (url.pathname === '/api/birdeye/price-volume') {
     requireMethod(req, 'POST');
     await handleBirdeyePriceVolume(req, res);
@@ -1538,6 +1632,18 @@ async function routeApiRequest(
   if (url.pathname === '/api/helius/das') {
     requireMethod(req, 'POST');
     await handleHeliusDas(req, res, store, clock);
+    return;
+  }
+
+  if (url.pathname === '/api/helius/priority-fee') {
+    requireMethod(req, 'POST');
+    await handleHeliusPriorityFee(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/helius/parse-transaction') {
+    requireMethod(req, 'POST');
+    await handleHeliusParseTransaction(req, res);
     return;
   }
 
@@ -2701,6 +2807,102 @@ async function handleBirdeyeExitLiquidityMulti(req: IncomingMessage, res: Server
   writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeExitLiquidityMulti(addresses)));
 }
 
+// Wallet-intelligence reads accept an ARBITRARY wallet (public on-chain analytics) — NOT self-scoped
+// like wallet-token-list. Open reads, rate-limited via the /api/birdeye:* tier.
+async function handleBirdeyeWalletNetWorth(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye wallet net-worth body');
+  const wallet = birdeyeWalletField(body);
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeWalletNetWorth(wallet, {
+    limit: optionalIntegerBodyField(body, 'limit'),
+    offset: optionalIntegerBodyField(body, 'offset'),
+  })));
+}
+
+async function handleBirdeyeWalletPnl(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye wallet PnL body');
+  const wallet = birdeyeWalletField(body);
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeWalletPnlSummary(wallet, {
+    duration: birdeyePnlDuration(body.duration),
+    positionScope: body.positionScope === 'cumulative' ? 'cumulative' : body.positionScope === 'duration_only' ? 'duration_only' : undefined,
+  })));
+}
+
+async function handleBirdeyeWalletFirstFunded(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye wallet first-funded body');
+  const wallet = birdeyeWalletField(body);
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeWalletFirstFunded(wallet, {
+    tokenAddress: typeof body.tokenAddress === 'string' ? body.tokenAddress : undefined,
+  })));
+}
+
+async function handleBirdeyeTokenTopTraders(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye top-traders body');
+  const address = requiredBodyString(body, 'address');
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeTokenTopTraders(address, {
+    timeFrame: birdeyeTopTraderTimeFrame(body.timeFrame),
+    sortBy: birdeyeTopTraderSortBy(body.sortBy),
+    sortType: body.sortType === 'asc' ? 'asc' : body.sortType === 'desc' ? 'desc' : undefined,
+    limit: optionalIntegerBodyField(body, 'limit'),
+    offset: optionalIntegerBodyField(body, 'offset'),
+  })));
+}
+
+async function handleBirdeyeTokenMintBurn(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye mint-burn body');
+  const address = requiredBodyString(body, 'address');
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeTokenMintBurnTxs(address, {
+    type: birdeyeMintBurnType(body.type),
+    sortType: body.sortType === 'asc' ? 'asc' : body.sortType === 'desc' ? 'desc' : undefined,
+    limit: optionalIntegerBodyField(body, 'limit'),
+    offset: optionalIntegerBodyField(body, 'offset'),
+  })));
+}
+
+async function handleBirdeyeTokenActivity(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye token activity body');
+  const address = requiredBodyString(body, 'address');
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeTokenTradeData(address)));
+}
+
+async function handleBirdeyePairOverview(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye pair overview body');
+  const address = requiredBodyString(body, 'address');
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyePairOverview(address)));
+}
+
+async function handleBirdeyeSmartMoneyTokens(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye smart-money body');
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeSmartMoneyTokens({
+    interval: birdeyeSmartMoneyInterval(body.interval),
+    traderStyle: birdeyeSmartMoneyStyle(body.traderStyle),
+    sortBy: birdeyeSmartMoneySortBy(body.sortBy),
+    sortType: body.sortType === 'asc' ? 'asc' : body.sortType === 'desc' ? 'desc' : undefined,
+    limit: optionalIntegerBodyField(body, 'limit'),
+    offset: optionalIntegerBodyField(body, 'offset'),
+  })));
+}
+
+async function handleBirdeyeGainersLosers(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye gainers-losers body');
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeGainersLosers({
+    type: birdeyeGainersLosersType(body.type),
+    sortBy: birdeyeGainersLosersSortBy(body.sortBy),
+    sortType: body.sortType === 'asc' ? 'asc' : body.sortType === 'desc' ? 'desc' : undefined,
+    limit: optionalIntegerBodyField(body, 'limit'),
+    offset: optionalIntegerBodyField(body, 'offset'),
+  })));
+}
+
+async function handleBirdeyeWalletNetWorthHistory(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye wallet net-worth history body');
+  const wallet = birdeyeWalletField(body);
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeWalletNetWorthHistory(wallet, {
+    count: optionalIntegerBodyField(body, 'count'),
+    direction: body.direction === 'forward' ? 'forward' : body.direction === 'back' ? 'back' : undefined,
+    interval: birdeyeNetWorthInterval(body.interval),
+  })));
+}
+
 async function handleBirdeyePriceVolume(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = asJsonRecord(await readJsonBody(req), 'BirdEye price-volume body');
   const addresses = optionalStringArray(body.addresses);
@@ -2817,6 +3019,19 @@ async function handleHeliusDas(
     tokenType,
     limit: optionalIntegerBodyField(body, 'limit'),
   })));
+}
+
+// Public network read (no wallet scope) — current priority-fee levels. Rate-limited via /api/helius:*.
+async function handleHeliusPriorityFee(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+  writeJson(res, 200, await requestHeliusForRender(() => getHeliusPriorityFeeLevels()));
+}
+
+// Public read (no wallet scope) — parse a single transaction signature into a human-readable summary.
+async function handleHeliusParseTransaction(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'Helius parse transaction body');
+  const signature = requiredBodyString(body, 'signature');
+  const parsed = await requestHeliusForRender(() => parseHeliusTransactions([signature]));
+  writeJson(res, 200, { transaction: Array.isArray(parsed) ? parsed[0] ?? null : null });
 }
 
 async function handleCoinGeckoGlobal(_req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -3040,6 +3255,55 @@ function requiredCluster(value: unknown): WorkflowCluster {
     return value;
   }
   throw new ApiError(400, 'cluster is required.');
+}
+
+function birdeyeWalletField(body: Record<string, unknown>): string {
+  const wallet = stringField(body.wallet ?? body.walletAddress).trim();
+  if (!wallet) throw new ApiError(400, 'wallet is required.');
+  return wallet;
+}
+
+function birdeyePnlDuration(value: unknown): BirdeyePnlDuration | undefined {
+  return value === 'all' || value === '90d' || value === '30d' || value === '7d' || value === '24h' ? value : undefined;
+}
+
+function birdeyeTopTraderTimeFrame(value: unknown): BirdeyeTopTraderTimeFrame | undefined {
+  const allowed = ['30m', '1h', '2h', '4h', '6h', '8h', '12h', '24h', '2d', '3d', '7d', '14d', '30d', '60d', '90d'];
+  return typeof value === 'string' && allowed.includes(value) ? (value as BirdeyeTopTraderTimeFrame) : undefined;
+}
+
+function birdeyeTopTraderSortBy(value: unknown): BirdeyeTopTraderSortBy | undefined {
+  return value === 'volume' || value === 'trade' || value === 'total_pnl' || value === 'unrealized_pnl' || value === 'realized_pnl' || value === 'volume_usd'
+    ? value
+    : undefined;
+}
+
+function birdeyeMintBurnType(value: unknown): BirdeyeMintBurnType | undefined {
+  return value === 'all' || value === 'mint' || value === 'burn' ? value : undefined;
+}
+
+function birdeyeSmartMoneyInterval(value: unknown): BirdeyeSmartMoneyInterval | undefined {
+  return value === '1d' || value === '7d' || value === '30d' ? value : undefined;
+}
+
+function birdeyeSmartMoneyStyle(value: unknown): BirdeyeSmartMoneyStyle | undefined {
+  return value === 'all' || value === 'risk_averse' || value === 'risk_balancers' || value === 'trenchers' ? value : undefined;
+}
+
+function birdeyeSmartMoneySortBy(value: unknown): BirdeyeSmartMoneySortBy | undefined {
+  return value === 'net_flow' || value === 'smart_traders_no' || value === 'market_cap' ? value : undefined;
+}
+
+function birdeyeGainersLosersType(value: unknown): BirdeyeGainersLosersType | undefined {
+  return value === 'yesterday' || value === 'today' || value === '1W' || value === '30d' || value === '90d' ? value : undefined;
+}
+
+function birdeyeGainersLosersSortBy(value: unknown): BirdeyeGainersLosersSortBy | undefined {
+  return value === 'PnL' || value === 'realized_pnl' || value === 'unrealized_pnl' ? value : undefined;
+}
+
+function birdeyeNetWorthInterval(value: unknown): BirdeyeNetWorthInterval | undefined {
+  return value === '1h' || value === '1d' ? value : undefined;
 }
 
 function optionalIntegerBodyField(body: Record<string, unknown>, key: string): number | undefined {

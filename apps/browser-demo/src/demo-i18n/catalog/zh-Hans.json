@@ -1,6 +1,7 @@
 {
   "language": "zh-Hans",
   "entries": {
+    "Back to demo": "返回演示",
     "Amount exceeds your balance.": "金额超过您的余额。",
     "Enter an amount or shares.": "请输入金额或份额。",
     "Health factor is too low.": "健康系数过低。",

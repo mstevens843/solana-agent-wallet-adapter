@@ -12,6 +12,7 @@
  */
 
 import { Connection, PublicKey } from '@solana/web3.js';
+import { walletBalancePriceInfoMapFromBirdeye } from '@solana-agent-wallet-adapter/core';
 
 import type {
   AccountWritabilityCountAtom,
@@ -60,7 +61,7 @@ import {
 } from '../adapters/alternative_me/index.js';
 import { getJupiterPrice } from '../adapters/jupiter/prices.js';
 import { getJupiterTokenRiskEvidence, type JupiterTokenRiskEvidence } from '../adapters/jupiter/tokenEvidence.js';
-import { requestBirdeyeTokenSecurity } from '../birdeye.js';
+import { requestBirdeyePrice, requestBirdeyeTokenSecurity, requestBirdeyeTokenTradeData } from '../birdeye.js';
 import {
   requestCoinGecko,
   requestCoinGeckoGlobal,
@@ -95,6 +96,9 @@ export const KNOWN_SYMBOL_MINTS: Readonly<Record<string, string>> = Object.freez
   WIF: 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm',
   PYUSD: '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo',
   MSOL: 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So',
+  // jitoSOL was client-only (KNOWN_BROWSER_TOKENS) — add here so server + client resolve the
+  // same canonical mint for the #2 LST (no registry drift / audit mismatch).
+  JITOSOL: 'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn',
 });
 
 /** CoinGecko coin ids for symbols that don't live on Solana (BTC, ETH) or that
@@ -105,6 +109,7 @@ export const KNOWN_SYMBOL_COINGECKO_IDS: Readonly<Record<string, string>> = Obje
   SOL: 'solana',
   USDC: 'usd-coin',
   USDT: 'tether',
+  JUP: 'jupiter-exchange-solana',
 });
 
 /** Returns the canonical Solana mint for a symbol, or undefined if the symbol
@@ -238,7 +243,7 @@ export function createMcpCapabilityResolver(deps: McpResolverDeps) {
     if (atom.type === 'price') {
       if (provider === 'jupiter') return jupiterPrice(atom, config);
       if (provider === 'coingecko') return coingeckoPriceById(atom);
-      if (provider === 'birdeye') return missing('birdeye', 'BirdEye price resolver is not enabled in the default resolver; falling through.', 'price_multi');
+      if (provider === 'birdeye') return birdeyePrice(atom);
       if (provider === 'web') return missing('web', 'deferred_to_research_pass');
     }
     // -------- market_regime atoms --------------------------------------------
@@ -263,8 +268,7 @@ export function createMcpCapabilityResolver(deps: McpResolverDeps) {
     // -------- token_metric atoms (liquidity/mcap/fdv/volume/holders/...) ------
     if (atom.type === 'token_metric') {
       if (provider === 'jupiter') return jupiterTokenMetric(atom, config, requestContext);
-      // BirdEye token_overview fallback is not wired in the default resolver; fall through.
-      if (provider === 'birdeye') return missing('birdeye', 'BirdEye token_overview resolver not enabled in the default resolver; falling through.', 'token_overview');
+      if (provider === 'birdeye') return birdeyeTokenMetric(atom, requestContext);
       if (provider === 'web') return missing('web', 'deferred_to_research_pass');
     }
     // -------- coin_metric atoms (CoinGecko rank / ATH distance / supply) ------
@@ -458,18 +462,47 @@ async function jupiterPrice(atom: PriceAtom, config: AgentWalletConfig): Promise
 }
 
 async function coingeckoPriceById(atom: PriceAtom): Promise<CapabilityResolutionAttempt<CoinGeckoPriceValue>> {
-  const id = coingeckoIdForSymbol(atom.subject);
-  if (!id) return missing('coingecko', `No CoinGecko id known for symbol "${atom.subject}".`, 'simple.price');
+  const subject = atom.subject.trim();
+  const id = coingeckoIdForSymbol(subject);
+  if (id) {
+    try {
+      const data = await requestCoinGecko('/simple/price', {
+        query: { ids: id, vs_currencies: 'usd' },
+      });
+      const row = (data as Record<string, unknown>)[id];
+      const usd = row && typeof row === 'object' ? Number((row as Record<string, unknown>).usd) : NaN;
+      if (!Number.isFinite(usd)) return missing('coingecko', 'no usd price in payload', 'simple.price');
+      return ok('coingecko', { numeric: usd, coingeckoId: id }, 'simple.price');
+    } catch (err) {
+      return error('coingecko', err, 'simple.price');
+    }
+  }
+  // No hardcoded id → resolve by canonical Solana mint (known symbol → mint, or a raw mint) via the
+  // contract endpoint, so tokens like JUP price correctly instead of failing the CoinGecko leg.
+  const mint = mintForSymbol(subject) ?? (subject.length >= 32 ? subject : undefined);
+  if (!mint) return missing('coingecko', `No CoinGecko id or mint known for "${subject}".`, 'simple.price');
   try {
-    const data = await requestCoinGecko('/simple/price', {
-      query: { ids: id, vs_currencies: 'usd' },
-    });
-    const row = (data as Record<string, unknown>)[id];
-    const usd = row && typeof row === 'object' ? Number((row as Record<string, unknown>).usd) : NaN;
-    if (!Number.isFinite(usd)) return missing('coingecko', 'no usd price in payload', 'simple.price');
-    return ok('coingecko', { numeric: usd, coingeckoId: id }, 'simple.price');
+    const market = await requestCoinGeckoCoinMarket({ mint, network: 'solana' });
+    const usd = market && Number.isFinite(Number(market.usdPrice)) ? Number(market.usdPrice) : NaN;
+    if (!Number.isFinite(usd)) return missing('coingecko', `no usd price for mint ${mint}`, 'coins');
+    return ok('coingecko', { numeric: usd, coingeckoId: 'mint-lookup' }, 'coins');
   } catch (err) {
-    return error('coingecko', err, 'simple.price');
+    return error('coingecko', err, 'coins');
+  }
+}
+
+async function birdeyePrice(atom: PriceAtom): Promise<CapabilityResolutionAttempt<JupiterPriceValue>> {
+  const subject = atom.subject.trim();
+  const mint = mintForSymbol(subject) ?? (subject.length >= 32 ? subject : undefined);
+  if (!mint) return missing('birdeye', `No Solana mint known for "${subject}".`, 'price');
+  try {
+    const payload = await requestBirdeyePrice(mint, { includeLiquidity: true });
+    const parsed = walletBalancePriceInfoMapFromBirdeye(payload);
+    const usd = parsed.get(mint)?.priceUsd ?? numberField(asRecord(asRecord(payload)?.data)?.value ?? asRecord(asRecord(payload)?.data)?.price ?? asRecord(payload)?.value);
+    if (usd === undefined || !Number.isFinite(usd)) return missing('birdeye', `no usd price for ${mint}`, 'price');
+    return ok('birdeye', { numeric: usd }, 'price');
+  } catch (err) {
+    return error('birdeye', err, 'price');
   }
 }
 
@@ -551,6 +584,47 @@ async function jupiterTokenMetric(
     return ok('jupiter', { numeric: value, ...(text ? { text } : {}) }, 'token_evidence');
   } catch (err) {
     return error('jupiter', err, 'token_evidence');
+  }
+}
+
+function birdeyeMetricValue(field: TokenMetricField, price: Record<string, unknown>, activity: Record<string, unknown>): number | undefined {
+  switch (field) {
+    case 'liquidity': return numberField(price.liquidity ?? price.liquidityUsd ?? price.liquidity_usd);
+    case 'market_cap': return numberField(price.marketCap ?? price.market_cap ?? activity.market_cap ?? activity.mc);
+    case 'fdv': return numberField(price.fdv ?? activity.fdv);
+    case 'volume_24h': return numberField(price.volume24h ?? price.v24hUSD ?? price.volume_24h ?? activity.volume_24h_usd);
+    case 'holder_count': return numberField(price.holder ?? price.holderCount ?? activity.holder);
+    case 'top_holder_pct': return numberField(price.topHoldersPercentage ?? price.top_holders_percentage ?? activity.top_holder_pct);
+    case 'price_change_24h': return numberField(price.priceChange24h ?? price.price_change_24h ?? activity.price_change_24h_percent);
+    case 'organic_score': return numberField(price.organicScore ?? price.organic_score ?? activity.organic_score);
+  }
+}
+
+async function birdeyeTokenMetric(
+  atom: TokenMetricAtom,
+  requestContext: { draftParameters?: Record<string, string> } | undefined,
+): Promise<CapabilityResolutionAttempt<{ numeric: number; text?: string }>> {
+  const params = requestContext?.draftParameters ?? {};
+  const candidate = atom.subject
+    ?? params['outputMint'] ?? params['outputToken'] ?? params['mint'] ?? params['token'];
+  const mint = mintFromSubject(candidate);
+  if (!mint) {
+    return missing('birdeye', 'token_metric has no concrete token (no named subject and no swap output token in context).', 'token_overview');
+  }
+  try {
+    const [pricePayload, activityPayload] = await Promise.all([
+      requestBirdeyePrice(mint, { includeLiquidity: true }),
+      requestBirdeyeTokenTradeData(mint).catch(() => ({})),
+    ]);
+    const price = asRecord(asRecord(pricePayload)?.data) ?? asRecord(pricePayload) ?? {};
+    const activity = asRecord(asRecord(activityPayload)?.data) ?? asRecord(activityPayload) ?? {};
+    const value = birdeyeMetricValue(atom.field, price, activity);
+    if (value === undefined || !Number.isFinite(value)) {
+      return missing('birdeye', `BirdEye has no ${atom.field} for ${mint.slice(0, 8)}…`, 'token_overview');
+    }
+    return ok('birdeye', { numeric: value }, 'token_overview');
+  } catch (err) {
+    return error('birdeye', err, 'token_overview');
   }
 }
 
@@ -689,6 +763,12 @@ function mintFromSubject(subject: string | undefined): string | undefined {
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function numberField(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
+  return undefined;
 }
 
 /* -------------------------------------------------------------------------- */

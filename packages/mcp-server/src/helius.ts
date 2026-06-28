@@ -159,6 +159,50 @@ export async function estimateHeliusPriorityFee(
   }
 }
 
+// Account touched by virtually every SPL token tx — a representative network sample when the caller
+// has no specific tx/accounts (for a generic "what's the current priority fee / is it congested" read).
+const PRIORITY_FEE_SAMPLE_ACCOUNT = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+
+// Full priority-fee breakdown for the chat/planner READ atom — UNGATED (always queries Helius), unlike
+// estimateHeliusPriorityFee which is the swap-path variant (env-gated, returns only `recommended`).
+// Returns all levels so the agent can describe congestion. micro-lamports per compute unit.
+export async function getHeliusPriorityFeeLevels(
+  options: HeliusRequestOptions & { accountKeys?: string[]; serializedTransaction?: string } = {},
+): Promise<Record<string, unknown>> {
+  const config = heliusConfigFromEnv(options.env);
+  const target = options.serializedTransaction
+    ? { transaction: options.serializedTransaction }
+    : { accountKeys: options.accountKeys && options.accountKeys.length ? options.accountKeys : [PRIORITY_FEE_SAMPLE_ACCOUNT] };
+  const body = {
+    jsonrpc: '2.0',
+    id: 'getPriorityFeeLevels',
+    method: 'getPriorityFeeEstimate',
+    params: [{ ...target, options: { includeAllPriorityFeeLevels: true } }],
+  };
+  const data = await requestHeliusRpc(config.rpcUrl, body, { env: options.env, fetchImpl: options.fetchImpl });
+  const root = asRecord(data.result) ?? {};
+  const levels = asRecord(root.priorityFeeLevels) ?? {};
+  const floorOrNull = (v: unknown): number | null => {
+    const n = numberField(v);
+    return n === undefined ? null : Math.floor(n);
+  };
+  // priorityFeeEstimate may be a number or { recommended }; fall back to a mid level.
+  const estNum = numberField(root.priorityFeeEstimate);
+  const estObj = asRecord(root.priorityFeeEstimate);
+  const recommended = estNum ?? numberField(estObj?.recommended) ?? numberField(levels.medium) ?? numberField(levels.high);
+  return {
+    recommendedMicroLamports: recommended === undefined ? null : Math.floor(recommended),
+    levels: {
+      min: floorOrNull(levels.min),
+      low: floorOrNull(levels.low),
+      medium: floorOrNull(levels.medium),
+      high: floorOrNull(levels.high),
+      veryHigh: floorOrNull(levels.veryHigh),
+      unsafeMax: floorOrNull(levels.unsafeMax),
+    },
+  };
+}
+
 /* -------------------------------------------------------------------------- */
 /* DAS API (assets / NFTs) — getAsset + getAssetsByOwner                       */
 /* -------------------------------------------------------------------------- */

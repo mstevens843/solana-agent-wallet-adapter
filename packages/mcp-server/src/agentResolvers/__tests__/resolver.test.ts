@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveAtom, type AgentAtom } from '@solana-agent-wallet-adapter/workflow';
 
@@ -32,6 +32,11 @@ const STUB_CONFIG: AgentWalletConfig = {
   cluster: 'mainnet-beta',
   rpcUrl: 'https://api.mainnet-beta.solana.com',
 } as unknown as AgentWalletConfig;
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
 
 function jsonFetch(body: unknown, status = 200): typeof fetch {
   return (async () => new Response(JSON.stringify(body), {
@@ -109,6 +114,31 @@ describe('createMcpCapabilityResolver — price atoms (Jupiter unmapped symbol f
     const result = await resolveAtom(priceAtom('XYZ'), resolver, { retryDelayMs: 0 });
     expect(result.attempts[0]!.source).toBe('jupiter');
     expect(result.attempts[0]!.status).toBe('missing');
+  });
+
+  it('falls through to BirdEye price when Jupiter and CoinGecko miss', async () => {
+    vi.stubEnv('JUPITER_API_KEY', 'jup-test');
+    vi.stubEnv('BIRDEYE_API_KEY', 'birdeye-test');
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.hostname.includes('jup.ag')) {
+        return new Response(JSON.stringify({ data: {} }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.hostname.includes('coingecko.com')) {
+        return new Response(JSON.stringify({ error: 'not found' }), { status: 404, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.hostname.includes('birdeye.so')) {
+        return new Response(JSON.stringify({ data: { value: 0.00002 } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({}), { status: 404, headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof fetch);
+
+    const resolver = createMcpCapabilityResolver({ config: STUB_CONFIG });
+    const result = await resolveAtom(priceAtom('BONK'), resolver, { retryDelayMs: 0 });
+
+    expect(result.resolved?.source).toBe('birdeye');
+    expect((result.resolved?.value as { numeric: number }).numeric).toBe(0.00002);
+    expect(result.attempts.map((attempt) => attempt.source)).toEqual(['jupiter', 'coingecko', 'birdeye']);
   });
 });
 
