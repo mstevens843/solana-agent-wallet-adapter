@@ -116,6 +116,7 @@ import {
   safeParseJsonObject,
   supportsStreamOptions,
   buildConnectorContext,
+  chatCoinCategoryHint,
   type AgentChatStreamEvent,
   type ChatAiTransport,
   type ChatModelProfile,
@@ -125,6 +126,10 @@ import {
 } from '@solana-agent-wallet-adapter/workflow';
 import { createClientChatToolExecutor, type ClientChatToolDeps, type ClientResolvedToken } from './chatAgent/clientTools.js';
 import { browserOriginForOpenRouter } from './deviceAgent/provider/openRouterHeaders.js';
+import {
+  bindNativeAppBackControl as bindNativeAppBackControlElement,
+  renderNativeAppBackControl,
+} from './nativeAppBackControl.js';
 import {
   detectMwaEnvironment,
   registerAgentMobileWalletAdapter,
@@ -1607,7 +1612,7 @@ const LAB_ARCHIVE_STORE_NAME = 'artifacts';
 const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-const USDT_MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkYt99x7nEJfrPnk';
+const USDT_MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
 const JUP_MINT = 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN';
 const BONK_MINT = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
 const WIF_MINT = 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm';
@@ -12236,20 +12241,15 @@ function notFoundPage(): string {
   `;
 }
 
-function appBackPill(): string {
-  // Native /app only: a compact floating "‹ Demo" pill replaces the full website nav
-  // so the workspace content can move up and reclaim the nav band. Plain <a href="/demo">
-  // — bindRouteLinks() already intercepts it for SPA navigation (no extra binding needed).
-  return `
-    <a class="app-back-pill" href="/demo" data-site-link="/demo" aria-label="${escapeHtml(t('Back to demo'))}">
-      <span class="app-back-pill-chevron" aria-hidden="true">&#8249;</span>
-      <span class="app-back-pill-label">${escapeHtml(t('Demo'))}</span>
-    </a>
-  `;
+function nativeAppBackControl(): string {
+  // Native /app only: a fixed overlay Back control replaces the full website nav.
+  // It is a button with an explicit binder so it does not depend on anchor interception
+  // inside Android/iOS WebViews.
+  return renderNativeAppBackControl({ ariaLabel: t('Back to demo'), label: t('Back') });
 }
 
 function homepageNav(activeRoute: AppRoute | null): string {
-  if (activeRoute === '/app' && isNativeAppShellSurface()) return appBackPill();
+  if (activeRoute === '/app' && isNativeAppShellSurface()) return nativeAppBackControl();
   const isTauri = state.tauriNativeEnvironment.isTauriNative;
   const visibleNavItems = isTauri
     ? NAV_ITEMS.filter((item) => !item.hideInTauri)
@@ -23599,8 +23599,55 @@ function buildClientChatToolDeps(): ClientChatToolDeps {
         isVerified: r.isVerified ?? null,
         organicScoreLabel: r.organicScoreLabel ?? null,
       })),
+    searchTokensJupiter: async (query) => {
+      const arr = await jupiterLiteJson(`/tokens/v2/search?query=${encodeURIComponent(query)}`);
+      const rows = Array.isArray(arr) ? arr : [];
+      return rows.slice(0, 20).map((raw): ClientResolvedToken | null => {
+        const t = asRecord(raw) ?? {};
+        const mint = stringField(t.id ?? t.address ?? t.mint);
+        if (!mint || !looksLikeMintAddress(mint)) return null;
+        return {
+          mint,
+          ...(stringField(t.symbol) ? { symbol: stringField(t.symbol) } : {}),
+          ...(stringField(t.name) ? { name: stringField(t.name) } : {}),
+          priceUsd: numberField(t.usdPrice) ?? numberField(t.priceUsd) ?? null,
+          isVerified: typeof t.isVerified === 'boolean' ? t.isVerified : null,
+          organicScoreLabel: stringField(t.organicScoreLabel) ?? null,
+        };
+      }).filter((token): token is ClientResolvedToken => Boolean(token));
+    },
+    searchTokensBirdeye: async (query) =>
+      (await searchTokens(query)).map((r): ClientResolvedToken => ({
+        mint: r.mint,
+        symbol: r.symbol,
+        name: r.name,
+        priceUsd: r.priceUsd ?? null,
+        isVerified: r.isVerified ?? null,
+        organicScoreLabel: r.organicScoreLabel ?? null,
+      })),
     priceForMints: async (mints) => {
       const map = await fetchWalletBalancePriceInfoMap(mints, state.cluster);
+      return mints.map((mint) => ({ mint, usdPrice: map.get(mint)?.priceUsd ?? null }));
+    },
+    priceForMintsJupiter: async (mints) => {
+      const map = await fetchJupiterLiteWalletBalancePriceInfoMap(mints);
+      return mints.map((mint) => ({ mint, usdPrice: map.get(mint)?.priceUsd ?? null }));
+    },
+    priceForMintsCoinGecko: async (mints) => {
+      const snapshot = await fetchCoinGeckoTokenEvidence(mints);
+      const rows = snapshot?.tokens ?? [];
+      return mints.map((mint) => {
+        const row = rows.find((entry) => entry.mint.toLowerCase() === mint.toLowerCase());
+        return {
+          mint,
+          usdPrice: row?.priceUsd ?? row?.onchainPriceUsd ?? null,
+          priceChange24h: row?.change24hPct ?? null,
+        };
+      });
+    },
+    priceForMintsBirdeye: async (mints) => {
+      const payload = await tokenMarketRequest('/price-multi', { addresses: mints, includeLiquidity: true });
+      const map = walletBalancePriceInfoMapFromBirdeye(payload);
       return mints.map((mint) => ({ mint, usdPrice: map.get(mint)?.priceUsd ?? null }));
     },
     tokenSafety: async (mint) => {
@@ -23677,10 +23724,11 @@ function buildClientChatToolDeps(): ClientChatToolDeps {
     // Token market metrics + trending via the public Jupiter lite-api (CORS-OK, no key) —
     // the same token object the server's get_token_market / get_trending_tokens read, so
     // device-agent and hosted produce identical shapes. Graceful unavailable on failure.
-    tokenMarket: async (mint) => {
+    tokenMarketJupiter: async (mint) => {
       try {
         const arr = await jupiterLiteJson(`/tokens/v2/search?query=${encodeURIComponent(mint)}`);
-        const t = asRecord(Array.isArray(arr) ? arr[0] : arr);
+        const rows = Array.isArray(arr) ? arr.map((raw) => asRecord(raw)).filter((row): row is Record<string, unknown> => Boolean(row)) : [];
+        const t = rows.find((row) => stringField(row.id ?? row.address ?? row.mint) === mint) ?? rows[0] ?? asRecord(arr);
         if (!t) return { mint, unavailable: true, reason: 'not_found' };
         const s = asRecord(t.stats24h);
         const vol = s ? (numberField(s.buyVolume) ?? 0) + (numberField(s.sellVolume) ?? 0) : undefined;
@@ -23704,7 +23752,36 @@ function buildClientChatToolDeps(): ClientChatToolDeps {
         return { mint, unavailable: true, error: err instanceof Error ? err.message : String(err) };
       }
     },
-    trendingTokens: async () => {
+    tokenMarketBirdeye: async (mint) => {
+      try {
+        const [pricePayload, metaPayload] = await Promise.all([
+          tokenMarketRequest('/price-multi', { addresses: [mint], includeLiquidity: true }),
+          tokenMarketRequest('/token-meta', { addresses: [mint] }).catch((): Record<string, unknown> => ({})),
+        ]);
+        const priceMap = walletBalancePriceInfoMapFromBirdeye(pricePayload);
+        const priceRoot = asRecord(pricePayload.data) ?? asRecord(pricePayload) ?? {};
+        const priceRow = asRecord(priceRoot[mint]) ?? {};
+        const metaRoot = asRecord(metaPayload.data) ?? asRecord(metaPayload) ?? {};
+        const metaRow = asRecord(metaRoot[mint]) ?? metaRoot;
+        const priceInfo = priceMap.get(mint);
+        return {
+          mint,
+          found: priceInfo?.priceUsd !== undefined || Object.keys(metaRow).length > 0,
+          ...(stringField(metaRow.symbol) ? { symbol: stringField(metaRow.symbol) } : {}),
+          usdPrice: priceInfo?.priceUsd ?? numberField(priceRow.value ?? priceRow.price ?? priceRow.priceUsd) ?? null,
+          liquidity: priceInfo?.liquidityUsd ?? numberField(priceRow.liquidity ?? priceRow.liquidityUsd) ?? null,
+          marketCap: numberField(priceRow.marketCap ?? priceRow.market_cap ?? priceRow.mc ?? metaRow.marketCap ?? metaRow.market_cap) ?? null,
+          fdv: numberField(priceRow.fdv ?? priceRow.fdvUsd ?? metaRow.fdv) ?? null,
+          volume24h: numberField(priceRow.volume24h ?? priceRow.volume_24h ?? priceRow.v24hUSD) ?? null,
+          holderCount: numberField(priceRow.holder ?? priceRow.holderCount ?? metaRow.holder ?? metaRow.holderCount) ?? null,
+          priceChange24h: numberField(priceRow.price24hChangePercent ?? priceRow.priceChange24h ?? priceRow.price_change_24h_percent) ?? null,
+          source: 'birdeye',
+        };
+      } catch (err) {
+        return { mint, unavailable: true, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    trendingTokensJupiter: async () => {
       try {
         const arr = await jupiterLiteJson('/tokens/v2/toptrending?interval=24h&limit=12');
         const list = Array.isArray(arr) ? arr : [];
@@ -23722,6 +23799,27 @@ function buildClientChatToolDeps(): ClientChatToolDeps {
           };
         });
         return { interval: '24h', count: tokens.length, tokens, source: 'jupiter' };
+      } catch (err) {
+        return { unavailable: true, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    trendingTokensBirdeye: async () => {
+      try {
+        const payload = await tokenMarketRequest('/trending', { limit: 12 });
+        const root = asRecord(payload.data) ?? asRecord(payload) ?? {};
+        const list = Array.isArray(root.items) ? root.items : Array.isArray(root.tokens) ? root.tokens : [];
+        const tokens = list.slice(0, 12).map((raw) => {
+          const t = asRecord(raw) ?? {};
+          return {
+            symbol: stringField(t.symbol) ?? null,
+            mint: stringField(t.address ?? t.mint) ?? null,
+            usdPrice: numberField(t.price ?? t.value ?? t.priceUsd) ?? null,
+            priceChange24h: numberField(t.price24hChangePercent ?? t.priceChange24h ?? t.price_change_24h_percent) ?? null,
+            marketCap: numberField(t.marketcap ?? t.marketCap ?? t.market_cap) ?? null,
+            volume24h: numberField(t.volume24hUSD ?? t.v24hUSD ?? t.volume_24h_usd) ?? null,
+          };
+        });
+        return { interval: '24h', count: tokens.length, tokens, source: 'birdeye' };
       } catch (err) {
         return { unavailable: true, error: err instanceof Error ? err.message : String(err) };
       }
@@ -24064,7 +24162,7 @@ function buildClientChatToolDeps(): ClientChatToolDeps {
       }
     },
     // Top holders via the existing BirdEye token-holders proxy; same compact shape as the server resolver.
-    tokenHolders: async (mint) => {
+    tokenHoldersBirdeye: async (mint) => {
       try {
         const raw = await tokenMarketRequest('/token-holders', { address: mint });
         const d = asRecord(raw.data) ?? raw;
@@ -24083,9 +24181,10 @@ function buildClientChatToolDeps(): ClientChatToolDeps {
         return { mint, unavailable: true, error: err instanceof Error ? err.message : String(err) };
       }
     },
-    // coinMarket / trendingCoins / coinCategories (CoinGecko cross-chain) are intentionally left
-    // unwired on the direct-browser device path — they work on the BYOK-hosted / bridge / single-shot
-    // server paths; on-device they degrade to graceful "unavailable".
+    tokenHoldersCoinGecko: async (mint) => clientCoinGeckoTokenHolders(mint),
+    coinMarket: async (query) => clientCoinGeckoCoinMarket(query),
+    trendingCoins: async () => clientCoinGeckoTrendingCoins(),
+    coinCategories: async (category) => clientCoinGeckoCategories(category),
   };
 }
 
@@ -35863,6 +35962,7 @@ function requestContextDetails(): string {
 
 function bind(): void {
   bindRouteLinks();
+  bindNativeAppBackControl();
   bindExternalLinks();
   bindTemplatePicker();
   bindArtifactPicker();
@@ -38154,6 +38254,10 @@ function restoreGuidedDemoScenarioAnchor(scenarioId: string, previousTop: number
     window.scrollBy({ top: delta, behavior: 'auto' });
   }
   nextButton.focus({ preventScroll: true });
+}
+
+function bindNativeAppBackControl(): void {
+  bindNativeAppBackControlElement(document, { bindOnce, trackNavClick, navigateTo });
 }
 
 function bindRouteLinks(): void {
@@ -47325,6 +47429,204 @@ async function fetchCoinGeckoTokenEvidence(mints: string[]): Promise<CoinGeckoTo
   if (!snapshot || !Array.isArray(snapshot.tokens)) return undefined;
   coinGeckoTokenEvidenceCache.set(cacheKey, { snapshot, fetchedAtMs: now });
   return snapshot;
+}
+
+interface BrowserCoinGeckoReadInput {
+  endpointId: string;
+  pathParams?: Record<string, string | number>;
+  query?: Record<string, string | number | boolean | undefined>;
+}
+
+async function coinGeckoRead(input: BrowserCoinGeckoReadInput): Promise<Record<string, unknown>> {
+  const body = JSON.stringify(input);
+  let bridgeError: unknown;
+  if (state.bridgeActive && state.bridgeToken && isTrustedBridgeUrl(state.bridgeUrl)) {
+    try {
+      return await bridgeRequest<Record<string, unknown>>('/bridge/coingecko/read', {
+        method: 'POST',
+        body,
+      });
+    } catch (err) {
+      bridgeError = err;
+    }
+  }
+  try {
+    const response = await fetch('/api/coingecko/read', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body,
+    });
+    const contentType = response.headers.get('content-type') ?? '';
+    const payload = await response.json().catch(() => null) as unknown;
+    if (!response.ok) {
+      recordEvidenceProviderUnavailable('coingecko', '/api/coingecko/read', response.status, contentType, payload);
+      throw new Error(cloudErrorMessage(payload, response.status));
+    }
+    return asRecord(payload) ?? {};
+  } catch (err) {
+    if (bridgeError) throw bridgeError;
+    throw err;
+  }
+}
+
+const COINGECKO_ID_BY_SYMBOL: Record<string, string> = {
+  BTC: 'bitcoin',
+  BITCOIN: 'bitcoin',
+  ETH: 'ethereum',
+  ETHEREUM: 'ethereum',
+  SOL: 'solana',
+  USDC: 'usd-coin',
+  USDT: 'tether',
+  JUP: 'jupiter-exchange-solana',
+  BONK: 'bonk',
+  WIF: 'dogwifcoin',
+  POPCAT: 'popcat',
+  JTO: 'jito-governance-token',
+  DOGE: 'dogecoin',
+  XRP: 'ripple',
+  ADA: 'cardano',
+  AVAX: 'avalanche-2',
+  LINK: 'chainlink',
+  NEAR: 'near',
+  SUI: 'sui',
+  TON: 'the-open-network',
+};
+
+function coinGeckoEnvelopeData(envelope: Record<string, unknown>): unknown {
+  return envelope.data ?? envelope;
+}
+
+function projectCoinGeckoCoinMarket(query: string, envelope: Record<string, unknown>): Record<string, unknown> {
+  const payload = asRecord(coinGeckoEnvelopeData(envelope)) ?? {};
+  const md = asRecord(payload.market_data) ?? {};
+  return {
+    query,
+    found: true,
+    ...(stringField(payload.id) ? { id: stringField(payload.id) } : {}),
+    ...(stringField(payload.symbol) ? { symbol: stringField(payload.symbol)!.toUpperCase() } : {}),
+    ...(stringField(payload.name) ? { name: stringField(payload.name) } : {}),
+    marketCapRank: numberField(payload.market_cap_rank) ?? numberField(md.market_cap_rank) ?? null,
+    usdPrice: numberField(asRecord(md.current_price)?.usd) ?? null,
+    ath: numberField(asRecord(md.ath)?.usd) ?? null,
+    athChangePct: numberField(asRecord(md.ath_change_percentage)?.usd) ?? null,
+    atl: numberField(asRecord(md.atl)?.usd) ?? null,
+    atlChangePct: numberField(asRecord(md.atl_change_percentage)?.usd) ?? null,
+    maxSupply: numberField(md.max_supply) ?? null,
+    totalSupply: numberField(md.total_supply) ?? null,
+    circulatingSupply: numberField(md.circulating_supply) ?? null,
+    priceChange24h: numberField(md.price_change_percentage_24h) ?? null,
+    priceChange7d: numberField(md.price_change_percentage_7d) ?? null,
+    priceChange30d: numberField(md.price_change_percentage_30d) ?? null,
+    source: 'coingecko',
+  };
+}
+
+async function clientCoinGeckoCoinMarket(query: string): Promise<Record<string, unknown>> {
+  const q = query.trim().replace(/^\$/, '');
+  if (!q) return { query, unavailable: true, error: 'a coin symbol or mint is required' };
+  if (looksLikeMintAddress(q)) {
+    const envelope = await coinGeckoRead({
+      endpointId: 'contract.detail',
+      pathParams: { asset_platform_id: 'solana', contract_address: q },
+    });
+    return projectCoinGeckoCoinMarket(q, envelope);
+  }
+  const id = COINGECKO_ID_BY_SYMBOL[q.toUpperCase()];
+  if (id) {
+    const envelope = await coinGeckoRead({
+      endpointId: 'coins.detail',
+      pathParams: { id },
+      query: { localization: false, tickers: false, market_data: true, community_data: false, developer_data: false, sparkline: false },
+    });
+    return projectCoinGeckoCoinMarket(q, envelope);
+  }
+  const search = await coinGeckoRead({ endpointId: 'search.query', query: { query: q } });
+  const data = asRecord(coinGeckoEnvelopeData(search)) ?? {};
+  const coins = Array.isArray(data.coins) ? data.coins.map((item) => asRecord(item)).filter((item): item is Record<string, unknown> => Boolean(item)) : [];
+  const lower = q.toLowerCase();
+  const match = coins.find((coin) =>
+    stringField(coin.symbol)?.toLowerCase() === lower ||
+    stringField(coin.id)?.toLowerCase() === lower ||
+    stringField(coin.name)?.toLowerCase() === lower
+  ) ?? coins[0];
+  const foundId = stringField(match?.id);
+  if (!foundId) return { query: q, unavailable: true, reason: 'not_found' };
+  const envelope = await coinGeckoRead({
+    endpointId: 'coins.detail',
+    pathParams: { id: foundId },
+    query: { localization: false, tickers: false, market_data: true, community_data: false, developer_data: false, sparkline: false },
+  });
+  return projectCoinGeckoCoinMarket(q, envelope);
+}
+
+async function clientCoinGeckoTrendingCoins(): Promise<Record<string, unknown>> {
+  const envelope = await coinGeckoRead({ endpointId: 'search.trending' });
+  const data = asRecord(coinGeckoEnvelopeData(envelope)) ?? {};
+  const rows = Array.isArray(data.coins) ? data.coins : [];
+  const coins = rows.slice(0, 12).map((entry) => {
+    const item = asRecord(asRecord(entry)?.item) ?? asRecord(entry) ?? {};
+    const itemData = asRecord(item.data);
+    return {
+      symbol: stringField(item.symbol)?.toUpperCase() ?? null,
+      name: stringField(item.name) ?? null,
+      id: stringField(item.id) ?? null,
+      marketCapRank: numberField(item.market_cap_rank) ?? null,
+      priceBtc: numberField(itemData?.price_btc) ?? null,
+    };
+  });
+  return { count: coins.length, coins, source: 'coingecko' };
+}
+
+async function clientCoinGeckoCategories(category: string): Promise<Record<string, unknown>> {
+  const wanted = chatCoinCategoryHint(category) || category.trim().toLowerCase();
+  const envelope = await coinGeckoRead({ endpointId: 'coins.categories', query: { order: 'market_cap_desc' } });
+  const arr = Array.isArray(coinGeckoEnvelopeData(envelope)) ? coinGeckoEnvelopeData(envelope) as unknown[] : [];
+  const project = (raw: unknown): Record<string, unknown> => {
+    const c = asRecord(raw) ?? {};
+    return {
+      id: stringField(c.id) ?? null,
+      name: stringField(c.name) ?? null,
+      marketCapUsd: numberField(c.market_cap) ?? null,
+      marketCapChange24hPct: numberField(c.market_cap_change_24h) ?? null,
+      volume24hUsd: numberField(c.volume_24h) ?? null,
+      topCoins: Array.isArray(c.top_3_coins_id) ? c.top_3_coins_id.filter((item): item is string => typeof item === 'string').slice(0, 3) : [],
+    };
+  };
+  if (wanted) {
+    const normalize = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const wantedNorm = normalize(wanted);
+    const match = arr.find((raw) => {
+      const c = asRecord(raw) ?? {};
+      const id = stringField(c.id);
+      const name = stringField(c.name);
+      const idNorm = id ? normalize(id) : '';
+      const nameNorm = name ? normalize(name) : '';
+      return idNorm === wantedNorm || nameNorm === wantedNorm || (wantedNorm.length >= 4 && (idNorm.includes(wantedNorm) || nameNorm.includes(wantedNorm)));
+    });
+    if (!match) return { category, unavailable: true, reason: 'not_found' };
+    return { category, ...project(match), source: 'coingecko' };
+  }
+  return { count: arr.length, categories: arr.slice(0, 12).map(project), source: 'coingecko' };
+}
+
+async function clientCoinGeckoTokenHolders(mint: string): Promise<Record<string, unknown>> {
+  const envelope = await coinGeckoRead({
+    endpointId: 'onchain.token_top_holders',
+    pathParams: { network: 'solana', address: mint },
+  });
+  const data = asRecord(coinGeckoEnvelopeData(envelope)) ?? {};
+  const rows = Array.isArray(data.data) ? data.data : [];
+  const holders = rows.slice(0, 10).map((row) => {
+    const attrs = asRecord(asRecord(row)?.attributes) ?? asRecord(row) ?? {};
+    return {
+      owner: stringField(attrs.address ?? attrs.holder_address ?? attrs.owner) ?? null,
+      uiAmount: numberField(attrs.amount ?? attrs.balance) ?? null,
+      pct: numberField(attrs.percentage ?? attrs.share ?? attrs.percent) ?? null,
+    };
+  });
+  const topHoldersPct = holders.reduce((sum, holder) => sum + (typeof holder.pct === 'number' ? holder.pct : 0), 0) || null;
+  return { mint, count: holders.length, topHoldersPct, holders, source: 'coingecko' };
 }
 
 async function enrichMarketConditionsFromCoinGecko(facts: AgentReviewFactSet): Promise<void> {

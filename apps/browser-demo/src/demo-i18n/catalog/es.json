@@ -1,6 +1,7 @@
 {
   "language": "es",
   "entries": {
+    "Back": "Volver",
     "Back to demo": "Volver a la demo",
     "Amount exceeds your balance.": "El importe supera tu saldo.",
     "Enter an amount or shares.": "Introduce un importe o participaciones.",

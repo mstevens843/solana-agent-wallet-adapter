@@ -1,3 +1,5 @@
+import { chatMentionsOwnWalletText } from '@solana-agent-wallet-adapter/workflow';
+
 import type { AgentChatRequest } from './planner.js';
 import type { WalletBalanceSnapshot } from './walletBalanceSummary.js';
 
@@ -149,8 +151,5 @@ export function chatMentionsWalletBalance(session: ChatRequestSessionLike): bool
 // of streaming to the agent with empty wallet context. Stays conservative: a general
 // question (price of SOL, what is a token) does not match.
 export function chatMentionsOwnWallet(text: string): boolean {
-  if (chatMentionsWalletBalance({ messages: [{ role: 'user', content: text }] })) return true;
-  const lower = text.toLowerCase();
-  return /\b(my|wallet)\b/.test(lower) &&
-    /\b(address|account|history|activity|transactions?|positions?|holdings?|nfts?)\b/.test(lower);
+  return chatMentionsOwnWalletText(text);
 }

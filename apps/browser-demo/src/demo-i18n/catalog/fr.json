@@ -1,6 +1,7 @@
 {
   "language": "fr",
   "entries": {
+    "Back": "Retour",
     "Back to demo": "Retour à la démo",
     "Amount exceeds your balance.": "Le montant dépasse votre solde.",
     "Enter an amount or shares.": "Saisissez un montant ou des parts.",

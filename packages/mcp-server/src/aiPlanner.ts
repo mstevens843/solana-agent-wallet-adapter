@@ -56,6 +56,7 @@ import {
 } from '@solana-agent-wallet-adapter/workflow';
 import {
   chatFactHasCategory,
+  chatCoinCategoryHint,
   chatMentionsOwnWalletText as workflowChatMentionsOwnWalletText,
   chatTextNeedsWebResearch as workflowChatTextNeedsWebResearch,
   classifyChatFactText,
@@ -114,7 +115,7 @@ import { getMintCreationTxForMint, getHeliusTransactionHistory, getHeliusAsset, 
 import { AlternativeMeClient } from './adapters/alternative_me/index.js';
 import { DEFAULT_CONFIG, type AgentWalletConfig } from './config.js';
 import type { TransactionSimulator } from './simulationDigest.js';
-import { chatFactErrorMessage, resolveChatFactChain } from './chatFacts.js';
+import { chatFactErrorMessage, resolveChatFactChain, type ChatFactChainResult } from './chatFacts.js';
 
 export type AiApiFormat = 'openai-compatible' | 'anthropic';
 type AiTransport = 'anthropic-messages' | 'openai-responses' | 'gemini-native' | 'openai-compatible' | 'cli-agent';
@@ -1347,107 +1348,24 @@ export class BridgeAiPlanner {
     }
     if (name === 'search_tokens') {
       if (!query) return { summary: 'No query provided.', data: { error: 'query is required' } };
-      const result = await resolveChatFactChain([
-        {
-          provider: 'jupiter',
-          endpoint: 'token_search',
-          run: async () => {
-            const search = await getJupiterTokenSearch(config, { query, limit: 5 });
-            const tokens = search.tokens.slice(0, 5).map((token) => ({
-              symbol: token.symbol,
-              name: token.name,
-              mint: token.id,
-              isVerified: token.isVerified ?? null,
-              organicScoreLabel: token.organicScoreLabel ?? null,
-              usdPrice: token.usdPrice ?? null,
-            }));
-            return { query, tokens, source: 'jupiter' };
-          },
-          isUsable: (data) => Array.isArray(data.tokens) && data.tokens.length > 0,
-        },
-        {
-          provider: 'birdeye',
-          endpoint: 'search',
-          run: async () => projectBirdeyeSearch(query, await requestBirdeyeSearch(query, { limit: 5 })),
-          isUsable: (data) => Array.isArray(data.tokens) && data.tokens.length > 0,
-        },
-      ]);
+      const result = await resolveChatTokenSearch(config, query, 5);
       const tokens = Array.isArray(result.data.tokens) ? result.data.tokens : [];
       return { summary: tokens.length ? `Found ${tokens.length} token(s) for "${query}".` : 'Token search unavailable.', data: result.data };
     }
     if (name === 'get_token_price') {
       if (!query) return { summary: 'No token provided.', data: { error: 'query is required' } };
       try {
-        const bare = query.replace(/^\$/, '');
-        // Cross-chain asset (BTC/ETH/…): price via CoinGecko, NEVER the Solana token search (which
-        // would return a low-liquidity wrapper like wBTC). Echo source + symbol so it's self-evident.
-        if (coingeckoIdForSymbol(bare) && !mintForSymbol(bare)) {
-          const coin = await resolveChatCoinMarket(bare);
-          const usd = typeof (coin as Record<string, unknown>).usdPrice === 'number' ? ((coin as Record<string, unknown>).usdPrice as number) : null;
-          return {
-            summary: usd != null ? `${bare}: $${usd} (CoinGecko, cross-chain)` : `No CoinGecko price for "${bare}".`,
-            data: { query: bare, source: 'coingecko', resolvedSymbol: bare, crossChain: true, usdPrice: usd, note: 'Cross-chain asset priced via CoinGecko, not a Solana wrapper.' },
-          };
-        }
-        const mints = await this.resolveChatTokenMints(config, query);
-        if (mints.length === 0) return { summary: `No token matched "${query}".`, data: { found: false, query } };
-        const result = await resolveChatFactChain([
-          {
-            provider: 'jupiter',
-            endpoint: 'price',
-            run: async () => {
-              const batch = await getJupiterPriceBatch(config, { mints });
-              const prices = batch.prices.map((price) => ({
-                mint: price.mint,
-                usdPrice: price.usdPrice ?? null,
-                priceChange24h: price.priceChange24h ?? null,
-                status: price.status,
-              }));
-              return { query, resolvedMint: prices[0]?.mint ?? null, prices, source: 'jupiter' };
-            },
-            isUsable: (data) => Array.isArray(data.prices) && data.prices.some((price) => {
-              const p = price as Record<string, unknown>;
-              return typeof p.usdPrice === 'number';
-            }),
-          },
-          {
-            provider: 'coingecko',
-            endpoint: 'simple.token_price',
-            run: async () => {
-              const cg = await requestCoinGecko('/simple/token_price/solana', {
-                query: {
-                  contract_addresses: mints.join(','),
-                  vs_currencies: 'usd',
-                  include_24hr_change: true,
-                },
-              });
-              const prices = mints.map((mint) => {
-                const row = cg[mint.toLowerCase()] ?? cg[mint];
-                const rec = row && typeof row === 'object' ? row as Record<string, unknown> : {};
-                const usd = numOrNull(rec.usd);
-                return {
-                  mint,
-                  usdPrice: usd,
-                  priceChange24h: numOrNull(rec.usd_24h_change),
-                  status: usd !== null ? 'priced' : 'unavailable',
-                };
-              });
-              return { query, resolvedMint: prices[0]?.mint ?? null, prices, source: 'coingecko' };
-            },
-            isUsable: (data) => Array.isArray(data.prices) && data.prices.some((price) => typeof (price as Record<string, unknown>).usdPrice === 'number'),
-          },
-          {
-            provider: 'birdeye',
-            endpoint: 'price_multi',
-            run: async () => projectBirdeyePriceBatch(query, mints, await requestBirdeyePriceMulti(mints, { includeLiquidity: true })),
-            isUsable: (data) => Array.isArray(data.prices) && data.prices.some((price) => typeof (price as Record<string, unknown>).usdPrice === 'number'),
-          },
-        ], { webSearchOnExhausted: true });
-        const prices = Array.isArray(result.data.prices) ? result.data.prices as Array<{ mint: string; usdPrice: number | null; priceChange24h?: number | null; status?: string }> : [];
+        const data = await this.resolveChatTokenPriceFact(config, query);
+        const prices = Array.isArray(data.prices) ? data.prices as Array<{ mint: string; usdPrice: number | null; priceChange24h?: number | null; status?: string }> : [];
         const top = prices[0];
         // Echo the resolved mint so a wrong-token answer (e.g. JUP→jlUSDC) is visible to model + user.
-        const summary = top?.usdPrice != null ? `${query}: $${top.usdPrice} (mint ${top.mint.slice(0, 8)}…)` : `No price for "${query}".`;
-        return { summary, data: result.data };
+        const directUsd = typeof data.usdPrice === 'number' ? data.usdPrice : undefined;
+        const summary = directUsd !== undefined
+          ? `${query}: $${directUsd}${data.crossChain === true ? ' (CoinGecko, cross-chain)' : ''}`
+          : top?.usdPrice != null
+          ? `${query}: $${top.usdPrice} (mint ${top.mint.slice(0, 8)}…)`
+          : data.unavailable === true ? 'Price lookup unavailable.' : `No price for "${query}".`;
+        return { summary, data };
       } catch (err) {
         return { summary: 'Price lookup unavailable.', data: { error: chatFactErrorMessage(err) } };
       }
@@ -1489,37 +1407,53 @@ export class BridgeAiPlanner {
     return mints[0] ?? '';
   }
 
+  private async resolveChatTokenPriceFact(config: AgentWalletConfig, query: string): Promise<Record<string, unknown>> {
+    const bare = query.trim().replace(/^\$/, '');
+    if (!bare) return { query, unavailable: true, error: 'query is required' };
+    // Cross-chain asset (BTC/ETH/…): price via CoinGecko, NEVER the Solana token search (which
+    // would return a low-liquidity wrapper like wBTC). Echo source + symbol so it's self-evident.
+    if (coingeckoIdForSymbol(bare) && !mintForSymbol(bare)) {
+      const coin = await resolveChatCoinMarket(bare);
+      if ((coin as Record<string, unknown>).unavailable === true) {
+        return { query: bare, ...coin, source: 'coingecko', resolvedSymbol: bare, crossChain: true, note: 'Cross-chain asset priced via CoinGecko, not a Solana wrapper.' };
+      }
+      const usd = typeof (coin as Record<string, unknown>).usdPrice === 'number' ? ((coin as Record<string, unknown>).usdPrice as number) : null;
+      return { query: bare, source: 'coingecko', resolvedSymbol: bare, crossChain: true, usdPrice: usd, note: 'Cross-chain asset priced via CoinGecko, not a Solana wrapper.' };
+    }
+    const candidates = await this.resolveChatTokenMintCandidates(config, query);
+    if (candidates.mints.length === 0) {
+      if (candidates.unavailable) return { query, ...candidates.unavailable };
+      return { found: false, query };
+    }
+    return resolveChatTokenPriceForMints(config, query, candidates.mints);
+  }
+
   // Resolve a symbol or mint to one or more mint addresses for price lookup.
   private async resolveChatTokenMints(config: AgentWalletConfig, query: string): Promise<string[]> {
-    if (BASE58_MINT_PATTERN.test(query)) return [query];
-    const bare = query.replace(/^\$/, '');
+    return (await this.resolveChatTokenMintCandidates(config, query)).mints;
+  }
+
+  private async resolveChatTokenMintCandidates(config: AgentWalletConfig, query: string): Promise<{ mints: string[]; unavailable?: Record<string, unknown> }> {
+    if (BASE58_MINT_PATTERN.test(query)) return { mints: [query] };
+    const bare = query.trim().replace(/^\$/, '');
     // Cross-chain asset (BTC/ETH/…): has a CoinGecko id but NO canonical Solana mint. Do NOT fall
     // through to the Solana token search — it would return a low-liquidity wrapper (wBTC/cbBTC…).
     // get_token_price routes these to CoinGecko; the Solana-only tools correctly find no token.
-    if (coingeckoIdForSymbol(bare) && !mintForSymbol(bare)) return [];
+    if (coingeckoIdForSymbol(bare) && !mintForSymbol(bare)) return { mints: [] };
     // Canonical-first: a known symbol resolves to its canonical mint (same registry the swap path
     // uses) so a fuzzy search can't pick a higher-liquidity same-symbol sibling (e.g. "JUP" → jlUSDC).
     const canonical = mintForSymbol(bare);
-    if (canonical) return [canonical];
-    try {
-      const result = await getJupiterTokenSearch(config, { query, limit: 10 });
-      const tokens = result.tokens.filter((token) => typeof token.id === 'string' && token.id.length > 0);
-      // Prefer EXACT (case-insensitive) symbol matches over substring matches the search ranks higher.
-      const exact = tokens.filter((token) => typeof token.symbol === 'string' && token.symbol.toLowerCase() === bare.toLowerCase());
-      const resolved = (exact.length ? exact : tokens).map((token) => token.id).slice(0, 3);
-      if (resolved.length > 0) return resolved;
-    } catch { /* fall through to BirdEye */ }
-    try {
-      const birdeye = projectBirdeyeSearch(query, await requestBirdeyeSearch(query, { limit: 10 }));
-      const rows = Array.isArray(birdeye.tokens) ? birdeye.tokens as Array<Record<string, unknown>> : [];
-      const exact = rows.filter((token) => typeof token.symbol === 'string' && token.symbol.toLowerCase() === bare.toLowerCase());
-      return (exact.length ? exact : rows)
-        .map((token) => (typeof token.mint === 'string' ? token.mint : ''))
-        .filter(Boolean)
-        .slice(0, 3);
-    } catch {
-      return [];
-    }
+    if (canonical) return { mints: [canonical] };
+    const result = await resolveChatTokenSearch(config, query, 10);
+    const rows = Array.isArray(result.data.tokens) ? result.data.tokens as Array<Record<string, unknown>> : [];
+    const exact = rows.filter((token) => typeof token.symbol === 'string' && token.symbol.toLowerCase() === bare.toLowerCase());
+    const mints = (exact.length ? exact : rows)
+      .map((token) => (typeof token.mint === 'string' ? token.mint : ''))
+      .filter(Boolean)
+      .slice(0, 3);
+    if (mints.length > 0) return { mints };
+    if (result.exhausted && result.data.unavailable === true) return { mints: [], unavailable: result.data };
+    return { mints: [] };
   }
 
   // Single-shot transports (cli-agent / gemini-native, and the non-streaming
@@ -1533,6 +1467,7 @@ export class BridgeAiPlanner {
     if (!lastUser) return;
     const classification = classifyChatFactText(lastUser);
     const wants = (category: Parameters<typeof chatFactHasCategory>[1]) => chatFactHasCategory(classification, category);
+    const wantPrice = wants('token_price');
     const wantSafety = wants('token_safety');
     const wantAge = wants('token_age');
     const wantRegime = wants('market_regime');
@@ -1562,13 +1497,17 @@ export class BridgeAiPlanner {
     // hijacks generic questions. Only runs when a fact resolver is wired.
     const connectorAtom = this.connectorFactResolver ? findConnectorAtomByIntent(lastUser) : undefined;
     const wantConnector = Boolean(connectorAtom?.factSpec);
-    if (!wantSafety && !wantAge && !wantRegime && !wantHistory && !wantConnector && !wantMarket && !wantTrending && !wantNfts && !wantCoin && !wantTrendingCoins && !wantNewListings && !wantWalletPortfolio && !wantWalletPnl && !wantWalletOrigin && !wantTopTraders && !wantSupplyChanges && !wantActivity && !wantSmartMoney && !wantGainersLosers && !wantNetWorthHistory && !wantPairOverview && !wantPriorityFee && !wantTransaction && !wantTokenHolders && !wantCategories) return;
+    if (!wantPrice && !wantSafety && !wantAge && !wantRegime && !wantHistory && !wantConnector && !wantMarket && !wantTrending && !wantNfts && !wantCoin && !wantTrendingCoins && !wantNewListings && !wantWalletPortfolio && !wantWalletPnl && !wantWalletOrigin && !wantTopTraders && !wantSupplyChanges && !wantActivity && !wantSmartMoney && !wantGainersLosers && !wantNetWorthHistory && !wantPairOverview && !wantPriorityFee && !wantTransaction && !wantTokenHolders && !wantCategories) return;
     const config = this.toolConfig();
     let mint = '';
     if (wantSafety || wantAge || wantMarket || wantTopTraders || wantSupplyChanges || wantActivity || wantTokenHolders) {
       try { mint = await this.chatResolveMint(config, extractChatTokenRef(lastUser)); } catch { mint = ''; }
     }
     const specs: Array<{ key: string; run: () => Promise<Record<string, unknown>> }> = [];
+    if (wantPrice) {
+      const ref = extractChatTokenRef(lastUser);
+      if (ref) specs.push({ key: 'tokenPrice', run: () => this.resolveChatTokenPriceFact(config, ref) });
+    }
     if (wantSafety && mint) specs.push({ key: 'tokenSafety', run: () => resolveChatTokenSafety(config, mint) });
     if (wantAge && mint) specs.push({ key: 'tokenAge', run: () => resolveChatTokenAge(mint) });
     if (wantMarket && mint) specs.push({ key: 'tokenMarket', run: () => resolveChatTokenMarket(config, mint) });
@@ -1593,7 +1532,7 @@ export class BridgeAiPlanner {
     if (wantSmartMoney) specs.push({ key: 'smartMoneyTokens', run: () => resolveChatSmartMoneyTokens() });
     if (wantGainersLosers) specs.push({ key: 'gainersLosers', run: () => resolveChatGainersLosers('1W') });
     if (wantTokenHolders && mint) specs.push({ key: 'tokenHolders', run: () => resolveChatTokenHolders(mint) });
-    if (wantCategories) specs.push({ key: 'coinCategories', run: () => resolveChatCoinCategories('') });
+    if (wantCategories) specs.push({ key: 'coinCategories', run: () => resolveChatCoinCategories(chatCoinCategoryHint(lastUser)) });
     if (wantPriorityFee) specs.push({ key: 'priorityFee', run: () => resolveChatPriorityFee() });
     if (wantTransaction) {
       // A Solana signature is 64-88 base58 chars — longer than a 32-44 mint/address.
@@ -2757,7 +2696,7 @@ function chatNeedsWebResearch(request: Required<AiChatRequest>): boolean {
   const lastUser = [...request.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
   if (!lastUser.trim()) return false;
   if (chatMentionsOwnWalletText(lastUser)) return false;
-  return textNeedsWebResearch(lastUser);
+  return classifyChatFactText(lastUser).webSearchPreferred;
 }
 
 function reviewNeedsWebResearch(request: Required<AiReviewRequest>): boolean {
@@ -3245,9 +3184,9 @@ function projectBirdeyePriceBatch(query: string, mints: string[], payload: Recor
   return { query, resolvedMint: top?.mint ?? null, prices, source: 'birdeye' };
 }
 
-function projectBirdeyeSearch(query: string, payload: Record<string, unknown>): Record<string, unknown> {
+function projectBirdeyeSearch(query: string, payload: Record<string, unknown>, limit = 5): Record<string, unknown> {
   const rows = birdeyeItems(birdeyeDataNode(payload));
-  const tokens = rows.slice(0, 5).map((entry) => ({
+  const tokens = rows.slice(0, limit).map((entry) => ({
     symbol: strOrNull(entry.symbol),
     name: strOrNull(entry.name),
     mint: strOrNull(entry.address ?? entry.mint),
@@ -3268,6 +3207,106 @@ function projectBirdeyeTrending(payload: Record<string, unknown>, interval: stri
     volume24h: numOrNull(entry.volume24hUSD ?? entry.v24hUSD ?? entry.volume_24h_usd),
   }));
   return { interval, count: tokens.length, tokens, source: 'birdeye' };
+}
+
+function chatTokenSearchSpecs(
+  config: AgentWalletConfig,
+  query: string,
+  limit: number,
+): Parameters<typeof resolveChatFactChain>[0] {
+  return [
+    {
+      provider: 'jupiter',
+      endpoint: 'token_search',
+      run: async () => {
+        const search = await getJupiterTokenSearch(config, { query, limit });
+        const tokens = search.tokens.slice(0, limit).map((token) => ({
+          symbol: token.symbol,
+          name: token.name,
+          mint: token.id,
+          isVerified: token.isVerified ?? null,
+          organicScoreLabel: token.organicScoreLabel ?? null,
+          usdPrice: token.usdPrice ?? null,
+        }));
+        return { query, tokens, source: 'jupiter' };
+      },
+      isUsable: (data) => Array.isArray(data.tokens) && data.tokens.length > 0,
+    },
+    {
+      provider: 'birdeye',
+      endpoint: 'search',
+      run: async () => projectBirdeyeSearch(query, await requestBirdeyeSearch(query, { limit }), limit),
+      isUsable: (data) => Array.isArray(data.tokens) && data.tokens.length > 0,
+    },
+  ];
+}
+
+async function resolveChatTokenSearch(
+  config: AgentWalletConfig,
+  query: string,
+  limit: number,
+): Promise<ChatFactChainResult> {
+  return resolveChatFactChain(chatTokenSearchSpecs(config, query, limit), { webSearchOnExhausted: true });
+}
+
+async function resolveChatTokenPriceForMints(
+  config: AgentWalletConfig,
+  query: string,
+  mints: string[],
+): Promise<Record<string, unknown>> {
+  const result = await resolveChatFactChain([
+    {
+      provider: 'jupiter',
+      endpoint: 'price',
+      run: async () => {
+        const batch = await getJupiterPriceBatch(config, { mints });
+        const prices = batch.prices.map((price) => ({
+          mint: price.mint,
+          usdPrice: price.usdPrice ?? null,
+          priceChange24h: price.priceChange24h ?? null,
+          status: price.status,
+        }));
+        return { query, resolvedMint: prices[0]?.mint ?? null, prices, source: 'jupiter' };
+      },
+      isUsable: (data) => Array.isArray(data.prices) && data.prices.some((price) => {
+        const p = price as Record<string, unknown>;
+        return typeof p.usdPrice === 'number';
+      }),
+    },
+    {
+      provider: 'coingecko',
+      endpoint: 'simple.token_price',
+      run: async () => {
+        const cg = await requestCoinGecko('/simple/token_price/solana', {
+          query: {
+            contract_addresses: mints.join(','),
+            vs_currencies: 'usd',
+            include_24hr_change: true,
+          },
+        });
+        const prices = mints.map((mint) => {
+          const row = cg[mint.toLowerCase()] ?? cg[mint];
+          const rec = row && typeof row === 'object' ? row as Record<string, unknown> : {};
+          const usd = numOrNull(rec.usd);
+          return {
+            mint,
+            usdPrice: usd,
+            priceChange24h: numOrNull(rec.usd_24h_change),
+            status: usd !== null ? 'priced' : 'unavailable',
+          };
+        });
+        return { query, resolvedMint: prices[0]?.mint ?? null, prices, source: 'coingecko' };
+      },
+      isUsable: (data) => Array.isArray(data.prices) && data.prices.some((price) => typeof (price as Record<string, unknown>).usdPrice === 'number'),
+    },
+    {
+      provider: 'birdeye',
+      endpoint: 'price_multi',
+      run: async () => projectBirdeyePriceBatch(query, mints, await requestBirdeyePriceMulti(mints, { includeLiquidity: true })),
+      isUsable: (data) => Array.isArray(data.prices) && data.prices.some((price) => typeof (price as Record<string, unknown>).usdPrice === 'number'),
+    },
+  ], { webSearchOnExhausted: true });
+  return result.data;
 }
 
 async function resolveChatWithChain(
@@ -3897,7 +3936,8 @@ async function resolveChatTokenHolders(mint: string): Promise<Record<string, unk
 
 // --- Market sectors (CoinGecko categories) ---------------------------------------------------
 async function resolveChatCoinCategories(category: string): Promise<Record<string, unknown>> {
-  const key = `categories:${category || 'top'}`;
+  const wanted = chatCoinCategoryHint(category) || category.trim().toLowerCase();
+  const key = `categories:${wanted || 'top'}`;
   const cached = chatToolCacheGet(key, CHAT_REGIME_TTL_MS);
   if (cached) return cached;
   try {
@@ -3911,9 +3951,25 @@ async function resolveChatCoinCategories(category: string): Promise<Record<strin
       volume24hUsd: numOrNull(c.volume_24h),
       topCoins: Array.isArray(c.top_3_coins_id) ? (c.top_3_coins_id as unknown[]).map((x) => (typeof x === 'string' ? x : null)).filter(Boolean).slice(0, 3) : [],
     });
-    const wanted = category.trim().toLowerCase();
     if (wanted) {
-      const match = arr.find((c) => strOrNull(c.id)?.toLowerCase() === wanted || strOrNull(c.name)?.toLowerCase().includes(wanted));
+      const normalize = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      const wantedNorm = normalize(wanted);
+      const aliases = new Set([
+        wantedNorm,
+        ...(wantedNorm === 'ai' || wantedNorm === 'artificial intelligence' ? ['artificial intelligence', 'ai'] : []),
+        ...(wantedNorm === 'defi' || wantedNorm === 'decentralized finance' ? ['decentralized finance', 'defi'] : []),
+        ...(wantedNorm === 'meme' || wantedNorm === 'memecoin' || wantedNorm === 'memecoins' ? ['meme', 'meme coin', 'meme coins'] : []),
+        ...(wantedNorm === 'rwa' || wantedNorm === 'real world assets' ? ['real world assets', 'rwa'] : []),
+        ...(wantedNorm === 'depin' ? ['depin', 'physical infrastructure'] : []),
+      ]);
+      const match = arr.find((c) => {
+        const id = strOrNull(c.id);
+        const name = strOrNull(c.name);
+        const idNorm = id ? normalize(id) : '';
+        const nameNorm = name ? normalize(name) : '';
+        if (aliases.has(idNorm) || aliases.has(nameNorm)) return true;
+        return wantedNorm.length >= 4 && (idNorm.includes(wantedNorm) || nameNorm.includes(wantedNorm));
+      });
       if (!match) return { category, unavailable: true, reason: 'not_found' };
       return chatToolCachePut(key, { category, ...project(match), source: 'coingecko' });
     }
@@ -3923,12 +3979,16 @@ async function resolveChatCoinCategories(category: string): Promise<Record<strin
   }
 }
 
-// Extract a token reference (base58 mint / $TICKER / ALLCAPS symbol) from free text.
+// Extract a token reference (base58 mint / $TICKER / common symbol / ALLCAPS symbol) from free text.
 function extractChatTokenRef(text: string): string {
   const base58 = text.match(/\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/);
   if (base58) return base58[0];
   const ticker = text.match(/\$([A-Za-z][A-Za-z0-9]{1,9})\b/);
   if (ticker?.[1]) return ticker[1];
+  const known = text.match(/\b(sol|wsol|usdc|usdt|pyusd|jup|bonk|wif|popcat|jto|jitosol|msol|btc|bitcoin|eth|ethereum|doge|xrp|ada|avax|link|near|sui|ton)\b/i);
+  if (known?.[1]) return known[1];
+  const phrase = text.match(/\b(?:price|worth|market cap|mcap|fdv|holders?|whales?|safety|safe|age|launched|activity|momentum|top traders?)\s+(?:of|for|on)?\s*([A-Za-z][A-Za-z0-9]{1,11})\b/i);
+  if (phrase?.[1]) return phrase[1];
   const caps = text.match(/\b([A-Z]{2,10})\b/);
   if (caps?.[1]) return caps[1];
   return '';
@@ -4066,7 +4126,7 @@ function aiChatMessages(request: Required<AiChatRequest>): Array<{ role: 'system
     {
       role: 'system',
       content:
-        'You are the Solana Agent Wallet assistant. Help the wallet user reason about Solana, wallet actions, tokens, protocols, connector capabilities, and risk. This app is mainnet-only - never say it is on devnet or testnet. Return ONLY compact JSON with shape {"answer":"direct 1-2 sentence answer","sections":[{"title":"Key Facts","bullets":["short fact"]}],"next":"optional next step","proposedAction":{"kind":"transfer_sol|transfer_spl|swap|sign_proof","summary":"one-line summary","params":{...},"resolution":{"recipientSource":"user_input"}}}. Use 0-4 sections and 1-5 bullets per section. Put the direct answer first; do not start with process narration like "I will check". ACTIONS: when the user clearly wants to send, transfer, swap, or sign a proof, INCLUDE proposedAction to PREPARE it. Preparing is always safe: it only renders a review card that the human reviews and signs in their own wallet. Self-transfers (recipient equals the connected wallet) are allowed. You never sign, submit, broadcast, or approve. Only omit proposedAction (and ask one short follow-up) when the recipient address, the amount, or a non-SOL/USDC token mint is missing. params by kind: transfer_sol {recipient, amountSol}; transfer_spl {token, recipient, amount}; swap {inputToken, outputToken, amount, slippageBps}; sign_proof {statement}. For any token other than SOL/USDC you MUST put its base58 mint (not the symbol) in params; never guess a mint. The recipient MUST be a real base58 address the user typed explicitly. For the user\'s own balances/holdings/biggest position/portfolio value, use the provided context.walletBalance (sol, usdc, holdings[] sorted by USD value, totalUsd) - it is their live wallet; never invent balances. When context.resolvedFacts is present, it holds authoritative API data for this turn (tokenSafety = mint/freeze authority + verified + organic score; tokenAge; marketRegime = BTC dominance / total market cap / fear & greed; walletHistory = recent transactions; connectorFacts = live data for a DeFi connector action) - use it and do not web-search those; if a fact is absent or has "unavailable":true, web-search instead. Never invent authority status, token age, market figures, transactions, or connector positions/orders/health. context.connectorContext lists the available DeFi connector actions (Jupiter lend/borrow/limit/dca/perps/prediction) with capability cards - use it to explain what a connector can do; for live positions/orders/health rely on context.resolvedFacts.connectorFacts and say what is missing if it is absent. If the user asks for current or outside facts and web search is available, search reliable sources and cite source URLs. Prefer section titles such as Key Facts, Watchouts, Wallet Angle, Comparison, or Missing Info. Never request private keys, seed phrases, session keys, wallet auth tokens, or unrestricted approvals.',
+        'You are the Solana Agent Wallet assistant. Help the wallet user reason about Solana, wallet actions, tokens, protocols, connector capabilities, and risk. This app is mainnet-only - never say it is on devnet or testnet. Return ONLY compact JSON with shape {"answer":"direct 1-2 sentence answer","sections":[{"title":"Key Facts","bullets":["short fact"]}],"next":"optional next step","proposedAction":{"kind":"transfer_sol|transfer_spl|swap|sign_proof","summary":"one-line summary","params":{...},"resolution":{"recipientSource":"user_input"}}}. Use 0-4 sections and 1-5 bullets per section. Put the direct answer first; do not start with process narration like "I will check". ACTIONS: when the user clearly wants to send, transfer, swap, or sign a proof, INCLUDE proposedAction to PREPARE it. Preparing is always safe: it only renders a review card that the human reviews and signs in their own wallet. Self-transfers (recipient equals the connected wallet) are allowed. You never sign, submit, broadcast, or approve. Only omit proposedAction (and ask one short follow-up) when the recipient address, the amount, or a non-SOL/USDC token mint is missing. params by kind: transfer_sol {recipient, amountSol}; transfer_spl {token, recipient, amount}; swap {inputToken, outputToken, amount, slippageBps}; sign_proof {statement}. For any token other than SOL/USDC you MUST put its base58 mint (not the symbol) in params; never guess a mint. The recipient MUST be a real base58 address the user typed explicitly. For the user\'s own balances/holdings/biggest position/portfolio value, use the provided context.walletBalance (sol, usdc, holdings[] sorted by USD value, totalUsd) - it is their live wallet; never invent balances. When context.resolvedFacts is present, it holds authoritative API data for this turn (for example tokenPrice, tokenSafety, tokenAge, tokenMarket, tokenActivity, tokenHolders, coinMarket, coinCategories, marketRegime, walletHistory, walletPortfolio, walletPnl, walletOrigin, walletNetWorthHistory, transaction, priorityFee, connectorFacts) - use it and do not web-search those; if a fact is absent or has "unavailable":true, web-search instead. Never invent authority status, token age, market figures, transactions, or connector positions/orders/health. context.connectorContext lists the available DeFi connector actions (Jupiter lend/borrow/limit/dca/perps/prediction) with capability cards - use it to explain what a connector can do; for live positions/orders/health rely on context.resolvedFacts.connectorFacts and say what is missing if it is absent. If the user asks for current or outside facts and web search is available, search reliable sources and cite source URLs. Prefer section titles such as Key Facts, Watchouts, Wallet Angle, Comparison, or Missing Info. Never request private keys, seed phrases, session keys, wallet auth tokens, or unrestricted approvals.',
     },
     {
       role: 'user',

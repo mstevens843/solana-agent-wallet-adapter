@@ -48,6 +48,30 @@ function add(out: Set<ChatFactCategory>, category: ChatFactCategory, condition: 
   if (condition) out.add(category);
 }
 
+const BASE58_RE = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/;
+const KNOWN_CRYPTO_RE = /\b(sol|wsol|usdc|usdt|pyusd|jup|bonk|wif|popcat|jto|jitosol|msol|btc|bitcoin|eth|ethereum|doge|xrp|ada|avax|link|near|sui|ton)\b/i;
+const CRYPTO_DOMAIN_RE = /\b(crypto|solana|spl|token|tokens|coin|coins|memecoin|meme ?coin|defi|dex|dapp|on[-\s]?chain|wallet|mint|contract address|liquidity pool|fdv|mcap|market cap|holder|holders|whale|whales|airdrop|jupiter|birdeye|coingecko|helius|raydium|orca|meteora|kamino|lulo|jito|marinade|drift|wormhole|pyth)\b/i;
+const OFFCHAIN_CURRENT_RE = /\b(weather|news|status|available|availability|outage|exploit|hack|incident|upgrade|governance|vote|sec|sanctions|ofac|kyc|subscription|monthly|plan|law|schedule|iphone|android|phone plan|stock|earnings|restaurant|flight|hotel|shipping)\b/i;
+
+export function chatTextHasCryptoScope(text: string): boolean {
+  const value = text.trim();
+  if (!value) return false;
+  return BASE58_RE.test(value) || /\$[A-Za-z][A-Za-z0-9]{1,9}\b/.test(value) || KNOWN_CRYPTO_RE.test(value) || CRYPTO_DOMAIN_RE.test(value);
+}
+
+export function chatCoinCategoryHint(text: string): string {
+  const t = text.toLowerCase();
+  if (/\b(ai|artificial intelligence|agentic)\b/.test(t)) return 'artificial intelligence';
+  if (/\b(meme ?coins?|memecoins?|meme token|meme-token)\b/.test(t)) return 'meme';
+  if (/\b(defi|decentralized finance)\b/.test(t)) return 'decentralized finance';
+  if (/\b(gaming|gamefi|game-fi)\b/.test(t)) return 'gaming';
+  if (/\b(layer ?1|l1s?|l1 tokens?|smart contract platforms?)\b/.test(t)) return 'layer 1';
+  if (/\b(depin|physical infrastructure)\b/.test(t)) return 'depin';
+  if (/\b(rwa|real[-\s]?world assets?)\b/.test(t)) return 'real world assets';
+  if (/\b(liquid staking|lst|lsts)\b/.test(t)) return 'liquid staking';
+  return '';
+}
+
 export function chatMentionsOwnWalletText(text: string): boolean {
   const t = text.toLowerCase();
   if (!t.trim()) return false;
@@ -62,7 +86,7 @@ export function chatTextNeedsWebResearch(text: string): boolean {
   const normalized = text.toLowerCase();
   if (!normalized.trim()) return false;
   return (
-    /\b(latest|today|tonight|tomorrow|yesterday|real[-\s]?time|up[-\s]?to[-\s]?date|as of)\b/.test(normalized) ||
+    /\b(current|currently|latest|today|tonight|tomorrow|yesterday|now|right now|real[-\s]?time|up[-\s]?to[-\s]?date|as of)\b/.test(normalized) ||
     /\b(price|cost|fee|rate|plan|subscription|monthly|per\s+month|market\s+cap|liquidity|apr|apy|weather|news|status|available|availability|outage|exploit|hack|incident|upgrade|governance|vote|sec|sanctions|ofac|kyc|issuer|jailed|tps|slot|withdrawals?|paused|offline)\b/.test(normalized) &&
       /\b(check|find|look\s+up|search|verify|how\s+much|whether|if|less\s+than|more\s+than|under|over|above|below|approve|deny|reject)\b/.test(normalized) ||
     /\$\s*\d+/.test(normalized) && /\b(less\s+than|more\s+than|under|over|approve|deny|per\s+month|monthly)\b/.test(normalized)
@@ -73,39 +97,42 @@ export function classifyChatFactText(text: string): ChatFactClassification {
   const t = text.toLowerCase();
   const categories = new Set<ChatFactCategory>();
   const ownWallet = chatMentionsOwnWalletText(text);
+  const cryptoScoped = chatTextHasCryptoScope(text);
 
-  add(categories, 'token_search', has(t, /\b(resolve|find|search|which token|token mint|mint address|contract address|what token)\b/));
-  add(categories, 'token_price', has(t, /\b(price|worth|usd value|trades? at|quote|how much is|what'?s .* worth)\b/));
-  add(categories, 'token_safety', has(t, /\b(safe|safety|rug|honeypot|mint authority|freeze authority|can (?:they|the issuer|someone|anyone) freeze|verified)\b/));
+  add(categories, 'token_search', cryptoScoped && has(t, /\b(resolve|find|search|which token|token mint|mint address|contract address|what token)\b/));
+  add(categories, 'token_price', cryptoScoped && has(t, /\b(price|worth|usd value|trades? at|quote|how much is|what'?s .* worth)\b/));
+  add(categories, 'token_safety', cryptoScoped && has(t, /\b(safe|safety|rug|honeypot|mint authority|freeze authority|can (?:they|the issuer|someone|anyone) freeze|verified)\b/));
   add(categories, 'market_regime', has(t, /\b(fear (?:and|&|\/) ?greed|btc dominance|bitcoin dominance|eth dominance|market regime|total (?:crypto )?market cap|market sentiment)\b/));
-  add(categories, 'token_age', has(t, /\b(how old|token age|days? old|fresh launch|newly? launched|just launched|when (?:was|did)\b.*\b(?:launch|created|mint))\b/));
+  add(categories, 'token_age', cryptoScoped && has(t, /\b(how old|token age|days? old|fresh launch|newly? launched|just launched|when (?:was|did)\b.*\b(?:launch|created|mint))\b/));
   add(categories, 'wallet_history', has(t, /\b(my (?:recent )?(?:transactions?|txns?|history|activity)|recent (?:transactions?|activity)|what did i (?:do|send|swap|buy)|last (?:few )?(?:transactions?|txns?))\b/));
-  add(categories, 'token_market', has(t, /\b(liquidity|market cap|mcap|fdv|fully diluted|24h volume|trading volume|holder count|how many holders|top holders?|concentration|price change|24h change)\b/));
-  add(categories, 'trending_tokens', has(t, /\b(trending|what'?s hot|hot tokens?|popular tokens?|top (?:gainers|movers|tokens))\b/));
+  add(categories, 'token_market', cryptoScoped && has(t, /\b(liquidity|market cap|mcap|fdv|fully diluted|24h volume|trading volume|holder count|how many holders|top holders?|concentration|price change|24h change)\b/));
+  add(categories, 'trending_tokens', cryptoScoped && has(t, /\b(trending|what'?s hot|hot tokens?|popular tokens?|top (?:gainers|movers|tokens))\b/));
   add(categories, 'wallet_nfts', has(t, /\b(my nfts?|nfts? (?:do i|i)\s*(?:own|have|hold)|my collectibles?|what nfts?)\b/));
-  add(categories, 'asset_metadata', has(t, /\b(asset metadata|nft metadata|traits?|royalt(?:y|ies)|collection|creators?)\b/));
-  add(categories, 'coin_market', has(t, /\b(market cap rank|mcap rank|ranked\b|all[-\s]?time high|\bath\b|circulating supply|max supply|how far from)\b/));
+  add(categories, 'asset_metadata', cryptoScoped && has(t, /\b(asset metadata|nft metadata|traits?|royalt(?:y|ies)|collection|creators?)\b/));
+  add(categories, 'coin_market', cryptoScoped && has(t, /\b(market cap rank|mcap rank|ranked\b|all[-\s]?time high|\bath\b|circulating supply|max supply|how far from)\b/));
   add(categories, 'trending_coins', has(t, /\b(trending coins?|trending (?:in )?crypto|cross[-\s]?chain trending|trending overall)\b/));
-  add(categories, 'new_listings', has(t, /\b(new listings?|newly listed|just launched|new tokens?|recent listings?|what just launched)\b/));
+  add(categories, 'new_listings', cryptoScoped && has(t, /\b(new listings?|newly listed|just launched|new tokens?|recent listings?|what just launched)\b/));
   add(categories, 'wallet_portfolio', has(t, /\b(net ?worth|portfolio value|wallet (?:value|worth|holdings|balance)|what(?:'s| is) (?:in |inside |this )?(?:the )?wallet|how much is .*(?:wallet|address).* worth|holdings of)\b/));
   add(categories, 'wallet_pnl', has(t, /\b(p ?n ?l|p&l|profit (?:and|&|\/) ?loss|profit\/loss|how much (?:has|have|did) .*(?:made|lost|gained|profit)|realized pnl|unrealized pnl|win[- ]?rate|\broi\b)\b/));
   add(categories, 'wallet_origin', has(t, /\b(who funded|first funded|funding source|funded (?:by|this)|wallet (?:age|origin|creator)|fresh wallet|brand new wallet|when was .* funded)\b/));
-  add(categories, 'token_top_traders', has(t, /\b(top traders?|smart money|biggest (?:buyers?|traders?|whales?)|whales?|who(?:'s| is| are) (?:trading|buying)|best traders?)\b/));
-  add(categories, 'token_supply_changes', has(t, /\b(mint(?:ed|ing|s)?|burn(?:ed|ing|s)?|supply change|dilution|new supply)\b/));
-  add(categories, 'token_activity', has(t, /\b(price action|momentum|buy(?:ing)? (?:vs|or) sell|sell(?:ing)? pressure|buy pressure|trade volume|unique wallets?|how many (?:traders?|wallets?)|\d+\s*(?:m|h)\b.*\bchange|how(?:'s| is) it (?:moving|performing))\b/));
-  add(categories, 'smart_money_tokens', has(t, /\b(smart money|smart wallets?|smart traders?|alpha (?:plays?|tokens?|wallets?)|what (?:are|is) (?:the )?smart .*(?:buying|accumulating))\b/));
-  add(categories, 'gainers_losers', has(t, /\b(top gainers?|biggest gainers?|top losers?|biggest losers?|who(?:'s| is) up the most|who(?:'s| is) down the most|best traders? (?:today|this week|right now)|worst traders?)\b/));
+  add(categories, 'token_top_traders', cryptoScoped && has(t, /\b(top traders?|smart money|biggest (?:buyers?|traders?|whales?)|whales?|who(?:'s| is| are) (?:trading|buying)|best traders?)\b/));
+  add(categories, 'token_supply_changes', cryptoScoped && has(t, /\b(mint(?:ed|ing|s)?|burn(?:ed|ing|s)?|supply change|dilution|new supply)\b/));
+  add(categories, 'token_activity', cryptoScoped && has(t, /\b(price action|momentum|buy(?:ing)? (?:vs|or) sell|sell(?:ing)? pressure|buy pressure|trade volume|unique wallets?|how many (?:traders?|wallets?)|\d+\s*(?:m|h)\b.*\bchange|how(?:'s| is) it (?:moving|performing))\b/));
+  add(categories, 'smart_money_tokens', cryptoScoped && has(t, /\b(smart money|smart wallets?|smart traders?|alpha (?:plays?|tokens?|wallets?)|what (?:are|is) (?:the )?smart .*(?:buying|accumulating))\b/));
+  add(categories, 'gainers_losers', cryptoScoped && has(t, /\b(top gainers?|biggest gainers?|top losers?|biggest losers?|who(?:'s| is) up the most|who(?:'s| is) down the most|best traders? (?:today|this week|right now)|worst traders?)\b/));
   add(categories, 'wallet_net_worth_history', has(t, /\b(net ?worth (?:over time|history|chart|trend|last|past)|portfolio (?:history|over time|trend|chart)|how has .*(?:net ?worth|portfolio).*(?:grown|changed|trended))\b/));
-  add(categories, 'pair_overview', has(t, /\b(pair overview|pool stats?|pool overview|lp pool|liquidity pool stats?|stats? (?:for|on) (?:the )?(?:pool|pair))\b/));
+  add(categories, 'pair_overview', cryptoScoped && has(t, /\b(pair overview|pool stats?|pool overview|lp pool|liquidity pool stats?|stats? (?:for|on) (?:the )?(?:pool|pair))\b/));
   add(categories, 'priority_fee', has(t, /\b(priority fee|prio fee|gas fee|network (?:congest|busy|fast|slow|condition)|congest(?:ed|ion)|compute unit price|how much .* (?:fast|priority)|why .* tx .* slow)\b/));
   add(categories, 'transaction', has(t, /\b(explain (?:this )?(?:transaction|tx|signature)|what (?:happened|did) .* (?:transaction|tx|signature)|decode (?:this )?(?:transaction|tx|signature)|this (?:transaction|tx|signature))\b/));
-  add(categories, 'token_holders', has(t, /\b(top holders?|biggest holders?|whales? (?:holding|in)|who holds|holder (?:list|breakdown)|holder distribution|whale (?:wallets?|concentration))\b/));
-  add(categories, 'coin_categories', has(t, /\b(sector|category|categories|narrative|best performing (?:sector|category|narrative)|ai tokens?|meme ?coins?|defi (?:sector|tokens?)|gaming tokens?|how are .* tokens? doing)\b/));
+  add(categories, 'token_holders', cryptoScoped && has(t, /\b(top holders?|biggest holders?|whales? (?:holding|in)|who holds|holder (?:list|breakdown)|holder distribution|whale (?:wallets?|concentration))\b/));
+  add(categories, 'coin_categories', cryptoScoped && has(t, /\b(sector|category|categories|narrative|best performing (?:sector|category|narrative)|ai tokens?|meme ?coins?|defi (?:sector|tokens?)|gaming tokens?|how are .* tokens? doing)\b/));
   add(categories, 'connector_facts', has(t, /\b(jupiter|kamino|lulo|jito|marinade|drift|wormhole|pyth|raydium|orca|meteora)\b/));
 
+  const apiCategories = Array.from(categories).filter((category) => category !== 'web_current_fact' && category !== 'connector_facts');
   const webSearchPreferred = !ownWallet && chatTextNeedsWebResearch(text) && (
+    (OFFCHAIN_CURRENT_RE.test(t) && !cryptoScoped) ||
     has(t, /\b(weather|news|status|available|availability|outage|exploit|hack|incident|upgrade|governance|vote|sec|sanctions|ofac|kyc|subscription|monthly|plan|law|schedule)\b/) ||
-    !Array.from(categories).some((category) => category !== 'web_current_fact' && category !== 'connector_facts')
+    apiCategories.length === 0
   );
   add(categories, 'web_current_fact', webSearchPreferred);
 

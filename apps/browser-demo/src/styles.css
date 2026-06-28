@@ -25996,10 +25996,49 @@ button.danger:hover:not(:disabled) {
   }
 }
 
-/* Floating back pill is native-/app-only; hidden by default everywhere else
+/* Native /app Back overlay; hidden by default everywhere else
    (it is only ever emitted by homepageNav() on native shells). */
-.app-back-pill {
+.native-app-back-control {
   display: none;
+}
+
+.route-app.android-shell .native-app-back-control,
+.route-app.ios-native-shell .native-app-back-control {
+  position: fixed;
+  top: calc(var(--mobile-nav-safe-top) + 6px);
+  left: calc(var(--app-shell-pad-x) + env(safe-area-inset-left, 0px));
+  z-index: 260;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 34px;
+  min-width: 76px;
+  padding: 0 13px 0 11px;
+  border-radius: 999px;
+  background: rgba(5, 8, 7, 0.82);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  color: #f2fff7;
+  cursor: pointer;
+  pointer-events: auto;
+  font-weight: 800;
+  font-size: 0.8rem;
+  line-height: 1;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34), inset 0 0 0 1px rgba(125, 231, 176, 0.08);
+}
+
+.route-app.android-shell .native-app-back-control:focus-visible,
+.route-app.ios-native-shell .native-app-back-control:focus-visible {
+  outline: 2px solid rgba(74, 222, 128, 0.7);
+  outline-offset: 3px;
+}
+
+.route-app.android-shell .native-app-back-control-chevron,
+.route-app.ios-native-shell .native-app-back-control-chevron {
+  font-size: 1.12rem;
+  line-height: 0.8;
+  transform: translateY(-1px);
 }
 
 @media (max-width: 899px) {
@@ -26043,35 +26082,13 @@ button.danger:hover:not(:disabled) {
     z-index: 120;
   }
 
-  /* Native /app only: the full website nav is replaced by a compact floating "‹ Demo"
-     pill (homepageNav() returns appBackPill() here), so the workspace content moves up
-     and reclaims the ~76px nav band. --app-native-top-clear reserves just enough room
-     for the floating pill so it never overlaps the first card's title; it is reused by
-     the chat-surface height calc so the two stay in sync. Tune the 44px on device. */
+  /* Native /app only: the full website nav is replaced by an overlay Back control.
+     The control does not reserve layout height; content keeps only the platform safe-area
+     top clearance so app tabs can use the reclaimed vertical space. */
   .route-app.android-shell,
   .route-app.ios-native-shell {
-    --app-native-top-clear: calc(var(--mobile-nav-safe-top) + 44px);
+    --app-native-top-clear: var(--mobile-nav-safe-top);
     padding-top: var(--app-native-top-clear);
-  }
-
-  .route-app.android-shell .app-back-pill,
-  .route-app.ios-native-shell .app-back-pill {
-    position: fixed;
-    top: calc(var(--mobile-nav-safe-top) + 4px);
-    left: calc(var(--app-shell-pad-x) + env(safe-area-inset-left, 0px));
-    z-index: 130;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    height: 32px;
-    padding: 0 12px;
-    border-radius: 999px;
-    background: rgba(5, 8, 7, 0.82);
-    backdrop-filter: blur(14px);
-    border: 1px solid rgba(224, 230, 226, 0.12);
-    color: #f2fff7;
-    font-weight: 800;
-    font-size: 0.8rem;
   }
 
   .route-app .homepage-brand {
@@ -37332,9 +37349,8 @@ button.danger:hover:not(:disabled) {
     );
     min-height: 240px;
   }
-  /* Native /app replaces the top nav band with the floating back pill, so the chat
-     surface must subtract only the pill clearance (--app-native-top-clear) instead of
-     the full nav band — otherwise it over-subtracts and leaves a dead gap above the dock. */
+  /* Native /app replaces the top nav band with an overlay Back control, so the chat
+     surface subtracts only the platform safe-area clearance instead of a nav/button band. */
   .route-app.android-shell .chat-surface,
   .route-app.ios-native-shell .chat-surface {
     height: calc(

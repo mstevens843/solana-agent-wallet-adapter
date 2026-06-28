@@ -4,6 +4,7 @@ export * from './types.js';
 export * from './sse.js';
 export * from './tools.js';
 export * from './routing.js';
+export * from './facts.js';
 export * from './systemPrompt.js';
 export * from './transport.js';
 export { chatTransportAdapter } from './providerTurn.js';

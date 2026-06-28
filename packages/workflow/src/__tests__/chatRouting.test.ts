@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  chatCoinCategoryHint,
   chatFactHasCategory,
   chatMentionsOwnWalletText,
+  chatTextHasCryptoScope,
   chatTextNeedsWebResearch,
   classifyChatFactText,
 } from '../chatAgent/routing.js';
@@ -21,6 +23,8 @@ describe('chat fact routing classifier', () => {
   it('routes crypto sector narrative questions to CoinGecko categories', () => {
     const result = classifyChatFactText('How are AI tokens and memecoins doing as a sector?');
     expect(chatFactHasCategory(result, 'coin_categories')).toBe(true);
+    expect(chatCoinCategoryHint('How are AI tokens doing?')).toBe('artificial intelligence');
+    expect(chatCoinCategoryHint('DeFi sector')).toBe('decentralized finance');
   });
 
   it('prefers web for off-chain current facts but not own-wallet questions', () => {
@@ -39,5 +43,26 @@ describe('chat fact routing classifier', () => {
     const result = classifyChatFactText('latest price of SOL');
     expect(chatFactHasCategory(result, 'token_price')).toBe(true);
     expect(result.webSearchPreferred).toBe(false);
+  });
+
+  it('does not route generic non-crypto category or current-product questions into crypto atoms', () => {
+    const category = classifyChatFactText('Which category should this iPhone app use?');
+    expect(chatTextHasCryptoScope('Which category should this iPhone app use?')).toBe(false);
+    expect(chatFactHasCategory(category, 'coin_categories')).toBe(false);
+
+    const currentProduct = classifyChatFactText('What is the current iPhone Pro monthly price?');
+    expect(currentProduct.webSearchPreferred).toBe(true);
+    expect(chatFactHasCategory(currentProduct, 'web_current_fact')).toBe(true);
+    expect(chatFactHasCategory(currentProduct, 'token_price')).toBe(false);
+  });
+
+  it('recognizes lowercase common token symbols for API fast paths', () => {
+    const bonk = classifyChatFactText('what is the price of bonk right now');
+    expect(chatFactHasCategory(bonk, 'token_price')).toBe(true);
+    expect(bonk.webSearchPreferred).toBe(false);
+
+    const popcat = classifyChatFactText('who holds popcat and what is holder concentration');
+    expect(chatFactHasCategory(popcat, 'token_holders')).toBe(true);
+    expect(chatFactHasCategory(popcat, 'token_market')).toBe(true);
   });
 });

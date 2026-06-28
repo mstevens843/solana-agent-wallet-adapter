@@ -6,9 +6,10 @@
 // data and NEVER throws the turn: on failure it returns { unavailable | error }.
 
 import type { ChatToolExecutor } from '@solana-agent-wallet-adapter/workflow';
-import { clampConnectorFacts, getConnectorAtom } from '@solana-agent-wallet-adapter/workflow';
+import { clampConnectorFacts, getConnectorAtom, resolveChatFactChain } from '@solana-agent-wallet-adapter/workflow';
 
 const BASE58_MINT_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+type ClientChatFactProviderSpec = Parameters<typeof resolveChatFactChain>[0][number];
 
 export interface ClientResolvedToken {
   mint: string;
@@ -22,12 +23,17 @@ export interface ClientResolvedToken {
 export interface ClientChatToolDeps {
   // Resolve a symbol/name to candidate tokens (mint + basic facts). Birdeye/Jupiter.
   searchTokens: (query: string) => Promise<ClientResolvedToken[]>;
+  searchTokensJupiter?: (query: string) => Promise<ClientResolvedToken[]>;
+  searchTokensBirdeye?: (query: string) => Promise<ClientResolvedToken[]>;
   // Canonical-first resolution: maps a known symbol (JUP/SOL/USDC/BONK/WIF…) to its canonical mint,
   // so an ambiguous symbol never resolves to a higher-liquidity same-symbol sibling (e.g. a "JUP"
   // search ranking jlUSDC first). Returns null for unknown symbols (then searchTokens is used).
   canonicalToken?: (value: string) => ClientResolvedToken | null;
   // USD prices for one or more mints.
   priceForMints: (mints: string[]) => Promise<Array<{ mint: string; usdPrice: number | null }>>;
+  priceForMintsJupiter?: (mints: string[]) => Promise<Array<{ mint: string; usdPrice: number | null; priceChange24h?: number | null }>>;
+  priceForMintsCoinGecko?: (mints: string[]) => Promise<Array<{ mint: string; usdPrice: number | null; priceChange24h?: number | null }>>;
+  priceForMintsBirdeye?: (mints: string[]) => Promise<Array<{ mint: string; usdPrice: number | null; priceChange24h?: number | null }>>;
   // On-chain safety facts (authorities, verified, organic score) for a mint.
   tokenSafety: (mint: string) => Promise<Record<string, unknown>>;
   // Market-wide regime (BTC dominance, total mcap, fear & greed).
@@ -44,8 +50,12 @@ export interface ClientChatToolDeps {
   // Token market-quality metrics (liquidity, mcap, fdv, volume, holders, price change) —
   // optional; mirrors the server get_token_market shape. Undefined → unavailable.
   tokenMarket?: (mint: string) => Promise<Record<string, unknown>>;
+  tokenMarketJupiter?: (mint: string) => Promise<Record<string, unknown>>;
+  tokenMarketBirdeye?: (mint: string) => Promise<Record<string, unknown>>;
   // Trending Solana tokens — optional; mirrors the server get_trending_tokens shape.
   trendingTokens?: () => Promise<Record<string, unknown>>;
+  trendingTokensJupiter?: () => Promise<Record<string, unknown>>;
+  trendingTokensBirdeye?: () => Promise<Record<string, unknown>>;
   // The connected wallet's NFTs (Helius DAS) — optional. Undefined → unavailable.
   walletNfts?: (wallet: string) => Promise<Record<string, unknown>>;
   // Single asset/NFT metadata by mint (Helius DAS) — optional.
@@ -82,6 +92,8 @@ export interface ClientChatToolDeps {
   transaction?: (signature: string) => Promise<Record<string, unknown>>;
   // Top holders of a token (BirdEye) — optional; mirrors get_token_holders.
   tokenHolders?: (mint: string) => Promise<Record<string, unknown>>;
+  tokenHoldersBirdeye?: (mint: string) => Promise<Record<string, unknown>>;
+  tokenHoldersCoinGecko?: (mint: string) => Promise<Record<string, unknown>>;
   // Crypto sector/category performance (CoinGecko) — optional; mirrors get_coin_categories.
   coinCategories?: (category: string) => Promise<Record<string, unknown>>;
 }
@@ -105,6 +117,102 @@ function isCrossChainSymbol(value: string): boolean {
 }
 
 export function createClientChatToolExecutor(deps: ClientChatToolDeps): ChatToolExecutor {
+  const isUsableRecord = (data: Record<string, unknown>): boolean =>
+    data.unavailable !== true && data.found !== false;
+
+  const shapeSearchTokens = (tokens: ClientResolvedToken[], limit: number): Array<Record<string, unknown>> =>
+    tokens.slice(0, limit).map((token) => ({
+      symbol: token.symbol ?? null,
+      name: token.name ?? null,
+      mint: token.mint,
+      isVerified: token.isVerified ?? null,
+      organicScoreLabel: token.organicScoreLabel ?? null,
+      usdPrice: token.priceUsd ?? null,
+    }));
+
+  const searchTokensWithChain = async (value: string, limit: number) => {
+    const specs: ClientChatFactProviderSpec[] = [];
+    const push = (
+      provider: string,
+      endpoint: string,
+      runSearch: (query: string) => Promise<ClientResolvedToken[]>,
+    ) => specs.push({
+      provider,
+      endpoint,
+      run: async () => ({ query: value, tokens: shapeSearchTokens(await runSearch(value), limit), source: provider }),
+      isUsable: (data) => Array.isArray(data.tokens) && data.tokens.length > 0,
+    });
+    if (deps.searchTokensJupiter) push('jupiter', 'token_search', deps.searchTokensJupiter);
+    if (deps.searchTokensBirdeye) push('birdeye', 'search', deps.searchTokensBirdeye);
+    if (specs.length === 0) push('default', 'token_search', deps.searchTokens);
+    const result = await resolveChatFactChain(specs, { webSearchOnExhausted: true });
+    const rows = Array.isArray(result.data.tokens) ? result.data.tokens as Array<Record<string, unknown>> : [];
+    const tokens = rows.map((row): ClientResolvedToken | null => {
+      const mint = typeof row.mint === 'string' ? row.mint : '';
+      if (!mint) return null;
+      return {
+        mint,
+        ...(typeof row.symbol === 'string' ? { symbol: row.symbol } : {}),
+        ...(typeof row.name === 'string' ? { name: row.name } : {}),
+        ...(typeof row.usdPrice === 'number' ? { priceUsd: row.usdPrice } : {}),
+        ...(typeof row.isVerified === 'boolean' ? { isVerified: row.isVerified } : {}),
+        ...(typeof row.organicScoreLabel === 'string' ? { organicScoreLabel: row.organicScoreLabel } : {}),
+      };
+    }).filter((token): token is ClientResolvedToken => Boolean(token));
+    return { result, tokens };
+  };
+
+  const shapePrice = (mint: string, usdPrice: number | null, priceChange24h: number | null = null) =>
+    ({ mint, usdPrice, priceChange24h, status: usdPrice != null ? 'priced' : 'unavailable' });
+
+  const priceForMintsWithChain = async (value: string, mints: string[]) => {
+    const specs: ClientChatFactProviderSpec[] = [];
+    const push = (
+      provider: string,
+      endpoint: string,
+      runPrices: (mints: string[]) => Promise<Array<{ mint: string; usdPrice: number | null; priceChange24h?: number | null }>>,
+    ) => specs.push({
+      provider,
+      endpoint,
+      run: async () => {
+        const rows = await runPrices(mints);
+        const prices = rows.map((row) => shapePrice(row.mint, row.usdPrice, row.priceChange24h ?? null));
+        return { query: value, resolvedMint: prices[0]?.mint ?? mints[0] ?? null, prices, source: provider };
+      },
+      isUsable: (data) => Array.isArray(data.prices) && data.prices.some((price) => typeof (price as Record<string, unknown>).usdPrice === 'number'),
+    });
+    if (deps.priceForMintsJupiter) push('jupiter', 'price', deps.priceForMintsJupiter);
+    if (deps.priceForMintsCoinGecko) push('coingecko', 'simple.token_price', deps.priceForMintsCoinGecko);
+    if (deps.priceForMintsBirdeye) push('birdeye', 'price_multi', deps.priceForMintsBirdeye);
+    if (specs.length === 0) push('default', 'price', deps.priceForMints);
+    return resolveChatFactChain(specs, { webSearchOnExhausted: true });
+  };
+
+  const recordChain = async (
+    entries: Array<{
+      provider: string;
+      endpoint: string;
+      run?: () => Promise<Record<string, unknown>>;
+      isUsable?: (data: Record<string, unknown>) => boolean;
+    }>,
+  ) => {
+    const specs = entries
+      .filter((entry): entry is {
+        provider: string;
+        endpoint: string;
+        run: () => Promise<Record<string, unknown>>;
+        isUsable?: (data: Record<string, unknown>) => boolean;
+      } => Boolean(entry.run))
+      .map((entry) => ({
+        provider: entry.provider,
+        endpoint: entry.endpoint,
+        run: entry.run,
+        isUsable: entry.isUsable ?? isUsableRecord,
+      }));
+    if (specs.length === 0) return null;
+    return resolveChatFactChain(specs, { webSearchOnExhausted: true });
+  };
+
   const resolveMint = async (raw: string): Promise<ClientResolvedToken | null> => {
     const value = (raw ?? '').trim().replace(/^\$/, '');
     if (!value) return null;
@@ -117,7 +225,7 @@ export function createClientChatToolExecutor(deps: ClientChatToolDeps): ChatTool
     const canonical = deps.canonicalToken?.(value);
     if (canonical) return canonical;
     try {
-      const results = await deps.searchTokens(value);
+      const { tokens: results } = await searchTokensWithChain(value, 10);
       // Prefer an EXACT (case-insensitive) symbol match over a substring/liquidity-ranked [0].
       const lower = value.toLowerCase();
       const exact = results.find((r) => typeof r.symbol === 'string' && r.symbol.toLowerCase() === lower);
@@ -134,15 +242,9 @@ export function createClientChatToolExecutor(deps: ClientChatToolDeps): ChatTool
     if (name === 'search_tokens') {
       if (!query) return { summary: 'No query provided.', data: { error: 'query is required' } };
       try {
-        const tokens = (await deps.searchTokens(query)).slice(0, 5).map((token) => ({
-          symbol: token.symbol ?? null,
-          name: token.name ?? null,
-          mint: token.mint,
-          isVerified: token.isVerified ?? null,
-          organicScoreLabel: token.organicScoreLabel ?? null,
-          usdPrice: token.priceUsd ?? null,
-        }));
-        return { summary: `Found ${tokens.length} token(s) for "${query}".`, data: { query, tokens } };
+        const result = await searchTokensWithChain(query, 5);
+        const tokens = Array.isArray(result.result.data.tokens) ? result.result.data.tokens as Array<Record<string, unknown>> : [];
+        return { summary: `Found ${tokens.length} token(s) for "${query}".`, data: result.result.data };
       } catch (err) {
         return { summary: 'Token search unavailable.', data: { error: err instanceof Error ? err.message : String(err) } };
       }
@@ -151,11 +253,6 @@ export function createClientChatToolExecutor(deps: ClientChatToolDeps): ChatTool
     if (name === 'get_token_price') {
       if (!query) return { summary: 'No token provided.', data: { error: 'query is required' } };
       try {
-        // H7-E2: shape each price like the server tool ({mint, usdPrice, priceChange24h,
-        // status}) so the model sees identical keys on device-agent vs Hosted. The client
-        // price source has no 24h change → null (honest); status mirrors the server.
-        const shapePrice = (mint: string, usdPrice: number | null) =>
-          ({ mint, usdPrice, priceChange24h: null, status: usdPrice != null ? 'priced' : 'unavailable' });
         const bare = query.replace(/^\$/, '');
         // Cross-chain asset → CoinGecko (coinMarket), never a Solana wrapper. Echo source + symbol.
         if (isCrossChainSymbol(bare) && deps.coinMarket) {
@@ -168,15 +265,15 @@ export function createClientChatToolExecutor(deps: ClientChatToolDeps): ChatTool
         }
         const token = await resolveMint(query);
         if (!token) return { summary: `No token matched "${query}".`, data: { found: false, query } };
-        if (typeof token.priceUsd === 'number') {
-          // Echo the resolved mint so a wrong-token answer (e.g. JUP→jlUSDC) is visible.
-          return { summary: `${query}: $${token.priceUsd} (mint ${shortMint(token.mint)})`, data: { query, resolvedMint: token.mint, prices: [shapePrice(token.mint, token.priceUsd)] } };
+        const result = await priceForMintsWithChain(query, [token.mint]);
+        const prices = Array.isArray(result.data.prices) ? result.data.prices as Array<Record<string, unknown>> : [];
+        if (prices.length === 0 && typeof token.priceUsd === 'number') {
+          return { summary: `${query}: $${token.priceUsd} (mint ${shortMint(token.mint)})`, data: { query, resolvedMint: token.mint, prices: [shapePrice(token.mint, token.priceUsd)], source: 'token_search', providerAttempts: result.data.providerAttempts } };
         }
-        const raw = await deps.priceForMints([token.mint]);
-        const prices = raw.map((p) => shapePrice(p.mint, p.usdPrice));
         const top = prices[0];
-        const summary = top && top.usdPrice != null ? `${query}: $${top.usdPrice} (mint ${shortMint(token.mint)})` : `No price for "${query}".`;
-        return { summary, data: { query, resolvedMint: token.mint, prices } };
+        const usdPrice = typeof top?.usdPrice === 'number' ? top.usdPrice : null;
+        const summary = usdPrice != null ? `${query}: $${usdPrice} (mint ${shortMint(token.mint)})` : `No price for "${query}".`;
+        return { summary, data: { ...result.data, query, resolvedMint: token.mint } };
       } catch (err) {
         return { summary: 'Price lookup unavailable.', data: { error: err instanceof Error ? err.message : String(err) } };
       }
@@ -257,18 +354,28 @@ export function createClientChatToolExecutor(deps: ClientChatToolDeps): ChatTool
     if (name === 'get_token_market') {
       const token = await resolveMint(mintArg || query);
       if (!token) return { summary: 'No token resolved.', data: { error: 'a token symbol or mint is required' } };
-      if (!deps.tokenMarket) return { summary: 'Market data unavailable.', data: { mint: token.mint, unavailable: true, reason: 'no_market_source' } };
+      const result = await recordChain([
+        { provider: 'jupiter', endpoint: 'token_evidence', run: deps.tokenMarketJupiter ? () => deps.tokenMarketJupiter!(token.mint) : undefined },
+        { provider: 'birdeye', endpoint: 'price+trade-data', run: deps.tokenMarketBirdeye ? () => deps.tokenMarketBirdeye!(token.mint) : undefined },
+        { provider: 'default', endpoint: 'token_market', run: !deps.tokenMarketJupiter && !deps.tokenMarketBirdeye && deps.tokenMarket ? () => deps.tokenMarket!(token.mint) : undefined },
+      ]);
+      if (!result) return { summary: 'Market data unavailable.', data: { mint: token.mint, unavailable: true, reason: 'no_market_source' } };
       try {
-        return { summary: `Market data for ${shortMint(token.mint)}`, data: await deps.tokenMarket(token.mint) };
+        return { summary: `Market data for ${shortMint(token.mint)}`, data: result.data };
       } catch (err) {
         return { summary: 'Market data unavailable.', data: { mint: token.mint, unavailable: true, error: err instanceof Error ? err.message : String(err) } };
       }
     }
 
     if (name === 'get_trending_tokens') {
-      if (!deps.trendingTokens) return { summary: 'Trending unavailable.', data: { unavailable: true, reason: 'no_trending_source' } };
+      const result = await recordChain([
+        { provider: 'jupiter', endpoint: 'toptrending', run: deps.trendingTokensJupiter, isUsable: (data) => isUsableRecord(data) && Number(data.count ?? 0) > 0 },
+        { provider: 'birdeye', endpoint: 'trending', run: deps.trendingTokensBirdeye, isUsable: (data) => isUsableRecord(data) && Number(data.count ?? 0) > 0 },
+        { provider: 'default', endpoint: 'trending', run: !deps.trendingTokensJupiter && !deps.trendingTokensBirdeye ? deps.trendingTokens : undefined, isUsable: (data) => isUsableRecord(data) && Number(data.count ?? 0) > 0 },
+      ]);
+      if (!result) return { summary: 'Trending unavailable.', data: { unavailable: true, reason: 'no_trending_source' } };
       try {
-        return { summary: 'Trending tokens', data: await deps.trendingTokens() };
+        return { summary: 'Trending tokens', data: result.data };
       } catch (err) {
         return { summary: 'Trending unavailable.', data: { unavailable: true, error: err instanceof Error ? err.message : String(err) } };
       }
@@ -455,9 +562,14 @@ export function createClientChatToolExecutor(deps: ClientChatToolDeps): ChatTool
     if (name === 'get_token_holders') {
       const token = await resolveMint(mintArg || query);
       if (!token) return { summary: 'No token resolved.', data: { error: 'a token symbol or mint is required' } };
-      if (!deps.tokenHolders) return { summary: 'Top holders unavailable.', data: { mint: token.mint, unavailable: true, reason: 'no_holders_source' } };
+      const result = await recordChain([
+        { provider: 'birdeye', endpoint: 'token_holders', run: deps.tokenHoldersBirdeye ? () => deps.tokenHoldersBirdeye!(token.mint) : undefined, isUsable: (data) => isUsableRecord(data) && Number(data.count ?? 0) > 0 },
+        { provider: 'coingecko', endpoint: 'onchain.token_top_holders', run: deps.tokenHoldersCoinGecko ? () => deps.tokenHoldersCoinGecko!(token.mint) : undefined, isUsable: (data) => isUsableRecord(data) && Number(data.count ?? 0) > 0 },
+        { provider: 'default', endpoint: 'token_holders', run: !deps.tokenHoldersBirdeye && !deps.tokenHoldersCoinGecko && deps.tokenHolders ? () => deps.tokenHolders!(token.mint) : undefined, isUsable: (data) => isUsableRecord(data) && Number(data.count ?? 0) > 0 },
+      ]);
+      if (!result) return { summary: 'Top holders unavailable.', data: { mint: token.mint, unavailable: true, reason: 'no_holders_source' } };
       try {
-        return { summary: `Top holders for ${shortMint(token.mint)}`, data: await deps.tokenHolders(token.mint) };
+        return { summary: `Top holders for ${shortMint(token.mint)}`, data: result.data };
       } catch (err) {
         return { summary: 'Top holders unavailable.', data: { mint: token.mint, unavailable: true, error: err instanceof Error ? err.message : String(err) } };
       }
