@@ -4735,6 +4735,7 @@ const SYSTEM_HEALTH_INTERVAL_MS = 30_000;
 let tokenMarketUnavailableUntil = 0;
 let tokenMarketHydrationScheduled = false;
 let tokenMarketHydrationInFlight = false;
+const chatQuoteRefreshInFlight = new Set<string>();
 
 const appRoot = document.querySelector<HTMLDivElement>('#app');
 
@@ -25605,16 +25606,25 @@ function isChatOriginatedAction(action: { id: string; chatOriginated?: boolean }
 
 // Where a just-settled chat action now lives, worded for the automated follow-up message. Keyed on
 // actionOpensPosition (NOT raw category) so a stateful close/manage action — which lands in Done,
-// not Monitor — is worded correctly. Open positions (lend/borrow/limit/dca/stake/lp/perps) point at
-// Monitor; everything terminal (swap/send/proof/nft/...) points at Done.
+// not Positions — is worded correctly. Open positions (lend/borrow/limit/dca/stake/lp/perps) point
+// at Positions; everything terminal (swap/send/proof/nft/...) points at Done.
 function chatActionDestinationLine(action: PreparedAction): string {
   const category = ACTION_TYPE_CATEGORY[action.kind];
-  if (actionOpensPosition(action.kind, category)) return t('It is now active. Track it in Monitor.');
+  if (actionOpensPosition(action.kind, category)) {
+    return action.txid
+      ? t('It is now active. Track it in Positions. The Solscan link is saved in Done.')
+      : t('It is now active. Track it in Positions. Receipt saved in Done.');
+  }
+  if (isStatefulActionCategory(category)) {
+    return action.txid
+      ? t('Position updated. Solscan link saved in Done.')
+      : t('Position updated. Receipt saved in Done.');
+  }
   return t('Receipt saved in Done.');
 }
 
 // After a chat-originated action settles, post the success + destination ("Receipt saved in Done." /
-// "It is now active. Track it in Monitor.") messages (idempotent). The receipt itself already lands
+// "It is now active. Track it in Positions.") messages (idempotent). The receipt itself already lands
 // in Done via completeBrowserExecutedAction's state.receipts write; the position is seeded by
 // applyActionCompletionSideEffects.
 function postChatActionSuccessMessage(
@@ -25682,10 +25692,10 @@ function postChatActionDecisionMessage(action: PreparedAction, op: 'reject' | 'a
   if (chatActionResultPosted.has(action.id)) return;
   chatActionResultPosted.add(action.id);
   const content = op === 'reject'
-    ? t('Request denied. Receipt saved in Done.')
+    ? t('Request denied. Denial receipt saved in Done.')
     : op === 'archive'
-      ? t('Request archived. Receipt in Done.')
-      : t('Request deleted.');
+      ? t('Request archived. Receipt saved in Done.')
+      : t('Request deleted from Sign Approval and Chat.');
   appendChatMessage(located.session.id, {
     id: newId('chat-msg'),
     role: 'assistant',
@@ -37735,6 +37745,16 @@ function bind(): void {
           console.error('render() failed in action-op safety net', renderErr);
         }
       });
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-quote-refresh]')) {
+    bindOnce(button, 'click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const actionId = button.dataset.chatQuoteRefresh;
+      if (!actionId) return;
+      void runRefreshChatSwapQuote(actionId);
     });
   }
 
@@ -57268,6 +57288,31 @@ async function hydrateSwapQuoteForAction(action: PreparedAction): Promise<boolea
   return true;
 }
 
+async function runRefreshChatSwapQuote(actionId: string): Promise<void> {
+  if (chatQuoteRefreshInFlight.has(actionId)) return;
+  const action = state.preparedActions.find((candidate) => candidate.id === actionId);
+  if (!action || action.kind !== 'swap') return;
+  if (action.workflowSource === 'cloud') {
+    pushToast('error', t('Quote refresh unavailable'), t('Cloud approvals refresh their quote server-side.'));
+    return;
+  }
+  chatQuoteRefreshInFlight.add(actionId);
+  render();
+  try {
+    swapQuoteHydrationAttemptedAt.set(actionId, Date.now());
+    const changed = await hydrateSwapQuoteForAction(action);
+    if (!changed) {
+      pushToast('error', t('Quote refresh unavailable'), t('This swap quote could not be refreshed.'));
+    }
+  } catch (err) {
+    const message = redactSecrets(err instanceof Error ? err.message : String(err));
+    pushToast('error', t('Quote refresh failed'), message);
+  } finally {
+    chatQuoteRefreshInFlight.delete(actionId);
+    render();
+  }
+}
+
 async function fetchSwapQuoteForAction(action: PreparedAction): Promise<{
   order: Record<string, unknown>;
   inputToken: BrowserTokenMetadata;
@@ -61933,24 +61978,62 @@ function tokenLogoChipHtml(value: string): string {
   }</span>`;
 }
 
-// The compact, one-line hero for the chat card: logos + amounts + USD highlighted per category.
+function chatActionConnectorIconHtml(connectorId: string | undefined, connectorName: string | undefined): string {
+  if (!connectorId) return '';
+  const logoId = protocolConnectorLogoId(connectorId as ConnectedDappId);
+  if (!logoId) return '';
+  const label = connectorName ?? connectorId;
+  return `
+    <span class="chat-action-connector-icon" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">
+      ${brandLogo(logoId, 'chat-action-connector-logo')}
+    </span>`;
+}
+
+function chatSwapQuoteRefreshButtonHtml(action: PreparedAction): string {
+  if (action.workflowSource === 'cloud') return '';
+  const refreshing = chatQuoteRefreshInFlight.has(action.id);
+  const disabled = state.busy || refreshing ? 'disabled' : '';
+  const label = refreshing ? t('Refreshing quote') : t('Refresh quote');
+  return `
+    <button type="button" class="chat-action-quote-refresh" data-chat-quote-refresh="${escapeHtml(action.id)}" ${disabled} title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">
+      ${refreshing ? '<span class="button-spinner" aria-hidden="true"></span>' : '<span aria-hidden="true">↻</span>'}
+    </button>`;
+}
+
+function chatSwapQuoteEstimateLabel(action: PreparedAction): string {
+  const expected = formatSwapQuoteAmount(stringParam(action, 'expectedOutput'));
+  const outputToken = swapOutputTokenLabel(action);
+  if (!expected) return t('Fetching quote');
+  return tf('Est. {amount} {token}', { amount: expected, token: outputToken || t('output') });
+}
+
+function chatActionUsdHtml(subject: MarketAmountSubject | undefined): string {
+  const usd = marketUsdLabel(subject);
+  return usd ? `<span class="chat-action-usd">${escapeHtml(usd)}</span>` : '';
+}
+
+// The compact hero for the chat card: only the primary facts stay upfront; everything else remains
+// in Details so chat cards do not inherit the full Sign Approval layout.
 function chatActionHeroHtml(action: PreparedAction): string {
   if (isSignProofAction(action)) {
     return `<span class="chat-action-leg"><strong>${escapeHtml(t('Sign proof'))}</strong></span><span class="chat-action-sub">${escapeHtml(t('Message signature, no transaction'))}</span>`;
   }
   const subject = marketAmountSubjectForAction(action);
-  const usd = marketUsdLabel(subject);
-  const usdHtml = usd ? `<span class="chat-action-usd">${escapeHtml(`(${usd})`)}</span>` : '';
+  const usdHtml = chatActionUsdHtml(subject);
 
   if (action.kind === 'swap') {
     const inTok = stringParam(action, 'inputToken') || stringParam(action, 'token');
     const outTok = stringParam(action, 'outputToken');
     const inAmt = formatDisplayAmountLabel(swapAmountLabel(action));
-    const outSym = swapOutputTokenLabel(action);
+    const quoteLabel = chatSwapQuoteEstimateLabel(action);
+    const quoteLoadingClass = hasUsableSwapQuote(action) ? '' : ' is-loading';
     return `
-      <span class="chat-action-leg">${tokenLogoChipHtml(inTok)}<strong>${escapeHtml(inAmt)}</strong>${usdHtml}</span>
-      <span class="chat-action-arrow" aria-hidden="true">&rarr;</span>
-      <span class="chat-action-leg">${tokenLogoChipHtml(outTok)}<strong>${escapeHtml(outSym)}</strong></span>`;
+      <div class="chat-action-swap-route">
+        <span class="chat-action-leg chat-action-leg--stack">${tokenLogoChipHtml(inTok)}<span class="chat-action-leg-copy">${usdHtml}<strong>${escapeHtml(inAmt)}</strong></span></span>
+        <span class="chat-action-arrow" aria-hidden="true">&rarr;</span>
+        <span class="chat-action-leg chat-action-leg--stack chat-action-leg--receive">${tokenLogoChipHtml(outTok)}<span class="chat-action-leg-copy"><span class="chat-action-est-label">${escapeHtml(t('Receive'))}</span><strong class="${quoteLoadingClass}">${escapeHtml(quoteLabel)}</strong></span></span>
+        ${chatSwapQuoteRefreshButtonHtml(action)}
+      </div>`;
   }
 
   if (action.kind === 'transfer_sol' || action.kind === 'transfer_spl') {
@@ -61964,11 +62047,21 @@ function chatActionHeroHtml(action: PreparedAction): string {
   // lend / borrow / stake / limit / dca / lp / perps / nft / governance / bridge / oracle / ...
   const tok = subject?.token || stringParam(action, 'token') || stringParam(action, 'inputToken');
   const amt = formatDisplayAmountLabel(amountLabel(action));
-  const verb = preparedActionMetaLabel(action);
+  const connectorSummary = isConnectorApprovalKind(action) ? connectorActionTokenOrTargetSummary(action) : undefined;
+  const category = ACTION_TYPE_CATEGORY[action.kind];
+  const verb = actionOpensPosition(action.kind, category)
+    ? t('Opens a position')
+    : isStatefulActionCategory(category)
+      ? t('Updates a position')
+      : preparedActionMetaLabel(action);
+  const target = connectorSummary?.value && connectorSummary.value !== amt
+    ? `<span class="chat-action-target">${escapeHtml(connectorSummary.value)}</span>`
+    : '';
   return `
     ${tok
       ? `<span class="chat-action-leg">${tokenLogoChipHtml(tok)}<strong>${escapeHtml(amt)}</strong>${usdHtml}</span>`
       : `<span class="chat-action-leg"><strong>${escapeHtml(amt)}</strong></span>`}
+    ${target}
     <span class="chat-action-sub">${escapeHtml(verb)}</span>`;
 }
 
@@ -62023,8 +62116,8 @@ function chatActionCard(action: PreparedAction): string {
     <article class="${escapeHtml(cardClass)}" data-action-id="${escapeHtml(action.id)}">
       <div class="chat-action-head">
         <span class="status-pill ${statusTone(action.status)}">${escapeHtml(t(action.status))}</span>
-        ${connectorChip(connectorMeta?.id, connectorMeta?.name)}
         <strong class="chat-action-title">${escapeHtml(preparedActionCardTitle(action))}</strong>
+        ${chatActionConnectorIconHtml(connectorMeta?.id, connectorMeta?.name)}
         ${inboxActionFailurePill(action)}
         ${action.txStatus && action.txStatus !== 'failed' ? `<span class="status-pill ${txTone(action.txStatus)}">${escapeHtml(tf('tx {status}', { status: action.txStatus }))}</span>` : ''}
       </div>
@@ -62547,6 +62640,9 @@ function visibleTokenMarketMints(): string[] {
   if (state.activeTab === 'inbox') {
     subjects.push(...paginateList(filteredPreparedActions(), 'inbox').items.map(marketAmountSubjectForAction).filter(isMarketAmountSubject));
   }
+  if (state.activeTab === 'chat') {
+    subjects.push(...visibleChatPreparedActions().map(marketAmountSubjectForAction).filter(isMarketAmountSubject));
+  }
   if (state.activeTab === 'completed') {
     subjects.push(...filteredCompletedPlans(completedPlanRecords()).map(marketAmountSubjectForCompletedPlan).filter(isMarketAmountSubject));
   }
@@ -62554,6 +62650,17 @@ function visibleTokenMarketMints(): string[] {
     subjects.push(...state.recurringPayments.map(marketAmountSubjectForRecurringPayment).filter(isMarketAmountSubject));
   }
   return [...new Set(subjects.map((subject) => subject.mint))];
+}
+
+function visibleChatPreparedActions(): PreparedAction[] {
+  const session = activeChatSession();
+  if (!session) return [];
+  const ids = new Set<string>();
+  for (const message of session.messages) {
+    if (message.preparedActionId) ids.add(message.preparedActionId);
+  }
+  if (!ids.size) return [];
+  return activeWorkflowPreparedActions().filter((action) => ids.has(action.id));
 }
 
 function marketAmountSubjectForGeneratedPlan(record: GeneratedPlanRecord): MarketAmountSubject | undefined {
