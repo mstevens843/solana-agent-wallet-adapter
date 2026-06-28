@@ -12243,9 +12243,9 @@ function notFoundPage(): string {
 
 function nativeAppBackControl(): string {
   // Native /app only: a fixed overlay Back control replaces the full website nav.
-  // It is a button with an explicit binder so it does not depend on anchor interception
-  // inside Android/iOS WebViews.
-  return renderNativeAppBackControl({ ariaLabel: t('Back to demo'), label: t('Back') });
+  // It is a real /demo link plus a native pointer/touch binder so Android/iOS
+  // WebViews have both an SPA route and an href fallback.
+  return renderNativeAppBackControl({ ariaLabel: t('Back to demo') });
 }
 
 function homepageNav(activeRoute: AppRoute | null): string {
@@ -38257,7 +38257,15 @@ function restoreGuidedDemoScenarioAnchor(scenarioId: string, previousTop: number
 }
 
 function bindNativeAppBackControl(): void {
-  bindNativeAppBackControlElement(document, { bindOnce, trackNavClick, navigateTo });
+  bindNativeAppBackControlElement(document, {
+    bindOnce,
+    trackNavClick,
+    navigateTo,
+    currentPath: () => normalizePathname(window.location.pathname),
+    forceNavigate: (route) => window.location.assign(route),
+    now: () => Date.now(),
+    setTimeout: (handler, delayMs) => window.setTimeout(handler, delayMs),
+  });
 }
 
 function bindRouteLinks(): void {
