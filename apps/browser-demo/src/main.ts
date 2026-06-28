@@ -127,10 +127,6 @@ import {
 import { createClientChatToolExecutor, type ClientChatToolDeps, type ClientResolvedToken } from './chatAgent/clientTools.js';
 import { browserOriginForOpenRouter } from './deviceAgent/provider/openRouterHeaders.js';
 import {
-  bindNativeAppBackControl as bindNativeAppBackControlElement,
-  renderNativeAppBackControl,
-} from './nativeAppBackControl.js';
-import {
   detectMwaEnvironment,
   registerAgentMobileWalletAdapter,
   type MwaEnvironment,
@@ -12251,15 +12247,7 @@ function notFoundPage(): string {
   `;
 }
 
-function nativeAppBackControl(): string {
-  // Native /app only: a fixed overlay Back control replaces the full website nav.
-  // It is a real /demo link plus a native pointer/touch binder so Android/iOS
-  // WebViews have both an SPA route and an href fallback.
-  return renderNativeAppBackControl({ ariaLabel: t('Back to demo') });
-}
-
 function homepageNav(activeRoute: AppRoute | null): string {
-  if (activeRoute === '/app' && isNativeAppShellSurface()) return nativeAppBackControl();
   const isTauri = state.tauriNativeEnvironment.isTauriNative;
   const visibleNavItems = isTauri
     ? NAV_ITEMS.filter((item) => !item.hideInTauri)
@@ -35991,7 +35979,6 @@ function requestContextDetails(): string {
 
 function bind(): void {
   bindRouteLinks();
-  bindNativeAppBackControl();
   bindExternalLinks();
   bindTemplatePicker();
   bindArtifactPicker();
@@ -38293,18 +38280,6 @@ function restoreGuidedDemoScenarioAnchor(scenarioId: string, previousTop: number
     window.scrollBy({ top: delta, behavior: 'auto' });
   }
   nextButton.focus({ preventScroll: true });
-}
-
-function bindNativeAppBackControl(): void {
-  bindNativeAppBackControlElement(document, {
-    bindOnce,
-    trackNavClick,
-    navigateTo,
-    currentPath: () => normalizePathname(window.location.pathname),
-    forceNavigate: (route) => window.location.assign(route),
-    now: () => Date.now(),
-    setTimeout: (handler, delayMs) => window.setTimeout(handler, delayMs),
-  });
 }
 
 function bindRouteLinks(): void {

@@ -2,165 +2,52 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-import {
-  bindNativeAppBackControl,
-  renderNativeAppBackControl,
-} from '../nativeAppBackControl.js';
-
 const mainSource = readFileSync(new URL('../main.ts', import.meta.url), 'utf8');
-const controlSource = readFileSync(new URL('../nativeAppBackControl.ts', import.meta.url), 'utf8');
 const stylesSource = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
 
-describe('native /app Back overlay', () => {
-  it('renders an icon-only /demo link, not the old Demo anchor pill', () => {
-    const html = renderNativeAppBackControl({ ariaLabel: 'Back <demo>' });
-    expect(mainSource).toContain('renderNativeAppBackControl');
-    expect(html).toContain('<a class="native-app-back-control"');
-    expect(html).toContain('href="/demo"');
-    expect(html).toContain('data-native-app-back-control');
-    expect(html).toContain('Back &lt;demo&gt;');
-    expect(html).not.toContain('native-app-back-control-label');
-    expect(html).not.toContain('>Back<');
-    expect(controlSource).toContain('class="native-app-back-control"');
-    expect(mainSource).not.toContain("t('Back')");
-    expect(controlSource).not.toContain('class="app-back-pill"');
-    expect(controlSource).not.toContain("app-back-pill-label");
-    expect(mainSource).not.toContain("t('Demo'))}</span>");
+function sourceBetween(start: string, end: string): string {
+  const startIndex = mainSource.indexOf(start);
+  const endIndex = mainSource.indexOf(end, startIndex + start.length);
+  if (startIndex === -1 || endIndex === -1) {
+    throw new Error(`Source markers not found: ${start} -> ${end}`);
+  }
+  return mainSource.slice(startIndex, endIndex);
+}
+
+function cssBetween(start: string, end: string): string {
+  const startIndex = stylesSource.indexOf(start);
+  const endIndex = stylesSource.indexOf(end, startIndex + start.length);
+  if (startIndex === -1 || endIndex === -1) {
+    throw new Error(`CSS markers not found: ${start} -> ${end}`);
+  }
+  return stylesSource.slice(startIndex, endIndex);
+}
+
+describe('native /app top navigation', () => {
+  it('renders the standard app nav instead of the native Back overlay', () => {
+    const homepageNav = sourceBetween('function homepageNav', 'function navLink');
+
+    expect(homepageNav).toContain('<header class="homepage-nav"');
+    expect(homepageNav).toContain('data-layout="app-nav"');
+    expect(homepageNav).not.toContain('nativeAppBackControl');
+    expect(mainSource).not.toContain('renderNativeAppBackControl');
+    expect(mainSource).not.toContain('bindNativeAppBackControl');
   });
 
-  it('binds capture handlers for pointer, touch, and click activation', () => {
-    const harness = nativeBackHarness();
+  it('uses the pre-overlay mobile /app top spacing', () => {
+    const mobileRouteApp = cssBetween('@media (max-width: 899px)', '.route-app .homepage-brand');
 
-    const bound = bindNativeAppBackControl(harness.root, harness.deps);
-    expect(bound).toBe(true);
-    expect(Object.keys(harness.handlers).sort()).toEqual(['click', 'pointerup', 'touchend']);
-    expect(harness.handlers.pointerup?.options).toMatchObject({ capture: true });
-    expect(harness.handlers.touchend?.options).toMatchObject({ capture: true });
-    expect(harness.handlers.click?.options).toMatchObject({ capture: true });
+    expect(mobileRouteApp).toContain('calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap))');
+    expect(mobileRouteApp).toContain('.route-app .homepage-nav[data-layout="app-nav"]');
+    expect(mobileRouteApp).toContain('position: static');
+    expect(mobileRouteApp).not.toContain('--app-native-top-clear');
+    expect(mobileRouteApp).not.toContain('ios-native-shell .homepage-nav[data-layout="app-nav"]');
   });
 
-  it.each(['pointerup', 'touchend', 'click'])('navigates to /demo on %s', (eventType) => {
-    const harness = nativeBackHarness();
-    bindNativeAppBackControl(harness.root, harness.deps);
-
-    const event = nativeBackEvent(eventType, harness.target);
-    harness.handlers[eventType]?.handler(event);
-
-    expect(event.defaultPrevented).toBe(true);
-    expect(harness.navClicks).toEqual(['/demo:native_app_back']);
-    expect(harness.navigations).toEqual(['/demo']);
-  });
-
-  it('dedupes touch/pointer activation followed by a synthetic click', () => {
-    const harness = nativeBackHarness();
-    bindNativeAppBackControl(harness.root, harness.deps);
-
-    harness.handlers.pointerup?.handler(nativeBackEvent('pointerup', harness.target));
-    harness.advance(120);
-    harness.handlers.click?.handler(nativeBackEvent('click', harness.target));
-
-    expect(harness.navClicks).toEqual(['/demo:native_app_back']);
-    expect(harness.navigations).toEqual(['/demo']);
-  });
-
-  it('forces /demo if the SPA route did not stick', () => {
-    const harness = nativeBackHarness({ updatePathOnNavigate: false });
-    bindNativeAppBackControl(harness.root, harness.deps);
-
-    harness.handlers.touchend?.handler(nativeBackEvent('touchend', harness.target));
-    expect(harness.forcedNavigations).toEqual([]);
-    harness.runTimers();
-
-    expect(harness.navigations).toEqual(['/demo']);
-    expect(harness.forcedNavigations).toEqual(['/demo']);
-  });
-
-  it('does not reserve a back-button height band in native app layout', () => {
-    expect(stylesSource).toContain('--app-native-top-clear: var(--mobile-nav-safe-top);');
-    expect(stylesSource).not.toContain('--app-native-top-clear: calc(var(--mobile-nav-safe-top) + 44px)');
-    expect(stylesSource).toContain('.route-app.android-shell .native-app-back-control');
-    expect(stylesSource).toContain('z-index: 260;');
-    expect(stylesSource).toContain('width: 34px;');
-    expect(stylesSource).toContain('background: rgba(5, 8, 7, 0.5);');
-    const controlBaseIndex = stylesSource.indexOf('.native-app-back-control {\n  display: none;');
-    const overlayRuleIndex = stylesSource.indexOf('.route-app.android-shell .native-app-back-control', controlBaseIndex);
-    const mobileBreakpointIndex = stylesSource.indexOf('@media (max-width: 899px)', controlBaseIndex);
-    expect(controlBaseIndex).toBeGreaterThanOrEqual(0);
-    expect(overlayRuleIndex).toBeGreaterThanOrEqual(0);
-    expect(mobileBreakpointIndex).toBeGreaterThanOrEqual(0);
-    expect(overlayRuleIndex).toBeLessThan(mobileBreakpointIndex);
+  it('does not keep stale Back overlay CSS or chat height overrides', () => {
+    expect(stylesSource).not.toContain('.native-app-back-control');
+    expect(stylesSource).not.toContain('--app-native-top-clear');
+    expect(stylesSource).not.toContain('overlay Back control');
+    expect(stylesSource).not.toContain('.route-app.android-shell .chat-surface,\n  .route-app.ios-native-shell .chat-surface');
   });
 });
-
-interface NativeBackHarness {
-  root: ParentNode & EventTarget;
-  target: { closest: (selector: string) => unknown };
-  handlers: Record<string, { handler: (event: Event) => void; options?: boolean | AddEventListenerOptions }>;
-  deps: Parameters<typeof bindNativeAppBackControl>[1];
-  navClicks: string[];
-  navigations: string[];
-  forcedNavigations: string[];
-  advance: (ms: number) => void;
-  runTimers: () => void;
-}
-
-let harnessClock = 1_000;
-
-function nativeBackHarness(options: { updatePathOnNavigate?: boolean } = {}): NativeBackHarness {
-  harnessClock += 5_000;
-  let now = harnessClock;
-  let currentPath = '/app';
-  const timers: Array<() => void> = [];
-  const navClicks: string[] = [];
-  const navigations: string[] = [];
-  const forcedNavigations: string[] = [];
-  const target = {
-    closest: (selector: string) => selector === '[data-native-app-back-control]' ? target : null,
-  };
-  const handlers: NativeBackHarness['handlers'] = {};
-  const root = {
-    querySelector: (selector: string) => selector === '[data-native-app-back-control]' ? target : null,
-  } as unknown as ParentNode & EventTarget;
-
-  return {
-    root,
-    target,
-    handlers,
-    navClicks,
-    navigations,
-    forcedNavigations,
-    deps: {
-      bindOnce: (element, type, handler, bindOptions) => {
-        expect(element).toBe(root);
-        handlers[type] = { handler, options: bindOptions };
-      },
-      trackNavClick: (route, area) => navClicks.push(`${route}:${area}`),
-      navigateTo: (route) => {
-        navigations.push(route);
-        if (options.updatePathOnNavigate !== false) currentPath = route;
-      },
-      currentPath: () => currentPath,
-      forceNavigate: (route) => {
-        forcedNavigations.push(route);
-        currentPath = route;
-      },
-      now: () => now,
-      setTimeout: (handler) => {
-        timers.push(handler);
-        return timers.length;
-      },
-    },
-    advance: (ms) => {
-      now += ms;
-    },
-    runTimers: () => {
-      while (timers.length > 0) timers.shift()?.();
-    },
-  };
-}
-
-function nativeBackEvent(type: string, target: NativeBackHarness['target']): Event {
-  const event = new Event(type, { cancelable: true });
-  Object.defineProperty(event, 'target', { value: target });
-  return event;
-}
