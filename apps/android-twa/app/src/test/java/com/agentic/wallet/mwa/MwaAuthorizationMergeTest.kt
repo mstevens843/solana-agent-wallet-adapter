@@ -78,4 +78,30 @@ class MwaAuthorizationMergeTest {
         assertEquals("app.phantom", merged.walletPackage)
         assertTrue(merged.hasUsableAuthorization())
     }
+
+    @Test
+    fun buildAppliedAuthorizationRecord_doesNotInheritProviderMetadataWithoutMatchingExistingRecord() {
+        val publicKeyBytes = ByteArray(32) { 13 }
+        val publicKeyBase58 = Base58.encode(publicKeyBytes)
+
+        val freshUnknownProvider = buildAppliedAuthorizationRecord(
+            publicKeyBase58 = publicKeyBase58,
+            publicKeyBytes = publicKeyBytes,
+            incomingAuthToken = "phantom-auth-token",
+            walletUriBase = "",
+            walletIcon = "",
+            targetWalletPackage = "",
+            accountLabel = "",
+            cluster = AgentCluster.MainnetBeta,
+            existing = null,
+            capabilitiesCsv = "",
+            timestampUnixSeconds = 1_716_000_100L,
+        )
+
+        assertEquals("phantom-auth-token", freshUnknownProvider.authToken)
+        assertEquals("", freshUnknownProvider.walletUriBase)
+        assertEquals("", freshUnknownProvider.walletIcon)
+        assertEquals("", freshUnknownProvider.walletPackage)
+        assertEquals(WalletRegistry.UNKNOWN, freshUnknownProvider.walletType)
+    }
 }

@@ -27,6 +27,9 @@ export interface AndroidNativeRestoreResult {
   address: string;
   walletName: string;
   walletLogoId?: WalletProviderLogoId;
+  authCacheKey?: string;
+  walletPackage?: string;
+  walletType?: number;
   cacheCount: number;
 }
 
@@ -34,6 +37,9 @@ export interface AndroidNativeWalletBackendOptions {
   cluster: Cluster;
   rpcUrl?: string;
   address?: string;
+  authCacheKey?: string;
+  walletPackage?: string;
+  walletType?: number;
 }
 
 interface AndroidNativeBridge {
@@ -66,6 +72,8 @@ interface NativeMwaError {
 interface AndroidMwaStatus {
   connected: boolean;
   address?: string;
+  authCacheKey?: string;
+  sessionKey?: string;
   cluster?: Cluster;
   walletType?: number;
   walletUriBase?: string;
@@ -195,17 +203,30 @@ export async function restoreLatestAndroidNativeWallet(
 ): Promise<AndroidNativeRestoreResult | null> {
   const backend = new AndroidNativeWalletBackend(options);
   const expectedAddress = options.address?.trim();
-  const address = expectedAddress
-    ? await backend.reconnectForPubkey(expectedAddress)
-    : await backend.reconnectLatest();
+  const expectedAuthCacheKey = options.authCacheKey?.trim();
+  let address: string | null = null;
+  if (expectedAuthCacheKey) {
+    address = await backend.reconnectSession(expectedAuthCacheKey, expectedAddress);
+  } else if (expectedAddress && (options.walletPackage?.trim() || typeof options.walletType === 'number')) {
+    address = await backend.reconnectForPubkey(expectedAddress, {
+      walletPackage: options.walletPackage,
+      walletType: options.walletType,
+    });
+  }
   if (!address) {
     return null;
   }
+  const authCacheKey = backend.authCacheKey();
+  const walletPackage = backend.walletPackage();
+  const walletType = backend.walletType();
   return {
     backend,
     address,
     walletName: backend.walletName(),
     walletLogoId: backend.walletLogoId(),
+    ...(authCacheKey ? { authCacheKey } : {}),
+    ...(walletPackage ? { walletPackage } : {}),
+    ...(typeof walletType === 'number' ? { walletType } : {}),
     cacheCount: backend.cacheCount(),
   };
 }
@@ -243,10 +264,6 @@ export class AndroidNativeWalletBackend implements WalletBackend {
     if (status.address) {
       return status.address;
     }
-    const restoredAddress = await this.reconnectLatest();
-    if (restoredAddress) {
-      return restoredAddress;
-    }
     return this.connect();
   }
 
@@ -271,7 +288,31 @@ export class AndroidNativeWalletBackend implements WalletBackend {
     return status.address ?? null;
   }
 
-  async reconnectForPubkey(pubkeyBase58: string): Promise<string | null> {
+  async reconnectSession(authCacheKey: string, expectedAddress?: string): Promise<string | null> {
+    const key = authCacheKey.trim();
+    if (!key) return null;
+    const address = expectedAddress?.trim();
+    const status = await androidNativeRequest<AndroidMwaStatus>('reconnectSession', {
+      cluster: this.cluster,
+      authCacheKey: key,
+      sessionKey: key,
+      ...(address && { address, pubkey: address, publicKey: address }),
+      ...this.nativeRpcContext(),
+    });
+    this.applyStatus(status);
+    if (address && status.address && status.address !== address) {
+      throw new ProtocolError(
+        'unauthorized',
+        `Android MWA restored ${shortAddress(status.address)} but expected ${shortAddress(address)}.`,
+      );
+    }
+    return status.address ?? null;
+  }
+
+  async reconnectForPubkey(
+    pubkeyBase58: string,
+    options: { walletPackage?: string; walletType?: number } = {},
+  ): Promise<string | null> {
     const pubkey = pubkeyBase58.trim();
     if (!pubkey) return null;
     const status = await androidNativeRequest<AndroidMwaStatus>('reconnectForPubkey', {
@@ -279,6 +320,8 @@ export class AndroidNativeWalletBackend implements WalletBackend {
       pubkey,
       publicKey: pubkey,
       address: pubkey,
+      ...(options.walletPackage?.trim() ? { walletPackage: options.walletPackage.trim() } : {}),
+      ...(typeof options.walletType === 'number' ? { walletType: options.walletType } : {}),
       ...this.nativeRpcContext(),
     });
     this.applyStatus(status);
@@ -504,6 +547,18 @@ export class AndroidNativeWalletBackend implements WalletBackend {
 
   cacheCount(): number {
     return this.activeStatus?.cachedCount ?? 0;
+  }
+
+  authCacheKey(): string | undefined {
+    return this.activeStatus?.authCacheKey || this.activeStatus?.sessionKey || undefined;
+  }
+
+  walletPackage(): string | undefined {
+    return this.activeStatus?.walletPackage || undefined;
+  }
+
+  walletType(): number | undefined {
+    return typeof this.activeStatus?.walletType === 'number' ? this.activeStatus.walletType : undefined;
   }
 
   private async refreshStatus(): Promise<AndroidMwaStatus> {

@@ -53,34 +53,55 @@ describe('AndroidNativeWalletBackend cached restore', () => {
     vi.unstubAllGlobals();
   });
 
-  it('restores the native cached authorization without opening a fresh connect', async () => {
+  it('restores the exact native cached authorization without opening a fresh connect', async () => {
     const calls: string[] = [];
-    installAndroidBridge((method) => {
+    installAndroidBridge((method, payload) => {
       calls.push(method);
-      if (method === 'reconnectLatest') {
-        return androidStatus({ connected: true, address: 'Android11111111111111111111111111111111' });
+      if (method === 'reconnectSession') {
+        expect(payload.authCacheKey).toBe('mainnet-beta|pkg:app.phantom|Android11111111111111111111111111111111');
+        return androidStatus({
+          connected: true,
+          address: 'Android11111111111111111111111111111111',
+          authCacheKey: 'mainnet-beta|pkg:app.phantom|Android11111111111111111111111111111111',
+        });
       }
       throw new Error(`unexpected Android MWA method ${method}`);
     });
 
-    const restored = await restoreLatestAndroidNativeWallet({ cluster: 'mainnet-beta' });
+    const restored = await restoreLatestAndroidNativeWallet({
+      cluster: 'mainnet-beta',
+      address: 'Android11111111111111111111111111111111',
+      authCacheKey: 'mainnet-beta|pkg:app.phantom|Android11111111111111111111111111111111',
+    });
 
     expect(restored).toMatchObject({
       address: 'Android11111111111111111111111111111111',
       walletName: 'Phantom',
+      authCacheKey: 'mainnet-beta|pkg:app.phantom|Android11111111111111111111111111111111',
       cacheCount: 1,
     });
-    expect(calls).toEqual(['reconnectLatest']);
+    expect(calls).toEqual(['reconnectSession']);
   });
 
-  it('lazy getAddress tries cached reconnect before fresh connect after a cold start', async () => {
+  it('does not use native latest restore without a saved session identity', async () => {
+    const calls: string[] = [];
+    installAndroidBridge((method) => {
+      calls.push(method);
+      throw new Error(`unexpected Android MWA method ${method}`);
+    });
+
+    await expect(restoreLatestAndroidNativeWallet({ cluster: 'mainnet-beta' })).resolves.toBeNull();
+    expect(calls).toEqual([]);
+  });
+
+  it('lazy getAddress opens a fresh connect instead of restoring arbitrary latest after a cold start', async () => {
     const calls: string[] = [];
     installAndroidBridge((method) => {
       calls.push(method);
       if (method === 'status') {
         return androidStatus({ connected: false });
       }
-      if (method === 'reconnectLatest') {
+      if (method === 'connect') {
         return androidStatus({ connected: true, address: 'Android22222222222222222222222222222222' });
       }
       throw new Error(`unexpected Android MWA method ${method}`);
@@ -89,18 +110,22 @@ describe('AndroidNativeWalletBackend cached restore', () => {
     const backend = new AndroidNativeWalletBackend({ cluster: 'mainnet-beta' });
 
     await expect(backend.getAddress()).resolves.toBe('Android22222222222222222222222222222222');
-    expect(calls).toEqual(['status', 'reconnectLatest']);
+    expect(calls).toEqual(['status', 'connect']);
   });
 
   it('does not report a disconnected native authorization as restored', async () => {
     installAndroidBridge((method) => {
-      if (method === 'reconnectLatest') {
+      if (method === 'reconnectSession') {
         return androidStatus({ connected: false, cachedCount: 1 });
       }
       throw new Error(`unexpected Android MWA method ${method}`);
     });
 
-    await expect(restoreLatestAndroidNativeWallet({ cluster: 'mainnet-beta' })).resolves.toBeNull();
+    await expect(restoreLatestAndroidNativeWallet({
+      cluster: 'mainnet-beta',
+      address: 'Android11111111111111111111111111111111',
+      authCacheKey: 'mainnet-beta|pkg:app.phantom|Android11111111111111111111111111111111',
+    })).resolves.toBeNull();
   });
 });
 
@@ -143,6 +168,7 @@ function clearAndroidTestWindow(): void {
 function androidStatus(input: {
   connected: boolean;
   address?: string;
+  authCacheKey?: string;
   cachedCount?: number;
 }): Record<string, unknown> {
   const address = input.address ?? '';
@@ -151,6 +177,7 @@ function androidStatus(input: {
     cachedCount: input.cachedCount ?? 1,
     ...(address && {
       address,
+      authCacheKey: input.authCacheKey ?? `mainnet-beta|pkg:app.phantom|${address}`,
       cluster: 'mainnet-beta',
       walletPackage: 'app.phantom',
       walletType: 1,

@@ -2132,11 +2132,19 @@ class MainActivity : FragmentActivity() {
             return when (method) {
                 "status" -> statusJson()
                 "connect" -> {
-                    val record = activity.mwaController.connect(activity.activityResultSender, clusterFromPayload(payload))
+                    val walletPackage = payload.optString("walletPackage", "")
+                    val record = activity.mwaController.connect(activity.activityResultSender, clusterFromPayload(payload), walletPackage)
                     statusJson(record)
                 }
                 "reconnectLatest" -> {
                     val record = activity.mwaController.reconnectLatest(clusterFromPayload(payload))
+                    statusJson(record)
+                }
+                "reconnectSession" -> {
+                    val sessionKey = payload.optString("authCacheKey", "")
+                        .ifBlank { payload.optString("sessionKey", "") }
+                        .ifBlank { throw MwaOperationException("INVALID_REQUEST", "reconnectSession requires authCacheKey") }
+                    val record = activity.mwaController.reconnectSession(sessionKey, clusterFromPayload(payload))
                     statusJson(record)
                 }
                 "reconnectForPubkey" -> {
@@ -2144,7 +2152,9 @@ class MainActivity : FragmentActivity() {
                         .ifBlank { payload.optString("publicKey", "") }
                         .ifBlank { payload.optString("address", "") }
                         .ifBlank { throw MwaOperationException("INVALID_REQUEST", "reconnectForPubkey requires pubkey") }
-                    val record = activity.mwaController.reconnectForPubkey(pubkey, clusterFromPayload(payload))
+                    val walletPackage = payload.optString("walletPackage", "")
+                    val walletType = payload.optInt("walletType", WalletRegistry.UNKNOWN)
+                    val record = activity.mwaController.reconnectForPubkey(pubkey, clusterFromPayload(payload), walletPackage, walletType)
                     statusJson(record)
                 }
                 "capabilities" -> JSONObject()
@@ -2173,7 +2183,9 @@ class MainActivity : FragmentActivity() {
                         .put("authToken", token)
                         .put("authTokenLen", token.length)
                         .put("publicKey", record?.publicKeyBase58.orEmpty())
+                        .put("authCacheKey", record?.let { activity.mwaController.authCacheKey(it) }.orEmpty())
                         .put("walletPackage", record?.walletPackage.orEmpty())
+                        .put("walletType", record?.walletType ?: WalletRegistry.UNKNOWN)
                         .put("cluster", record?.cluster?.id.orEmpty())
                 }
                 "setAuthToken" -> {
@@ -2373,6 +2385,8 @@ class MainActivity : FragmentActivity() {
             if (record != null) {
                 json
                     .put("address", record.publicKeyBase58)
+                    .put("authCacheKey", activity.mwaController.authCacheKey(record))
+                    .put("sessionKey", activity.mwaController.authCacheKey(record))
                     .put("cluster", record.cluster.id)
                     .put("walletType", record.walletType)
                     .put("walletUriBase", record.walletUriBase)
@@ -2498,6 +2512,8 @@ class MainActivity : FragmentActivity() {
                 "status",
                 "connect",
                 "reconnectLatest",
+                "reconnectSession",
+                "reconnectForPubkey",
                 "capabilities",
                 "sign",
                 "signIn",

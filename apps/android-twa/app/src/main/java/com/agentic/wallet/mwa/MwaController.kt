@@ -64,13 +64,15 @@ class MwaController(
 
     fun cachedAuthorizations(): List<AgentMwaAuthRecord> = cache.all()
 
+    fun authCacheKey(record: AgentMwaAuthRecord): String = cache.sessionKey(record)
+
     fun reconnectLatest(cluster: AgentCluster = cache.latest()?.cluster ?: AgentCluster.Devnet): AgentMwaAuthRecord? {
         AgentMwaLog.info(
             "MwaController",
             "reconnectLatest",
             "START",
             "attempting cached authorization restore",
-            mapOf("cluster" to cluster.id, "cachedCount" to cache.all().size, "latestPubkey" to cache.latest()?.publicKeyBase58.orEmpty()),
+            mapOf("cluster" to cluster.id, "cachedCount" to cache.all().size, "latestSessionKey" to cache.latestSessionKey(), "latestPubkey" to cache.latest()?.publicKeyBase58.orEmpty()),
         )
         val latest = cache.latest()
         if (latest == null) {
@@ -83,61 +85,87 @@ class MwaController(
             )
             return null
         }
-        if (!latest.hasRestorableAuthorization()) {
-            AgentMwaLog.warn(
-                "MwaController",
-                "reconnectLatest",
-                "RESULT_FAIL",
-                "cached authorization is not restorable",
-                mapOf(
-                    "pubkey" to latest.publicKeyBase58,
-                    "authLen" to latest.authToken.length,
-                    "walletPackage" to latest.walletPackage,
-                    "authenticated" to latest.authenticated,
-                    "usableAuth" to latest.hasUsableAuthorization(),
-                ),
-            )
-            return null
-        }
-        val restoredPackage = restoredWalletPackage(latest)
-        activeRecord = latest.copy(
-            cluster = cluster,
-            authenticated = true,
-            walletPackage = restoredPackage,
-            walletType = WalletRegistry.walletType(restoredPackage, latest.walletUriBase, latest.walletIcon),
-        )
-        cache.set(activeRecord!!)
-        AgentMwaLog.info(
-            "MwaController",
-            "reconnectLatest",
-            "SUCCESS",
-            "cached authorization restored",
-            mapOf("pubkey" to latest.publicKeyBase58, "walletPackage" to latest.walletPackage, "cluster" to cluster.id, "authLen" to latest.authToken.length),
-        )
-        return activeRecord
+        return restoreCachedRecord("reconnectLatest", latest, cluster)
     }
 
-    fun reconnectForPubkey(pubkeyBase58: String, cluster: AgentCluster = AgentCluster.Devnet): AgentMwaAuthRecord? {
+    fun reconnectSession(sessionKey: String, cluster: AgentCluster = AgentCluster.Devnet): AgentMwaAuthRecord? {
+        val key = sessionKey.trim()
+        AgentMwaLog.info(
+            "MwaController",
+            "reconnectSession",
+            "START",
+            "attempting exact cached authorization restore",
+            mapOf("cluster" to cluster.id, "sessionKey" to key, "cachedCount" to cache.all().size),
+        )
+        if (key.isBlank()) {
+            AgentMwaLog.warn("MwaController", "reconnectSession", "RESULT_FAIL", "session key is blank", mapOf("cluster" to cluster.id))
+            return null
+        }
+        val record = cache.getBySessionKey(key)
+        if (record == null) {
+            AgentMwaLog.warn("MwaController", "reconnectSession", "RESULT_FAIL", "cached authorization not found", mapOf("sessionKey" to key, "cluster" to cluster.id))
+            return null
+        }
+        return restoreCachedRecord("reconnectSession", record, cluster)
+    }
+
+    fun reconnectForPubkey(
+        pubkeyBase58: String,
+        cluster: AgentCluster = AgentCluster.Devnet,
+        walletPackage: String = "",
+        walletType: Int = WalletRegistry.UNKNOWN,
+    ): AgentMwaAuthRecord? {
         AgentMwaLog.info(
             "MwaController",
             "reconnectForPubkey",
             "START",
-            "attempting cached authorization restore for pubkey",
-            mapOf("pubkey" to pubkeyBase58, "cluster" to cluster.id),
+            "attempting cached authorization restore for pubkey and provider",
+            mapOf("pubkey" to pubkeyBase58, "cluster" to cluster.id, "walletPackage" to walletPackage, "walletType" to walletType),
         )
-        val record = cache.get(pubkeyBase58)
+        val record = cache.find(
+            pubkeyBase58 = pubkeyBase58,
+            cluster = cluster,
+            walletPackage = walletPackage,
+            walletType = walletType,
+        )
         if (record == null) {
-            AgentMwaLog.warn("MwaController", "reconnectForPubkey", "RESULT_FAIL", "cached authorization not found", mapOf("pubkey" to pubkeyBase58, "cluster" to cluster.id))
+            AgentMwaLog.warn(
+                "MwaController",
+                "reconnectForPubkey",
+                "RESULT_FAIL",
+                "provider-scoped cached authorization not found",
+                mapOf("pubkey" to pubkeyBase58, "cluster" to cluster.id, "walletPackage" to walletPackage, "walletType" to walletType),
+            )
+            return null
+        }
+        return restoreCachedRecord("reconnectForPubkey", record, cluster)
+    }
+
+    private fun restoreCachedRecord(method: String, record: AgentMwaAuthRecord, cluster: AgentCluster): AgentMwaAuthRecord? {
+        if (record.cluster != cluster) {
+            AgentMwaLog.warn(
+                "MwaController",
+                method,
+                "RESULT_FAIL",
+                "cached authorization cluster does not match requested cluster",
+                mapOf(
+                    "pubkey" to record.publicKeyBase58,
+                    "sessionKey" to authCacheKey(record),
+                    "recordCluster" to record.cluster.id,
+                    "requestedCluster" to cluster.id,
+                ),
+            )
             return null
         }
         if (!record.hasRestorableAuthorization()) {
             AgentMwaLog.warn(
                 "MwaController",
-                "reconnectForPubkey",
+                method,
                 "RESULT_FAIL",
                 "cached authorization is not restorable",
                 mapOf(
-                    "pubkey" to pubkeyBase58,
+                    "pubkey" to record.publicKeyBase58,
+                    "sessionKey" to authCacheKey(record),
                     "authLen" to record.authToken.length,
                     "walletPackage" to record.walletPackage,
                     "authenticated" to record.authenticated,
@@ -148,7 +176,6 @@ class MwaController(
         }
         val restoredPackage = restoredWalletPackage(record)
         activeRecord = record.copy(
-            cluster = cluster,
             authenticated = true,
             walletPackage = restoredPackage,
             walletType = WalletRegistry.walletType(restoredPackage, record.walletUriBase, record.walletIcon),
@@ -156,10 +183,10 @@ class MwaController(
         cache.set(activeRecord!!)
         AgentMwaLog.info(
             "MwaController",
-            "reconnectForPubkey",
+            method,
             "SUCCESS",
             "cached authorization restored",
-            mapOf("pubkey" to pubkeyBase58, "walletPackage" to record.walletPackage, "cluster" to cluster.id, "authLen" to record.authToken.length),
+            authRecordMetadata(activeRecord),
         )
         return activeRecord
     }
@@ -185,12 +212,18 @@ class MwaController(
     }
 
     fun clearStateFullReset(reason: String) {
-        val pubkey = activeRecord?.publicKeyBase58 ?: cache.latest()?.publicKeyBase58.orEmpty()
+        val record = activeRecord ?: cache.latest()
         activeRecord = null
-        if (pubkey.isNotBlank()) {
-            cache.clear(pubkey, blacklistForSession = true)
+        if (record != null) {
+            cache.clearRecord(record, blacklistForSession = true)
         }
-        AgentMwaLog.info("MwaController", "clearStateFullReset", "DONE", "authorization cleared", mapOf("reason" to reason, "pubkey" to pubkey))
+        AgentMwaLog.info(
+            "MwaController",
+            "clearStateFullReset",
+            "DONE",
+            "authorization cleared",
+            mapOf("reason" to reason, "pubkey" to record?.publicKeyBase58.orEmpty(), "sessionKey" to record?.let { authCacheKey(it) }.orEmpty()),
+        )
     }
 
     suspend fun deauthorizeRemote(sender: ActivityResultSender, reason: String) = withKeepAlive("deauthorizeRemote") {
@@ -229,8 +262,8 @@ class MwaController(
             }
         } finally {
             activeRecord = null
-            cache.clear(record.publicKeyBase58, blacklistForSession = true)
-            AgentMwaLog.info("MwaController", "deauthorizeRemote", "DONE", "local authorization cleared", mapOf("reason" to reason, "pubkey" to record.publicKeyBase58))
+            cache.clearRecord(record, blacklistForSession = true)
+            AgentMwaLog.info("MwaController", "deauthorizeRemote", "DONE", "local authorization cleared", mapOf("reason" to reason, "pubkey" to record.publicKeyBase58, "sessionKey" to authCacheKey(record)))
         }
     }
 
@@ -396,7 +429,15 @@ class MwaController(
             )
             return null
         }
-        val existing = cache.get(publicKeyBase58)
+        val existing = cache.find(
+            pubkeyBase58 = publicKeyBase58,
+            cluster = cluster,
+            walletPackage = walletPackage,
+        ) ?: if (walletPackage.isBlank()) {
+            cache.get(publicKeyBase58)?.takeIf { it.cluster == cluster }
+        } else {
+            null
+        }
         val publicKeyBytes = existing?.publicKeyBytes?.takeIf { it.isNotEmpty() }
             ?: runCatching { Base58.decode(publicKeyBase58) }.getOrElse { ByteArray(0) }
         if (publicKeyBytes.isEmpty()) {
@@ -1227,13 +1268,15 @@ class MwaController(
     ): AgentMwaAuthRecord {
         val publicKeyBytes = auth.publicKey ?: auth.accounts?.firstOrNull()?.publicKey ?: ByteArray(0)
         val publicKeyBase58 = Base58.encode(publicKeyBytes)
-        val existing = if (publicKeyBase58.isNotBlank()) {
-            cache.get(publicKeyBase58) ?: activeRecord?.takeIf { it.publicKeyBase58 == publicKeyBase58 }
-        } else {
-            null
-        }
         val walletUriBase = auth.walletUriBase?.toString().orEmpty()
         val walletIcon = auth.walletIcon?.toString().orEmpty()
+        val existing = matchingExistingAuthorization(
+            publicKeyBase58 = publicKeyBase58,
+            cluster = cluster,
+            targetWalletPackage = targetWalletPackage,
+            walletUriBase = walletUriBase,
+            walletIcon = walletIcon,
+        )
         val record = buildAppliedAuthorizationRecord(
             publicKeyBase58 = publicKeyBase58,
             publicKeyBytes = publicKeyBytes,
@@ -1244,7 +1287,7 @@ class MwaController(
             accountLabel = auth.accountLabel ?: auth.accounts?.firstOrNull()?.accountLabel ?: "",
             cluster = cluster,
             existing = existing,
-            capabilitiesCsv = activeRecord?.capabilitiesCsv ?: existing?.capabilitiesCsv.orEmpty(),
+            capabilitiesCsv = existing?.capabilitiesCsv.orEmpty(),
         )
         activeRecord = record
         cache.set(record)
@@ -1260,6 +1303,37 @@ class MwaController(
             ),
         )
         return record
+    }
+
+    private fun matchingExistingAuthorization(
+        publicKeyBase58: String,
+        cluster: AgentCluster,
+        targetWalletPackage: String,
+        walletUriBase: String,
+        walletIcon: String,
+    ): AgentMwaAuthRecord? {
+        if (publicKeyBase58.isBlank()) return null
+        val inferredPackage = WalletRegistry.inferPackage(walletUriBase, targetWalletPackage, walletIcon)
+        val inferredWalletType = WalletRegistry.walletType(inferredPackage, walletUriBase, walletIcon)
+        val incomingProviderKey = authCacheProviderKey(targetWalletPackage, walletUriBase, walletIcon, inferredWalletType)
+        cache.find(
+            pubkeyBase58 = publicKeyBase58,
+            cluster = cluster,
+            walletPackage = targetWalletPackage,
+            walletUriBase = walletUriBase,
+            walletIcon = walletIcon,
+            walletType = inferredWalletType,
+        )?.let { return it }
+
+        val active = activeRecord?.takeIf {
+            it.publicKeyBase58 == publicKeyBase58 && it.cluster == cluster
+        } ?: return null
+        val unknownProviderKey = authCacheProviderKey("", "", "", WalletRegistry.UNKNOWN)
+        val activeProviderKey = authCacheProviderKey(active)
+        if (incomingProviderKey == unknownProviderKey) {
+            return active.takeIf { activeProviderKey == unknownProviderKey }
+        }
+        return active.takeIf { activeProviderKey == incomingProviderKey }
     }
 
     // Defensive: cached records from older builds (or ones authorized by a wallet that
@@ -1294,7 +1368,7 @@ class MwaController(
             method,
             "FAIL_NOT_CONNECTED",
             MwaOperationException("UNAUTHORIZED", "No Android MWA wallet is connected."),
-            mapOf("cachedCount" to cache.all().size, "latestPubkey" to cache.latest()?.publicKeyBase58.orEmpty()),
+            mapOf("cachedCount" to cache.all().size, "latestSessionKey" to cache.latestSessionKey(), "latestPubkey" to cache.latest()?.publicKeyBase58.orEmpty()),
         )
     }
 
@@ -1708,6 +1782,8 @@ class MwaController(
             mapOf(
                 "connected" to true,
                 "pubkey" to record.publicKeyBase58,
+                "sessionKey" to authCacheKey(record),
+                "providerKey" to authCacheProviderKey(record),
                 "pubkeyBytes" to record.publicKeyBytes.size,
                 "authLen" to record.authToken.length,
                 "walletUriBase" to record.walletUriBase,

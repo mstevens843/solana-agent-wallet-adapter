@@ -99,4 +99,28 @@ class AuthCacheSerializationTest {
         assertTrue(restored.hasUsableAuthorization())
         assertFalse(restored.hasRestorableAuthorization())
     }
+
+    @Test
+    fun authCacheSessionKey_separatesProvidersWithTheSamePubkey() {
+        val publicKeyBytes = ByteArray(32) { 13 }
+        val publicKeyBase58 = Base58.encode(publicKeyBytes)
+        val seedVault = AgentMwaAuthRecord(
+            publicKeyBase58 = publicKeyBase58,
+            publicKeyBytes = publicKeyBytes,
+            walletPackage = "com.solanamobile.seedvaultimpl",
+            walletType = WalletRegistry.SEED_VAULT,
+            cluster = AgentCluster.MainnetBeta,
+        )
+        val phantom = AgentMwaAuthRecord(
+            publicKeyBase58 = publicKeyBase58,
+            publicKeyBytes = publicKeyBytes,
+            walletPackage = "app.phantom",
+            walletType = WalletRegistry.PHANTOM,
+            cluster = AgentCluster.MainnetBeta,
+        )
+
+        assertFalse(authCacheSessionKey(seedVault) == authCacheSessionKey(phantom))
+        assertEquals("mainnet-beta|pkg:com.solanamobile.seedvaultimpl|$publicKeyBase58", authCacheSessionKey(seedVault))
+        assertEquals("mainnet-beta|pkg:app.phantom|$publicKeyBase58", authCacheSessionKey(phantom))
+    }
 }
