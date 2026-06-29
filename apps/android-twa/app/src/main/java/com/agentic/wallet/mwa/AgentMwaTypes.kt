@@ -127,7 +127,6 @@ data class AgentMwaSignInResult(
     val features: List<String>,
     val authToken: String,
     val walletPackage: String,
-    val walletType: Int,
     val cluster: String,
     val path: String,
 )

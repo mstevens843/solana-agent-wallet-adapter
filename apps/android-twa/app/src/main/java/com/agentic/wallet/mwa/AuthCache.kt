@@ -368,9 +368,6 @@ internal fun authCacheSessionKey(
 internal fun authCacheProviderKey(record: AgentMwaAuthRecord): String =
     authCacheProviderKey(record.walletPackage, record.walletUriBase, record.walletIcon, record.walletType)
 
-internal fun authCacheHasKnownProvider(record: AgentMwaAuthRecord): Boolean =
-    authCacheProviderKey(record) != AUTH_CACHE_PROVIDER_UNKNOWN
-
 internal fun authCacheProviderKey(
     walletPackage: String,
     walletUriBase: String,

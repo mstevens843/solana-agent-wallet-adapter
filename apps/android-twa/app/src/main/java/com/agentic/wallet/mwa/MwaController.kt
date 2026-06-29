@@ -85,16 +85,6 @@ class MwaController(
             )
             return null
         }
-        if (!authCacheHasKnownProvider(latest)) {
-            AgentMwaLog.warn(
-                "MwaController",
-                "reconnectLatest",
-                "RESULT_FAIL",
-                "latest cached authorization is missing provider identity",
-                mapOf("cluster" to cluster.id, "sessionKey" to authCacheKey(latest), "pubkey" to latest.publicKeyBase58),
-            )
-            return null
-        }
         return restoreCachedRecord("reconnectLatest", latest, cluster)
     }
 
@@ -287,7 +277,6 @@ class MwaController(
         sender: ActivityResultSender,
         cluster: AgentCluster,
         targetWalletPackage: String = "",
-        targetWalletType: Int = WalletRegistry.UNKNOWN,
         forceFresh: Boolean = true,
     ): AgentMwaAuthRecord = withKeepAlive("connect") {
         cache.clearBlacklist()
@@ -303,7 +292,6 @@ class MwaController(
             mapOf(
                 "cluster" to cluster.id,
                 "targetWalletPackage" to targetWalletPackage,
-                "targetWalletType" to targetWalletType,
                 "forceFresh" to forceFresh,
                 "path" to path,
                 "hadActiveRecord" to (activeRecord != null),
@@ -313,7 +301,7 @@ class MwaController(
         val adapter = newAdapter(cluster, cachedReference)
         when (val result = adapter.connect(sender)) {
             is TransactionResult.Success -> {
-                val record = applyAuthorization(result.authResult, cluster, targetWalletPackage, targetWalletType)
+                val record = applyAuthorization(result.authResult, cluster, targetWalletPackage)
                 AgentMwaLog.info(
                     "MwaController",
                     "connect",
@@ -333,8 +321,6 @@ class MwaController(
         cluster: AgentCluster,
         domain: String,
         statement: String,
-        targetWalletPackage: String = "",
-        targetWalletType: Int = WalletRegistry.UNKNOWN,
     ): AgentMwaSignInResult = withKeepAlive("connectWithSignIn") {
         if (domain.isBlank() || statement.isBlank()) {
             throwOperation(
@@ -344,13 +330,13 @@ class MwaController(
                 mapOf("domain" to domain, "statement" to statement, "domainLen" to domain.length, "statementLen" to statement.length),
             )
         }
-        val unsupportedWalletPackage = targetWalletPackage.ifBlank { activeRecord?.walletPackage.orEmpty() }
-        if (unsupportedWalletPackage.isNotBlank() && !WalletRegistry.supportsSiws(unsupportedWalletPackage)) {
+        val record = activeRecord
+        if (record?.walletPackage?.let { !WalletRegistry.supportsSiws(it) } == true) {
             throwOperation(
                 "connectWithSignIn",
                 "FAIL_SIWS_UNSUPPORTED",
                 MwaOperationException("SIWS_UNSUPPORTED_FOR_WALLET", "This wallet is known to fail Sign In With Solana over MWA."),
-                authRecordMetadata(activeRecord) + mapOf("targetWalletPackage" to targetWalletPackage, "targetWalletType" to targetWalletType),
+                authRecordMetadata(record),
             )
         }
         val adapter = newAdapter(cluster, null)
@@ -360,11 +346,11 @@ class MwaController(
             "connectWithSignIn",
             "START",
             "opening wallet SIWS authorization",
-            mapOf("cluster" to cluster.id, "domain" to domain, "statement" to statement, "statementLen" to statement.length, "targetWalletPackage" to targetWalletPackage, "targetWalletType" to targetWalletType),
+            mapOf("cluster" to cluster.id, "domain" to domain, "statement" to statement, "statementLen" to statement.length),
         )
         when (val result = adapter.signIn(sender, payload)) {
             is TransactionResult.Success -> {
-                val applied = applyAuthorization(result.authResult, cluster, targetWalletPackage, targetWalletType)
+                val applied = applyAuthorization(result.authResult, cluster, record?.walletPackage.orEmpty())
                 // Parity with grant-godot PR #453 and Unity PR #SIWS:
                 // Prefer the wallet's native sign_in_result. If the wallet doesn't return
                 // one (Jupiter etc.), the Kotlin clientlib falls back to sign_messages
@@ -386,7 +372,6 @@ class MwaController(
                     features = account?.features?.toList().orEmpty(),
                     authToken = applied.authToken,
                     walletPackage = applied.walletPackage,
-                    walletType = applied.walletType,
                     cluster = applied.cluster.id,
                     path = path,
                 )
@@ -497,7 +482,7 @@ class MwaController(
         AgentMwaLog.info("MwaController", "getCapabilities", "START", "opening wallet get_capabilities request", authRecordMetadata(record))
         when (val result = adapter.transact(sender) { _ -> getCapabilities() }) {
             is TransactionResult.Success -> {
-                val updatedRecord = applyAuthorization(result.authResult, record.cluster, record.walletPackage, record.walletType)
+                val updatedRecord = applyAuthorization(result.authResult, record.cluster, record.walletPackage)
                 val caps = result.payload
                 val csv = "maxTransactions=${caps.maxTransactionsPerSigningRequest}," +
                     "maxMessages=${caps.maxMessagesPerSigningRequest}," +
@@ -603,7 +588,7 @@ class MwaController(
             )
             when (result) {
                 is TransactionResult.Success -> {
-                    applyAuthorization(result.authResult, record.cluster, record.walletPackage, record.walletType)
+                    applyAuthorization(result.authResult, record.cluster, record.walletPackage)
                     result.payload.map { signature ->
                         if (signature.isEmpty()) {
                             throwOperation(
@@ -647,7 +632,7 @@ class MwaController(
             )
             when (val result = adapter.transact(sender) { _ -> signTransactions(transactions) }) {
                 is TransactionResult.Success -> {
-                    applyAuthorization(result.authResult, record.cluster, record.walletPackage, record.walletType)
+                    applyAuthorization(result.authResult, record.cluster, record.walletPackage)
                     val signed = result.payload.signedPayloads?.filterNotNull().orEmpty()
                     if (signed.isEmpty()) {
                         throwOperation(
@@ -970,7 +955,7 @@ class MwaController(
         )
         return when (result) {
             is TransactionResult.Success -> {
-                applyAuthorization(result.authResult, record.cluster, record.walletPackage, record.walletType)
+                applyAuthorization(result.authResult, record.cluster, record.walletPackage)
                 val signatures = result.payload.signatures?.filterNotNull().orEmpty()
                 if (signatures.isEmpty()) {
                     throwOperation(
@@ -1036,7 +1021,7 @@ class MwaController(
         )
         return when (result) {
             is TransactionResult.Success -> {
-                applyAuthorization(result.authResult, record.cluster, record.walletPackage, record.walletType)
+                applyAuthorization(result.authResult, record.cluster, record.walletPackage)
                 val signed = result.payload.signedPayloads?.filterNotNull().orEmpty()
                 if (signed.isEmpty()) {
                     throwOperation(
@@ -1070,7 +1055,7 @@ class MwaController(
             if (err.code != "WALLET_AUTH_MISMATCH") throw err
             val previous = requireActive(method)
             AgentMwaLog.warn("MwaController", method, "STEP_AUTH_MISMATCH", "attempting one-shot reauthorization", authRecordMetadata(previous))
-            val reauthorized = connect(sender, previous.cluster, previous.walletPackage, previous.walletType, forceFresh = true)
+            val reauthorized = connect(sender, previous.cluster, previous.walletPackage, forceFresh = true)
             if (reauthorized.publicKeyBase58 != previous.publicKeyBase58) {
                 throwOperation(
                     method,
@@ -1280,7 +1265,6 @@ class MwaController(
         auth: AuthorizationResult,
         cluster: AgentCluster,
         targetWalletPackage: String,
-        targetWalletType: Int,
     ): AgentMwaAuthRecord {
         val publicKeyBytes = auth.publicKey ?: auth.accounts?.firstOrNull()?.publicKey ?: ByteArray(0)
         val publicKeyBase58 = Base58.encode(publicKeyBytes)
@@ -1290,7 +1274,6 @@ class MwaController(
             publicKeyBase58 = publicKeyBase58,
             cluster = cluster,
             targetWalletPackage = targetWalletPackage,
-            targetWalletType = targetWalletType,
             walletUriBase = walletUriBase,
             walletIcon = walletIcon,
         )
@@ -1301,7 +1284,6 @@ class MwaController(
             walletUriBase = walletUriBase,
             walletIcon = walletIcon,
             targetWalletPackage = targetWalletPackage,
-            targetWalletType = targetWalletType,
             accountLabel = auth.accountLabel ?: auth.accounts?.firstOrNull()?.accountLabel ?: "",
             cluster = cluster,
             existing = existing,
@@ -1318,8 +1300,6 @@ class MwaController(
                 "publicKeyBytes" to publicKeyBytes.size,
                 "incomingAuthLen" to auth.authToken.orEmpty().length,
                 "preservedAuthToken" to (auth.authToken.isNullOrBlank() && existing?.authToken?.isNotBlank() == true),
-                "targetWalletPackage" to targetWalletPackage,
-                "targetWalletType" to targetWalletType,
             ),
         )
         return record
@@ -1329,14 +1309,12 @@ class MwaController(
         publicKeyBase58: String,
         cluster: AgentCluster,
         targetWalletPackage: String,
-        targetWalletType: Int,
         walletUriBase: String,
         walletIcon: String,
     ): AgentMwaAuthRecord? {
         if (publicKeyBase58.isBlank()) return null
         val inferredPackage = WalletRegistry.inferPackage(walletUriBase, targetWalletPackage, walletIcon)
-        val inferredWalletType = targetWalletType.takeIf { it != WalletRegistry.UNKNOWN }
-            ?: WalletRegistry.walletType(inferredPackage, walletUriBase, walletIcon)
+        val inferredWalletType = WalletRegistry.walletType(inferredPackage, walletUriBase, walletIcon)
         val incomingProviderKey = authCacheProviderKey(targetWalletPackage, walletUriBase, walletIcon, inferredWalletType)
         cache.find(
             pubkeyBase58 = publicKeyBase58,
@@ -1991,34 +1969,21 @@ internal fun buildAppliedAuthorizationRecord(
     walletUriBase: String,
     walletIcon: String,
     targetWalletPackage: String,
-    targetWalletType: Int,
     accountLabel: String,
     cluster: AgentCluster,
     existing: AgentMwaAuthRecord?,
     capabilitiesCsv: String,
     timestampUnixSeconds: Long = System.currentTimeMillis() / 1000L,
 ): AgentMwaAuthRecord {
-    val incomingWalletType = targetWalletType.takeIf { it != WalletRegistry.UNKNOWN }
-        ?: WalletRegistry.walletType(targetWalletPackage, walletUriBase, walletIcon)
-    val incomingProviderKey = authCacheProviderKey(targetWalletPackage, walletUriBase, walletIcon, incomingWalletType)
-    val unknownProviderKey = authCacheProviderKey("", "", "", WalletRegistry.UNKNOWN)
-    val compatibleExisting = existing?.takeIf { record ->
-        incomingProviderKey == unknownProviderKey || authCacheProviderKey(record) == incomingProviderKey
-    }
-    val resolvedWalletUriBase = walletUriBase.ifBlank { compatibleExisting?.walletUriBase.orEmpty() }
-    val resolvedWalletIcon = walletIcon.ifBlank { compatibleExisting?.walletIcon.orEmpty() }
-    val resolvedTargetWalletPackage = targetWalletPackage.ifBlank { compatibleExisting?.walletPackage.orEmpty() }
-    val authToken = incomingAuthToken.ifBlank { compatibleExisting?.authToken.orEmpty() }
+    val resolvedWalletUriBase = walletUriBase.ifBlank { existing?.walletUriBase.orEmpty() }
+    val resolvedWalletIcon = walletIcon.ifBlank { existing?.walletIcon.orEmpty() }
+    val resolvedTargetWalletPackage = targetWalletPackage.ifBlank { existing?.walletPackage.orEmpty() }
+    val authToken = incomingAuthToken.ifBlank { existing?.authToken.orEmpty() }
     val walletPackage = WalletRegistry.inferPackage(
         resolvedWalletUriBase,
         resolvedTargetWalletPackage,
         resolvedWalletIcon,
     )
-    val inferredWalletType = WalletRegistry.walletType(walletPackage, resolvedWalletUriBase, resolvedWalletIcon)
-    val walletType = targetWalletType.takeIf { it != WalletRegistry.UNKNOWN }
-        ?: inferredWalletType.takeIf { it != WalletRegistry.UNKNOWN }
-        ?: compatibleExisting?.walletType
-        ?: WalletRegistry.UNKNOWN
     return AgentMwaAuthRecord(
         publicKeyBase58 = publicKeyBase58,
         publicKeyBytes = publicKeyBytes,
@@ -2026,12 +1991,12 @@ internal fun buildAppliedAuthorizationRecord(
         walletUriBase = resolvedWalletUriBase,
         walletIcon = resolvedWalletIcon,
         walletPackage = walletPackage,
-        walletType = walletType,
-        accountLabel = accountLabel.ifBlank { compatibleExisting?.accountLabel.orEmpty() },
+        walletType = WalletRegistry.walletType(walletPackage, resolvedWalletUriBase, resolvedWalletIcon),
+        accountLabel = accountLabel.ifBlank { existing?.accountLabel.orEmpty() },
         cluster = cluster,
         timestampUnixSeconds = timestampUnixSeconds,
         authenticated = true,
-        capabilitiesCsv = capabilitiesCsv.ifBlank { compatibleExisting?.capabilitiesCsv.orEmpty() },
+        capabilitiesCsv = capabilitiesCsv.ifBlank { existing?.capabilitiesCsv.orEmpty() },
     )
 }
 
