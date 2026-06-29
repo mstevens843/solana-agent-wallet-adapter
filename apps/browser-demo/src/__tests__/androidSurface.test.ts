@@ -1,6 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { resolveAndroidAppSurface } from '../androidNative.js';
+import {
+  AndroidNativeWalletBackend,
+  resolveAndroidAppSurface,
+  restoreLatestAndroidNativeWallet,
+} from '../androidNative.js';
+
+type AndroidCallbackBridge = {
+  resolve(requestId: string, payload: unknown): void;
+  reject(requestId: string, error: { code?: string; message?: string }): void;
+};
+
+type AndroidWindow = Window & {
+  __agenticAndroidMwaBridge?: AndroidCallbackBridge;
+};
 
 // Regression guard for the "some Android UI doesn't update from Render" bug.
 //
@@ -20,6 +33,7 @@ import { resolveAndroidAppSurface } from '../androidNative.js';
 // itself is covered by the vite `define` config tests.
 describe('resolveAndroidAppSurface (flagless / live-Render bundle)', () => {
   afterEach(() => {
+    clearAndroidTestWindow();
     vi.unstubAllGlobals();
   });
 
@@ -32,3 +46,126 @@ describe('resolveAndroidAppSurface (flagless / live-Render bundle)', () => {
     expect(resolveAndroidAppSurface()).toBe(true);
   });
 });
+
+describe('AndroidNativeWalletBackend cached restore', () => {
+  afterEach(() => {
+    clearAndroidTestWindow();
+    vi.unstubAllGlobals();
+  });
+
+  it('restores the native cached authorization without opening a fresh connect', async () => {
+    const calls: string[] = [];
+    installAndroidBridge((method) => {
+      calls.push(method);
+      if (method === 'reconnectLatest') {
+        return androidStatus({ connected: true, address: 'Android11111111111111111111111111111111' });
+      }
+      throw new Error(`unexpected Android MWA method ${method}`);
+    });
+
+    const restored = await restoreLatestAndroidNativeWallet({ cluster: 'mainnet-beta' });
+
+    expect(restored).toMatchObject({
+      address: 'Android11111111111111111111111111111111',
+      walletName: 'Phantom',
+      cacheCount: 1,
+    });
+    expect(calls).toEqual(['reconnectLatest']);
+  });
+
+  it('lazy getAddress tries cached reconnect before fresh connect after a cold start', async () => {
+    const calls: string[] = [];
+    installAndroidBridge((method) => {
+      calls.push(method);
+      if (method === 'status') {
+        return androidStatus({ connected: false });
+      }
+      if (method === 'reconnectLatest') {
+        return androidStatus({ connected: true, address: 'Android22222222222222222222222222222222' });
+      }
+      throw new Error(`unexpected Android MWA method ${method}`);
+    });
+
+    const backend = new AndroidNativeWalletBackend({ cluster: 'mainnet-beta' });
+
+    await expect(backend.getAddress()).resolves.toBe('Android22222222222222222222222222222222');
+    expect(calls).toEqual(['status', 'reconnectLatest']);
+  });
+
+  it('does not report a disconnected native authorization as restored', async () => {
+    installAndroidBridge((method) => {
+      if (method === 'reconnectLatest') {
+        return androidStatus({ connected: false, cachedCount: 1 });
+      }
+      throw new Error(`unexpected Android MWA method ${method}`);
+    });
+
+    await expect(restoreLatestAndroidNativeWallet({ cluster: 'mainnet-beta' })).resolves.toBeNull();
+  });
+});
+
+function installAndroidBridge(handler: (method: string, payload: Record<string, unknown>) => unknown): void {
+  const testWindow = installAndroidTestWindow();
+  vi.stubGlobal('AgenticAndroid', {
+    mwaRequest: vi.fn((requestId: string, method: string, payloadJson: string) => {
+      try {
+        const payload = JSON.parse(payloadJson) as Record<string, unknown>;
+        const result = handler(method, payload);
+        testWindow.__agenticAndroidMwaBridge?.resolve(requestId, result);
+      } catch (err) {
+        testWindow.__agenticAndroidMwaBridge?.reject(requestId, {
+          code: 'TEST_ERROR',
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }),
+  });
+}
+
+function installAndroidTestWindow(): AndroidWindow {
+  const testWindow = {
+    setTimeout: globalThis.setTimeout.bind(globalThis),
+    clearTimeout: globalThis.clearTimeout.bind(globalThis),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  } as unknown as AndroidWindow;
+  vi.stubGlobal('window', testWindow);
+  return testWindow;
+}
+
+function clearAndroidTestWindow(): void {
+  const testWindow = (globalThis as typeof globalThis & { window?: AndroidWindow }).window;
+  if (testWindow) {
+    delete testWindow.__agenticAndroidMwaBridge;
+  }
+}
+
+function androidStatus(input: {
+  connected: boolean;
+  address?: string;
+  cachedCount?: number;
+}): Record<string, unknown> {
+  const address = input.address ?? '';
+  return {
+    connected: input.connected,
+    cachedCount: input.cachedCount ?? 1,
+    ...(address && {
+      address,
+      cluster: 'mainnet-beta',
+      walletPackage: 'app.phantom',
+      walletType: 1,
+      capabilities: {
+        backend: 'android-native-mwa',
+        cluster: ['mainnet-beta'],
+        address,
+        supports: {
+          signMessage: false,
+          signTransaction: true,
+          signAndSendTransaction: true,
+          multiSign: true,
+          simulationPreview: false,
+        },
+      },
+    }),
+  };
+}

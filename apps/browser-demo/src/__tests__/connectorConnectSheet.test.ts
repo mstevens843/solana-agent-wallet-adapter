@@ -70,15 +70,18 @@ describe('connector connect native sheet', () => {
 
   it('keeps required-credential inputs visible when saved-key storage has an auth or storage error', () => {
     const preferencesInlineBody = sourceBetween('function protocolConnectorCredentialInline', 'function connectedDappRow');
-    const connectSheetBody = sourceBetween('function connectorConnectSurfaceHtml', 'function connectorConnectReadiness');
+    const connectSheetBody = sourceBetween('function connectorConnectSurfaceParts', 'function connectorConnectReadiness');
 
     expect(preferencesInlineBody).toContain('data-protocol-connector-credential-field="apiKey"');
     expect(preferencesInlineBody).toContain('data-protocol-connector-credential-paste');
+    expect(preferencesInlineBody).not.toContain('data-protocol-connector-credential-field="baseUrl"');
     expect(preferencesInlineBody).not.toContain('saved || storageBlocked');
     expect(connectSheetBody).toContain('data-connector-connect-key');
     expect(connectSheetBody).toContain('data-connector-connect-key-paste');
+    expect(connectSheetBody).not.toContain('data-connector-connect-baseurl');
     expect(connectSheetBody).toContain('credentialNotice');
     expect(connectSheetBody).not.toContain('credentialLoading || credentialStorageBlocked');
+    expect(connectorKeysSource).not.toContain('name="baseUrl"');
   });
 
   it('routes connector-secret storage through the Cloud-authenticated fetch transport', () => {
@@ -110,18 +113,42 @@ describe('connector connect native sheet', () => {
     expect(gateBindBody).toContain("gate.dataset.connectGateSurface === 'chat'");
   });
 
-  it('renders a branded native bottom sheet instead of inline-styled popover controls', () => {
+  it('renders native connector prompts through the shared mobile rail sheet', () => {
     expect(mainSource).toContain("brandLogo(protocolConnectorLogoId(connector.id), 'connector-connect-logo')");
-    expect(mainSource).toContain("'connector-connect-popover connector-connect-sheet'");
-    expect(mainSource).toContain('class="connector-connect-overlay ${nativeSheet ?');
+    expect(mainSource).toContain("'connector-connect'");
+    expect(mainSource).toContain("sheet === 'connector-connect' ? connectorConnectSurfaceParts()");
+    expect(mainSource).toContain("state.activeMobileRailSheet = 'connector-connect'");
+    expect(mainSource).toContain('function connectorConnectUsesNativeRailSheet()');
+    expect(mainSource).toContain("if (!connectorConnectUsesNativeRailSheet() || !connectorSheet) return '';");
+    expect(mainSource).toContain("if (connectorConnectUsesNativeRailSheet()) return '';");
+    expect(mainSource).toContain('bindConnectorConnectSurface();');
     expect(mainSource).not.toContain('connector-connect-actions" style=');
     expect(mainSource).not.toContain('style="${sheet ?');
 
-    expect(stylesSource).toContain('.connector-connect-overlay.native-sheet');
-    expect(stylesSource).toContain('.connector-connect-sheet');
+    expect(stylesSource).not.toContain('.connector-connect-overlay.native-sheet');
+    expect(stylesSource).not.toContain('.connector-connect-sheet');
+    expect(stylesSource).toContain('.route-app .mobile-rail-sheet.connector-connect');
     expect(stylesSource).toContain('grid-template-columns: minmax(104px, 0.72fr) minmax(132px, 1fr);');
     expect(stylesSource).toContain('.connector-connect-secondary,');
     expect(stylesSource).toContain('white-space: nowrap;');
+  });
+
+  it('shows provider-branded native wallet connected toasts', () => {
+    const toastModelBlock = sourceBetween('interface Toast {', 'const LOCAL_WORKSPACE_BOUNDARY_TOAST_KEY');
+    const helperBlock = sourceBetween('function walletConnectedToastTitle', 'async function runDiscover');
+    const toastStackBlock = sourceBetween('function toastStack()', 'function pushToast(');
+    const connectBlock = sourceBetween('async function runConnect(', 'async function runDisconnect()');
+
+    expect(toastModelBlock).toContain('logoId?: WalletProviderLogoId;');
+    expect(helperBlock).toContain("const walletLabel = /\\bwallet$/iu.test(name) ? name : `${name} wallet`;");
+    expect(helperBlock).toContain("tf('{name} connected', { name: walletLabel })");
+    expect(helperBlock).toContain('pushNativeWalletConnectedToast');
+    expect(helperBlock).toContain('logoId ? { logoId } : {}');
+    expect(toastStackBlock).toContain('toastIconContent(toast)');
+    expect(stylesSource).toContain('.toast-wallet-logo');
+
+    expect(connectBlock).toContain('pushNativeWalletConnectedToast();');
+    expect(mainSource).not.toContain("pushToast('success', t('iOS wallet connected'), short(state.address))");
   });
 
   it('keeps the command Plan Connector setup out of the API-key form grid', () => {

@@ -134,6 +134,33 @@ describe('mobile rail sheet policy', () => {
     })).toBe(true);
   });
 
+  it('keeps connector-connect sheets on the opener tab while mobile', () => {
+    expect(shouldClearActiveMobileRailSheet({
+      activeTab: 'overview',
+      mobileViewport: true,
+      route: '/app',
+      sheet: 'connector-connect',
+    })).toBe(false);
+    expect(shouldClearActiveMobileRailSheet({
+      activeTab: 'chat',
+      mobileViewport: true,
+      route: '/app',
+      sheet: 'connector-connect',
+    })).toBe(false);
+    expect(shouldClearActiveMobileRailSheet({
+      activeTab: 'recurring',
+      mobileViewport: false,
+      route: '/app',
+      sheet: 'connector-connect',
+    })).toBe(true);
+    expect(shouldClearActiveMobileRailSheet({
+      activeTab: 'chat',
+      mobileViewport: true,
+      route: '/connect',
+      sheet: 'connector-connect',
+    })).toBe(true);
+  });
+
   it('applies the body sheet dataset for the chat-wallet-balances sheet on the chat tab', () => {
     expect(shouldApplyMobileRailBodyDataset({
       activeTab: 'chat',
@@ -176,6 +203,27 @@ describe('mobile rail sheet policy', () => {
       mobileViewport: true,
       route: '/app',
       sheet: 'chat-research',
+    })).toBe(false);
+  });
+
+  it('applies the body sheet dataset for connector-connect on any app tab while mobile', () => {
+    expect(shouldApplyMobileRailBodyDataset({
+      activeTab: 'overview',
+      mobileViewport: true,
+      route: '/app',
+      sheet: 'connector-connect',
+    })).toBe(true);
+    expect(shouldApplyMobileRailBodyDataset({
+      activeTab: 'chat',
+      mobileViewport: true,
+      route: '/app',
+      sheet: 'connector-connect',
+    })).toBe(true);
+    expect(shouldApplyMobileRailBodyDataset({
+      activeTab: 'chat',
+      mobileViewport: false,
+      route: '/app',
+      sheet: 'connector-connect',
     })).toBe(false);
   });
 

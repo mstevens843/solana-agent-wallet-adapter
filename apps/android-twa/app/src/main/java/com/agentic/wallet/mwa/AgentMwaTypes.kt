@@ -69,6 +69,8 @@ data class AgentMwaAuthRecord(
     val capabilitiesCsv: String = "",
 ) {
     fun hasUsableAuthorization(): Boolean = publicKeyBase58.isNotBlank() && authToken.isNotBlank()
+
+    fun hasRestorableAuthorization(): Boolean = hasUsableAuthorization() && authenticated
 }
 
 data class AgentMwaSigningResult(

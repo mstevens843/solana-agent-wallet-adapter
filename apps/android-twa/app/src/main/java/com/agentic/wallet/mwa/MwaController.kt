@@ -83,13 +83,19 @@ class MwaController(
             )
             return null
         }
-        if (!latest.hasUsableAuthorization()) {
+        if (!latest.hasRestorableAuthorization()) {
             AgentMwaLog.warn(
                 "MwaController",
                 "reconnectLatest",
                 "RESULT_FAIL",
-                "cached authorization is missing required auth material",
-                mapOf("pubkey" to latest.publicKeyBase58, "authLen" to latest.authToken.length, "walletPackage" to latest.walletPackage),
+                "cached authorization is not restorable",
+                mapOf(
+                    "pubkey" to latest.publicKeyBase58,
+                    "authLen" to latest.authToken.length,
+                    "walletPackage" to latest.walletPackage,
+                    "authenticated" to latest.authenticated,
+                    "usableAuth" to latest.hasUsableAuthorization(),
+                ),
             )
             return null
         }
@@ -124,13 +130,19 @@ class MwaController(
             AgentMwaLog.warn("MwaController", "reconnectForPubkey", "RESULT_FAIL", "cached authorization not found", mapOf("pubkey" to pubkeyBase58, "cluster" to cluster.id))
             return null
         }
-        if (!record.hasUsableAuthorization()) {
+        if (!record.hasRestorableAuthorization()) {
             AgentMwaLog.warn(
                 "MwaController",
                 "reconnectForPubkey",
                 "RESULT_FAIL",
-                "cached authorization is missing required auth material",
-                mapOf("pubkey" to pubkeyBase58, "authLen" to record.authToken.length, "walletPackage" to record.walletPackage),
+                "cached authorization is not restorable",
+                mapOf(
+                    "pubkey" to pubkeyBase58,
+                    "authLen" to record.authToken.length,
+                    "walletPackage" to record.walletPackage,
+                    "authenticated" to record.authenticated,
+                    "usableAuth" to record.hasUsableAuthorization(),
+                ),
             )
             return null
         }
@@ -165,7 +177,7 @@ class MwaController(
             cache.set(record.copy(authenticated = false))
         }
         activeRecord = null
-        AgentMwaLog.info("MwaController", "disconnect", "DONE", "local session disconnected with cache retained", mapOf("retainedPubkey" to record?.publicKeyBase58.orEmpty()))
+        AgentMwaLog.info("MwaController", "disconnect", "DONE", "local session disconnected; cached authorization marked inactive", mapOf("retainedPubkey" to record?.publicKeyBase58.orEmpty()))
     }
 
     fun clearTransientState(reason: String) {

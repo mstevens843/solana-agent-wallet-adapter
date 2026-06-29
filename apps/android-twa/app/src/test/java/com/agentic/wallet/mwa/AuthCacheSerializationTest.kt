@@ -2,6 +2,8 @@ package com.agentic.wallet.mwa
 
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AuthCacheSerializationTest {
@@ -59,5 +61,42 @@ class AuthCacheSerializationTest {
         assertEquals("com.solanamobile.seedvaultimpl", restored.walletPackage)
         assertEquals("https://intercom.help/seedvaultwallet/assets/favicon", restored.walletIcon)
         assertEquals(WalletRegistry.SEED_VAULT, restored.walletType)
+    }
+
+    @Test
+    fun authRecordFromJson_treatsOldTokenRecordsAsRestorableWhenAuthenticatedFieldMissing() {
+        val publicKeyBytes = ByteArray(32) { 10 }
+        val json = JSONObject()
+            .put("publicKeyBase58", Base58.encode(publicKeyBytes))
+            .put("publicKeyBytesBase58", Base58.encode(publicKeyBytes))
+            .put("authToken", "legacy-auth-token")
+            .put("walletPackage", "app.phantom")
+            .put("cluster", "mainnet-beta")
+            .put("timestampUnixSeconds", 1_716_000_000L)
+
+        val restored = authRecordFromJson(json)
+
+        assertTrue(restored.authenticated)
+        assertTrue(restored.hasUsableAuthorization())
+        assertTrue(restored.hasRestorableAuthorization())
+    }
+
+    @Test
+    fun authRecordFromJson_keepsExplicitlyDisconnectedRecordsNonRestorable() {
+        val publicKeyBytes = ByteArray(32) { 12 }
+        val json = JSONObject()
+            .put("publicKeyBase58", Base58.encode(publicKeyBytes))
+            .put("publicKeyBytesBase58", Base58.encode(publicKeyBytes))
+            .put("authToken", "cached-auth-token")
+            .put("walletPackage", "app.phantom")
+            .put("cluster", "mainnet-beta")
+            .put("timestampUnixSeconds", 1_716_000_000L)
+            .put("authenticated", false)
+
+        val restored = authRecordFromJson(json)
+
+        assertFalse(restored.authenticated)
+        assertTrue(restored.hasUsableAuthorization())
+        assertFalse(restored.hasRestorableAuthorization())
     }
 }

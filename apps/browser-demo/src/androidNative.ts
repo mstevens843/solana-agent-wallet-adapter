@@ -243,6 +243,10 @@ export class AndroidNativeWalletBackend implements WalletBackend {
     if (status.address) {
       return status.address;
     }
+    const restoredAddress = await this.reconnectLatest();
+    if (restoredAddress) {
+      return restoredAddress;
+    }
     return this.connect();
   }
 

@@ -268,20 +268,13 @@ function onDocumentSubmit(event: Event): void {
   if (!connectorAttr || !isByoKeyConnectorId(connectorAttr)) return;
   const data = new FormData(form);
   const apiKey = String(data.get('apiKey') ?? '').trim();
-  const baseUrlRaw = String(data.get('baseUrl') ?? '').trim();
   if (!apiKey) {
     const fieldLabel = connectorCredentialFieldLabel(BYO_KEY_CONNECTOR_META[connectorAttr]);
     panelState.error = tf('{label} is required.', { label: fieldLabel });
     renderAll();
     return;
   }
-  const normalizedBaseUrl = normalizeConnectorBaseUrlInput(baseUrlRaw);
-  if (normalizedBaseUrl.error) {
-    panelState.error = normalizedBaseUrl.error;
-    renderAll();
-    return;
-  }
-  void runSave(connectorAttr, { apiKey, baseUrl: normalizedBaseUrl.value });
+  void runSave(connectorAttr, { apiKey });
 }
 
 function isInsideMountedPanel(element: HTMLElement): boolean {
@@ -491,7 +484,7 @@ function renderActions(id: ByoKeyConnectorId, summary: ConnectorSecretSummary, b
   `;
 }
 
-function renderForm(id: ByoKeyConnectorId, summary: ConnectorSecretSummary): string {
+function renderForm(id: ByoKeyConnectorId, _summary: ConnectorSecretSummary): string {
   const meta = BYO_KEY_CONNECTOR_META[id];
   const fieldLabel = connectorCredentialFieldLabel(meta);
   const placeholder = connectorCredentialPlaceholder(meta);
@@ -500,10 +493,6 @@ function renderForm(id: ByoKeyConnectorId, summary: ConnectorSecretSummary): str
       <label>
         <span>${escapeHtml(fieldLabel)}</span>
         <input type="password" name="apiKey" autocomplete="off" required minlength="1" maxlength="1024" placeholder="${escapeAttr(placeholder)}" />
-      </label>
-      <label>
-        <span>${escapeHtml(t('Base URL'))} <em>${escapeHtml(t('(optional)'))}</em></span>
-        <input type="url" name="baseUrl" autocomplete="off" placeholder="${escapeAttr(meta.defaultBaseUrl)}" value="${escapeAttr(summary.baseUrl ?? '')}" />
       </label>
       <div class="connector-key-actions">
         <button type="submit" class="primary">${escapeHtml(t('Save'))}</button>
@@ -515,28 +504,6 @@ function renderForm(id: ByoKeyConnectorId, summary: ConnectorSecretSummary): str
 
 function isByoKeyConnectorId(value: string): value is ByoKeyConnectorId {
   return (BYO_KEY_CONNECTOR_IDS as readonly string[]).includes(value);
-}
-
-function normalizeConnectorBaseUrlInput(value: string): { value?: string; error?: string } {
-  const trimmed = value.trim().replace(/\/+$/, '');
-  if (!trimmed) return {};
-  let parsed: URL;
-  try {
-    parsed = new URL(trimmed);
-  } catch {
-    return { error: t('Base URL must be a valid URL.') };
-  }
-  if (parsed.protocol === 'https:') return { value: trimmed };
-  if (parsed.protocol === 'http:' && isLocalHttpHost(parsed.hostname)) return { value: trimmed };
-  return { error: t('Base URL must use HTTPS, except localhost HTTP for a local connector.') };
-}
-
-function isLocalHttpHost(hostname: string): boolean {
-  const normalized = hostname.trim().toLowerCase();
-  return normalized === 'localhost' ||
-    normalized === '127.0.0.1' ||
-    normalized === '::1' ||
-    normalized === '[::1]';
 }
 
 function formatDate(iso: string): string {

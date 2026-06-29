@@ -15,6 +15,20 @@ const ESCAPED_SEED_VAULT_ICON =
   'QChlppOaiUo1Z22pIwKl0xN6leqUK+T8P\\/q4PWPnCdaVAAAAAElFTkSuQmCC';
 
 describe('wallet branding helpers', () => {
+  it('maps native wallet connected-toast providers to bundled wallet logos', () => {
+    expect(walletLogoIdForProviderName('Phantom')).toBe('phantom');
+    expect(walletLogoIdForProviderName('Solflare')).toBe('solflare');
+    expect(walletLogoIdForProviderName('Backpack')).toBe('backpack');
+    expect(walletLogoIdForProviderName('Jupiter')).toBe('jupiter');
+    expect(walletLogoIdForProviderName('Seed Vault')).toBe('seedVault');
+
+    expect(androidWalletDisplayNameFromStatus({ walletPackage: 'app.phantom' })).toBe('Phantom');
+    expect(androidWalletDisplayNameFromStatus({ walletPackage: 'com.solflare.mobile' })).toBe('Solflare');
+    expect(androidWalletDisplayNameFromStatus({ walletPackage: 'com.backpack.mobile' })).toBe('Backpack');
+    expect(androidWalletDisplayNameFromStatus({ walletUriBase: 'https://jup.ag/wc' })).toBe('Jupiter');
+    expect(androidWalletDisplayNameFromStatus({ walletType: 50 })).toBe('Seed Vault');
+  });
+
   it('maps Solflare Android package names to the Solflare display name and logo', () => {
     expect(
       androidWalletDisplayNameFromStatus({

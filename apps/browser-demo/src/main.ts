@@ -1091,7 +1091,7 @@ type AndroidAiIntroTab = 'benefits' | 'no-ai';
 type AndroidAiInfoTab = 'no-ai' | 'hosted' | 'bridge' | 'session' | 'device-agent' | 'plan-connector';
 type AiReviewSetupTab = 'api-key' | 'plan-connector';
 type AndroidCloudInfoTab = 'approval' | 'scheduler' | 'audit' | 'identity';
-type MobileRailSheet = 'workspace-storage' | 'ai-drafting' | 'wallet-balances' | 'chat-action' | 'chat-wallet-balances' | 'chat-research';
+type MobileRailSheet = 'workspace-storage' | 'ai-drafting' | 'wallet-balances' | 'chat-action' | 'chat-wallet-balances' | 'chat-research' | 'connector-connect';
 type ExpandNoteFieldRef =
   | { kind: 'agent-prompt' }
   | { kind: 'recurring-note' }
@@ -2072,6 +2072,7 @@ interface Toast {
   kind: ToastKind;
   title: string;
   message: string;
+  logoId?: WalletProviderLogoId;
   linkHref?: string;
   linkLabel?: string;
   actionLabel?: string;
@@ -2089,6 +2090,7 @@ interface Toast {
 }
 
 interface ToastOptions {
+  logoId?: WalletProviderLogoId;
   linkHref?: string;
   linkLabel?: string;
   actionLabel?: string;
@@ -2195,7 +2197,6 @@ interface ProtocolConnectorPrefs {
 
 interface ConnectorCredentialDraft {
   apiKey: string;
-  baseUrl: string;
 }
 
 interface ConnectorSecretsUiState {
@@ -10422,6 +10423,7 @@ function renderWorkspace(): void {
   // sheets' AbortControllers were aborted above and are re-armed here. The wallet rail can be
   // inserted by the morph path, so its specialized binders must run here too.
   bind();
+  bindConnectorConnectSurface();
   bindWalletSurfaceControls();
   restoreDisclosureOpenState(disclosureOpenState);
 
@@ -14996,35 +14998,47 @@ function androidBottomTabDock(): string {
 function mobileRailBottomSheet(): string {
   const sheet = state.activeMobileRailSheet;
   if (!sheet) return '';
+  const connectorSheet = sheet === 'connector-connect' ? connectorConnectSurfaceParts() : null;
   // The chat-action + chat-wallet-balances + chat-research sheets ride the Chat tab on the native Android/iOS
   // shells (NOT narrow web); the legacy workspace sheets stay overview-only on the broader
   // mobile-viewport gate.
-  if (sheet === 'chat-action' || sheet === 'chat-wallet-balances' || sheet === 'chat-research') {
+  if (sheet === 'connector-connect') {
+    if (!connectorConnectUsesNativeRailSheet() || !connectorSheet) return '';
+  } else if (sheet === 'chat-action' || sheet === 'chat-wallet-balances' || sheet === 'chat-research') {
     if (!(IS_ANDROID_APP || IS_IOS_APP) || state.activeTab !== 'chat') return '';
   } else if (!isMobileAppViewport() || state.activeTab !== 'overview') {
     return '';
   }
   const isWalletBalances = sheet === 'wallet-balances' || sheet === 'chat-wallet-balances';
+  const chatResearchDraftAction = sheet === 'chat-research' && state.chatResearchDraft
+    ? chatResearchActionById(state.chatResearchDraft.actionId)
+    : undefined;
   const title = sheet === 'workspace-storage'
     ? t('Workspace Storage')
+    : connectorSheet
+      ? connectorSheet.title
     : isWalletBalances
       ? t('Wallet Balances')
       : sheet === 'chat-research'
-        ? t('Research')
+        ? t(chatResearchDraftAction?.title ?? 'Research')
       : sheet === 'chat-action'
         ? chatActionSheetTitle()
         : t('AI Connector');
   const detail = sheet === 'workspace-storage'
     ? t('Browser-local workflow storage')
+    : connectorSheet
+      ? connectorSheet.detail
     : isWalletBalances
       ? t('Wallet portfolio')
       : sheet === 'chat-research'
-        ? t('Read-only market and wallet tools')
+        ? t(chatResearchDraftAction ? 'Set up research' : 'Read-only market and wallet tools')
       : sheet === 'chat-action'
         ? chatActionSheetDetail()
         : t('AI route and provider setup');
   const body = sheet === 'workspace-storage'
     ? cloudWorkspaceRailBody()
+    : connectorSheet
+      ? connectorSheet.body
     : isWalletBalances
       ? walletBalanceSheetBodyHtml()
       : sheet === 'chat-research'
@@ -15054,7 +15068,7 @@ function mobileRailBottomSheet(): string {
 }
 
 function isMobileRailSheet(value: string | undefined): value is MobileRailSheet {
-  return value === 'workspace-storage' || value === 'ai-drafting' || value === 'wallet-balances' || value === 'chat-action' || value === 'chat-wallet-balances' || value === 'chat-research';
+  return value === 'workspace-storage' || value === 'ai-drafting' || value === 'wallet-balances' || value === 'chat-action' || value === 'chat-wallet-balances' || value === 'chat-research' || value === 'connector-connect';
 }
 
 function preferredAiReviewSetupTabForMobileRailOpen(nextSheet: MobileRailSheet): AiReviewSetupTab {
@@ -15256,6 +15270,8 @@ function closeMobileRailSheet(): void {
     state.chatResearchOpen = false;
     state.chatResearchDraft = null;
     state.chatResearchConfirm = null;
+  } else if (state.activeMobileRailSheet === 'connector-connect') {
+    state.connectorConnect = null;
   }
   state.activeMobileRailSheet = null;
   render();
@@ -16600,7 +16616,7 @@ function connectorHasSavedCredential(id: string): boolean {
 }
 
 function connectorCredentialDraft(id: ByoKeyConnectorId): ConnectorCredentialDraft {
-  return state.protocolConnectorCredentialDrafts[id] ?? { apiKey: '', baseUrl: '' };
+  return state.protocolConnectorCredentialDrafts[id] ?? { apiKey: '' };
 }
 
 function connectorCredentialReady(id: string, draftApiKey = ''): boolean {
@@ -17433,19 +17449,6 @@ function protocolConnectorCredentialInline(connector: ProtocolConnector | undefi
           />
           <button type="button" class="ai-key-paste-btn" data-protocol-connector-credential-paste="${escapeHtml(connector.id)}" ${state.busy ? 'disabled' : ''} title="${escapeHtml(t('Paste your key from the clipboard'))}" aria-label="${escapeHtml(t('Paste key from clipboard'))}">${escapeHtml(t('Paste'))}</button>
         </div>
-      </label>
-      <label class="field compact protocol-connector-key-field">
-        <span>${escapeHtml(t('Base URL'))} <em>${escapeHtml(t('(optional)'))}</em></span>
-        <input
-          data-protocol-connector-credential="${escapeHtml(connector.id)}"
-          data-protocol-connector-credential-field="baseUrl"
-          type="url"
-          value="${escapeHtml(draft.baseUrl)}"
-          placeholder="${escapeHtml(meta.defaultBaseUrl)}"
-          autocomplete="off"
-          spellcheck="false"
-          ${state.busy ? 'disabled' : ''}
-        />
       </label>
     `;
   return `
@@ -18834,11 +18837,10 @@ async function enableProtocolConnectorFromPreferences(id: ConnectedDappId): Prom
       render();
       return;
     }
-    const baseUrl = draft.baseUrl.trim();
     try {
-      const summary = await saveConnectorSecret(id, { apiKey, ...(baseUrl ? { baseUrl } : {}) });
+      const summary = await saveConnectorSecret(id, { apiKey });
       updateConnectorSecretSummary(id, summary);
-      state.protocolConnectorCredentialDrafts[id] = { apiKey: '', baseUrl: '' };
+      state.protocolConnectorCredentialDrafts[id] = { apiKey: '' };
     } catch (err) {
       pushToast('error', t('Could not save credential'), err instanceof Error ? err.message : String(err));
       render();
@@ -18868,12 +18870,11 @@ function updateProtocolConnectorCatalogSelection(field: HTMLSelectElement): void
 
 function updateProtocolConnectorCredentialDraft(field: HTMLInputElement): void {
   const connector = field.dataset.protocolConnectorCredential;
-  const key = field.dataset.protocolConnectorCredentialField;
   if (!connector || !connectorNeedsCredential(connector)) return;
   const current = connectorCredentialDraft(connector);
   state.protocolConnectorCredentialDrafts[connector] = {
     ...current,
-    [key === 'baseUrl' ? 'baseUrl' : 'apiKey']: field.value,
+    apiKey: field.value,
   };
 }
 
@@ -21769,7 +21770,6 @@ interface ConnectorConnectSession {
   openerRoute: AppRoute | null;
   openerTab: ActiveTab;
   draftApiKey?: string;
-  draftBaseUrl?: string;
 }
 
 // Transient editing session for the chat "Recurring / DCA" surface. Mirrors ChatConnectorSession:
@@ -23934,7 +23934,7 @@ function chatResearchPasteInputWrap(inputHtml: string): string {
     </div>`;
 }
 
-function chatResearchDraftHtml(draft: ChatResearchDraft): string {
+function chatResearchDraftHtml(draft: ChatResearchDraft, variant: 'web' | 'sheet'): string {
   const action = chatResearchActionById(draft.actionId);
   if (!action) return '';
   const targetLabel = action.targetKind === 'wallet' ? t('Wallet address') : t('Token');
@@ -23953,6 +23953,25 @@ function chatResearchDraftHtml(draft: ChatResearchDraft): string {
       spellcheck="false"
       ${action.targetKind === 'token' ? 'inputmode="search"' : ''}
     />`;
+  if (variant === 'sheet') {
+    return `
+      <div class="chat-research-draft chat-research-draft--sheet">
+        <button type="button" class="chat-research-back" data-chat-research-back aria-label="${escapeHtml(t('Back to Research'))}">‹ ${escapeHtml(t('Research'))}</button>
+        <div class="chat-sheet-form chat-research-form" data-chat-sheet-form>
+          <div class="chat-sheet-fields mobile-planner-fields">
+            ${chatSheetFieldRow(`
+              <label class="field compact planner-field chat-research-field${action.targetKind === 'wallet' ? ' chat-sheet-mono' : ''}">
+                <span>${escapeHtml(targetLabel)}</span>
+                ${chatResearchPasteInputWrap(input)}
+                ${searchId ? `<div class="token-search-results chat-research-token-results" data-token-search-results="${escapeHtml(searchId)}">${tokenSearchDropdownHtml(searchId)}</div>` : ''}
+              </label>`)}
+          </div>
+          <div class="chat-sheet-confirm">
+            <button type="button" class="primary chat-research-run" data-chat-research-run="${escapeHtml(action.id)}">${escapeHtml(t('Run research'))}</button>
+          </div>
+        </div>
+      </div>`;
+  }
   return `
     <div class="chat-research-draft">
       <button type="button" class="chat-research-back" data-chat-research-back aria-label="${escapeHtml(t('Back'))}">‹ ${escapeHtml(t('Back'))}</button>
@@ -23978,7 +23997,7 @@ function chatResearchPanelHtml(variant: 'web' | 'sheet'): string {
   const draft = state.chatResearchDraft;
   return `
     <div class="chat-research-panel chat-research-panel--${variant}">
-      ${draft ? chatResearchDraftHtml(draft) : `
+      ${draft ? chatResearchDraftHtml(draft, variant) : `
         <div class="chat-plus-head chat-research-head">
           <span class="chat-plus-group">${escapeHtml(t('Research'))}</span>
         </div>
@@ -25478,6 +25497,29 @@ function chatScrollToBottom(force = false): void {
   if (!scroller) return;
   if (force || chatScrollPinned) {
     scroller.scrollTop = scroller.scrollHeight;
+  }
+}
+
+function syncChatScrollPill(scroller = chatScroller()): void {
+  const pill = document.querySelector<HTMLButtonElement>('[data-chat-scroll-pill]');
+  if (!pill || !scroller) return;
+  pill.classList.toggle('visible', !chatIsPinnedToBottom(scroller));
+}
+
+function chatJumpToBottom(scroller = chatScroller()): void {
+  if (!scroller) return;
+  chatScrollPinned = true;
+  chatForceScrollBottom = false;
+  const snap = (): void => {
+    scroller.scrollTop = scroller.scrollHeight;
+  };
+  snap();
+  syncChatScrollPill(scroller);
+  if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+    window.requestAnimationFrame(() => {
+      snap();
+      syncChatScrollPill(scroller);
+    });
   }
 }
 
@@ -28266,15 +28308,9 @@ function bindChat(): void {
   const pill = document.querySelector<HTMLButtonElement>('[data-chat-scroll-pill]');
   const pillScroller = chatScroller();
   if (pill && pillScroller) {
-    const syncPill = (): void => { pill.classList.toggle('visible', !chatIsPinnedToBottom(pillScroller)); };
-    bindOnce(pillScroller, 'scroll', syncPill, { passive: true });
-    bindOnce(pill, 'click', () => {
-      chatScrollPinned = true;
-      chatForceScrollBottom = false;
-      pillScroller.scrollTo({ top: pillScroller.scrollHeight, behavior: 'smooth' });
-      pill.classList.remove('visible');
-    });
-    syncPill();
+    bindOnce(pillScroller, 'scroll', () => syncChatScrollPill(pillScroller), { passive: true });
+    bindOnce(pill, 'click', () => chatJumpToBottom(pillScroller));
+    syncChatScrollPill(pillScroller);
   }
   const composer = document.querySelector<HTMLFormElement>('[data-chat-composer]');
   const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
@@ -42228,6 +42264,7 @@ function connectProtocolConnectorThenSelect(connector: ProtocolConnector): void 
 }
 
 function openConnectorConnect(connectorId: string, category: ActionCategory | null, surface: ConnectorConnectSession['surface'] = 'create'): void {
+  const nativeSheet = connectorConnectUsesNativeRailSheet();
   state.connectorConnect = {
     connectorId,
     category,
@@ -42235,14 +42272,23 @@ function openConnectorConnect(connectorId: string, category: ActionCategory | nu
     openerRoute: currentRoute(),
     openerTab: state.activeTab,
   };
+  if (nativeSheet) {
+    if (state.activeMobileRailSheet === 'connector-connect') suppressMobileRailSheetEnterAnimation = true;
+    state.activeMobileRailSheet = 'connector-connect';
+  }
   if (connectorNeedsCredential(connectorId)) {
     void refreshConnectorSecretsSummary({ force: Boolean(state.connectorSecrets.error), renderOnChange: true });
   }
   render();
 }
 
+function connectorConnectUsesNativeRailSheet(): boolean {
+  return isNativeAppShellSurface() && isMobileAppViewport();
+}
+
 function closeConnectorConnect(): void {
   state.connectorConnect = null;
+  if (state.activeMobileRailSheet === 'connector-connect') state.activeMobileRailSheet = null;
   render();
 }
 
@@ -42251,6 +42297,7 @@ function reconcileConnectorConnectSession(route: AppRoute | null = currentRoute(
   if (!session) return;
   if (route !== session.openerRoute || state.activeTab !== session.openerTab) {
     state.connectorConnect = null;
+    if (state.activeMobileRailSheet === 'connector-connect') state.activeMobileRailSheet = null;
   }
 }
 
@@ -42268,6 +42315,7 @@ function connectorConnectEnable(connectorId: string): void {
 // After a connector is connected, route into its form for the active action and clear the surface.
 function connectorConnectFinish(connectorId: string, category: ActionCategory | null, surface: ConnectorConnectSession['surface'] = 'create'): void {
   state.connectorConnect = null;
+  if (state.activeMobileRailSheet === 'connector-connect') state.activeMobileRailSheet = null;
   const connector = getAdapterMeta(connectorId as ConnectedDappId);
   const form = connector
     ? ((category ? firstFormForCategory(connector, category) : undefined) ?? connectorActionFormsForConnector(connector)[0])
@@ -42304,21 +42352,27 @@ function connectorConnectFinish(connectorId: string, category: ActionCategory | 
   else applyConnectorActionForm(form);
 }
 
-function connectorConnectSurfaceHtml(): string {
+interface ConnectorConnectSurfaceParts {
+  body: string;
+  connectorLogo: string;
+  detail: string;
+  title: string;
+}
+
+function connectorConnectSurfaceParts(): ConnectorConnectSurfaceParts | null {
   const session = state.connectorConnect;
-  if (!session) return '';
-  if (session.openerRoute !== currentRoute() || session.openerTab !== state.activeTab) return '';
+  if (!session) return null;
+  if (session.openerRoute !== currentRoute() || session.openerTab !== state.activeTab) return null;
   const connector = getAdapterMeta(session.connectorId as ConnectedDappId);
-  if (!connector) return '';
+  if (!connector) return null;
   const byo = connectorConnectIsByo(session.connectorId);
-  const nativeSheet = isNativeAppShellSurface();
   const meta = byo ? BYO_KEY_CONNECTOR_META[session.connectorId as ByoKeyConnectorId] : undefined;
   const draftApiKey = session.draftApiKey ?? '';
   const hasCredential = connectorCredentialReady(session.connectorId, draftApiKey);
   const readiness = connectorConnectReadiness(connector, session, hasCredential);
   const connectorLogo = brandLogo(protocolConnectorLogoId(connector.id), 'connector-connect-logo');
   const title = tf('Enable {name}', { name: connector.name });
-  const eyebrow = readiness.label;
+  const detail = readiness.label;
   const readinessHtml = connectorReadinessSummaryHtml(readiness);
   const credentialLabel = meta?.credentialKind === 'access-code' ? t('Access code') : t('API key');
   const savedCredential = connectorHasSavedCredential(session.connectorId);
@@ -42350,12 +42404,9 @@ function connectorConnectSurfaceHtml(): string {
       ${credentialNotice}
       <label class="field compact connector-connect-field"><span>${escapeHtml(credentialLabel)}</span>
         <div class="ai-key-input-wrap">
-          <input data-connector-connect-key type="password" autocomplete="off" spellcheck="false" value="${escapeHtml(session.draftApiKey ?? '')}" placeholder="${escapeHtml(meta?.credentialKind === 'access-code' ? t('Paste access code') : t('Paste API key'))}" />
+          <input id="connectorConnectKey" data-connector-connect-key type="password" autocomplete="off" spellcheck="false" value="${escapeHtml(session.draftApiKey ?? '')}" placeholder="${escapeHtml(meta?.credentialKind === 'access-code' ? t('Paste access code') : t('Paste API key'))}" />
           <button type="button" class="ai-key-paste-btn" data-connector-connect-key-paste title="${escapeHtml(t('Paste your key from the clipboard'))}" aria-label="${escapeHtml(t('Paste key from clipboard'))}">${escapeHtml(t('Paste'))}</button>
         </div>
-      </label>
-      <label class="field compact connector-connect-field"><span>${escapeHtml(t('Base URL (optional)'))}</span>
-        <input data-connector-connect-baseurl type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(session.draftBaseUrl ?? '')}" placeholder="${escapeHtml(meta?.defaultBaseUrl ?? '')}" />
       </label>
       ${meta?.portalUrl ? `<a class="connector-connect-portal" href="${escapeHtml(meta.portalUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t('Where to get a credential'))}</a>` : ''}
       <div class="connector-connect-actions">
@@ -42376,25 +42427,28 @@ function connectorConnectSurfaceHtml(): string {
       <div class="connector-connect-actions">
         <button type="button" class="connector-connect-secondary" data-connector-connect-cancel>${escapeHtml(t('Cancel'))}</button>
       </div>`;
-  const panelClass = nativeSheet
-    ? 'connector-connect-popover connector-connect-sheet'
-    : 'chat-action-popover connector-connect-popover';
+  return { body, connectorLogo, detail, title };
+}
+
+function connectorConnectSurfaceHtml(): string {
+  if (connectorConnectUsesNativeRailSheet()) return '';
+  const parts = connectorConnectSurfaceParts();
+  if (!parts) return '';
   const panel = `
-    <div class="${panelClass}" role="dialog" aria-modal="true" aria-labelledby="connectorConnectTitle">
-      ${nativeSheet ? '<span class="connector-connect-grip" aria-hidden="true"></span>' : ''}
+    <div class="chat-action-popover connector-connect-popover" role="dialog" aria-modal="true" aria-labelledby="connectorConnectTitle">
       <div class="connector-connect-head">
         <div class="connector-connect-title-row">
-          ${connectorLogo}
+          ${parts.connectorLogo}
           <div class="connector-connect-title-copy">
-            <span>${escapeHtml(eyebrow)}</span>
-            <h2 id="connectorConnectTitle">${escapeHtml(title)}</h2>
+            <span>${escapeHtml(parts.detail)}</span>
+            <h2 id="connectorConnectTitle">${escapeHtml(parts.title)}</h2>
           </div>
         </div>
         <button type="button" class="connector-connect-close" data-connector-connect-cancel aria-label="${escapeHtml(t('Close'))}" title="${escapeHtml(t('Close'))}">&times;</button>
       </div>
-      <div class="connector-connect-body">${body}</div>
+      <div class="connector-connect-body">${parts.body}</div>
     </div>`;
-  return `<div class="connector-connect-overlay ${nativeSheet ? 'native-sheet' : ''}" data-connector-connect-overlay>${panel}</div>`;
+  return `<div class="connector-connect-overlay" data-connector-connect-overlay>${panel}</div>`;
 }
 
 function connectorConnectReadiness(
@@ -42427,33 +42481,30 @@ function bindConnectorConnectSurface(): void {
   const session = state.connectorConnect;
   if (!session) return;
   const overlay = document.querySelector<HTMLElement>('[data-connector-connect-overlay]');
-  overlay?.addEventListener('click', (event) => {
+  bindOnce(overlay, 'click', (event) => {
     if (event.target === overlay) closeConnectorConnect();
   });
   for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-connector-connect-cancel]')) {
-    btn.addEventListener('click', () => closeConnectorConnect());
+    bindOnce(btn, 'click', () => closeConnectorConnect());
   }
   const connectorName = getAdapterMeta(session.connectorId as ConnectedDappId)?.name ?? session.connectorId;
-  // Live-sync the key/base-URL inputs into the session draft so any re-render (e.g. a toast
+  // Live-sync the key input into the session draft so any re-render (e.g. a toast
   // auto-dismissing, or a failed save) restores the in-progress values instead of wiping them.
-  document.querySelector<HTMLInputElement>('[data-connector-connect-key]')?.addEventListener('input', (event) => {
+  bindOnce(document.querySelector<HTMLInputElement>('[data-connector-connect-key]'), 'input', (event) => {
     if (state.connectorConnect) state.connectorConnect.draftApiKey = (event.currentTarget as HTMLInputElement).value;
   });
-  document.querySelector<HTMLInputElement>('[data-connector-connect-baseurl]')?.addEventListener('input', (event) => {
-    if (state.connectorConnect) state.connectorConnect.draftBaseUrl = (event.currentTarget as HTMLInputElement).value;
-  });
-  document.querySelector<HTMLButtonElement>('[data-connector-connect-key-paste]')?.addEventListener('click', (event) => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-connector-connect-key-paste]'), 'click', (event) => {
     event.preventDefault();
     event.stopPropagation();
     const button = event.currentTarget as HTMLButtonElement;
     void runPasteProtocolConnectorCredential(button);
   });
-  document.querySelector<HTMLButtonElement>('[data-connector-connect-enable]')?.addEventListener('click', () => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-connector-connect-enable]'), 'click', () => {
     connectorConnectEnable(session.connectorId);
     pushToast('success', tf('{name} enabled', { name: connectorName }), t('No wallet signature was requested.'));
     connectorConnectFinish(session.connectorId, session.category, session.surface);
   });
-  document.querySelector<HTMLButtonElement>('[data-connector-connect-save]')?.addEventListener('click', () => {
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-connector-connect-save]'), 'click', () => {
     void (async () => {
       const apiKey = (document.querySelector<HTMLInputElement>('[data-connector-connect-key]')?.value ?? '').trim();
       if (!apiKey) {
@@ -42463,12 +42514,11 @@ function bindConnectorConnectSurface(): void {
         render();
         return;
       }
-      const baseUrl = (document.querySelector<HTMLInputElement>('[data-connector-connect-baseurl]')?.value ?? '').trim();
       try {
-        const summary = await saveConnectorSecret(session.connectorId as ByoKeyConnectorId, { apiKey, ...(baseUrl ? { baseUrl } : {}) });
+        const summary = await saveConnectorSecret(session.connectorId as ByoKeyConnectorId, { apiKey });
         updateConnectorSecretSummary(session.connectorId as ByoKeyConnectorId, summary);
         if (connectorNeedsCredential(session.connectorId)) {
-          state.protocolConnectorCredentialDrafts[session.connectorId] = { apiKey: '', baseUrl: '' };
+          state.protocolConnectorCredentialDrafts[session.connectorId] = { apiKey: '' };
         }
         connectorConnectEnable(session.connectorId);
         pushToast('success', tf('{name} enabled', { name: connectorName }), t('Credential saved; no wallet signature was requested.'));
@@ -42759,9 +42809,23 @@ function focusLayoutTarget(layoutName: string): void {
   });
 }
 
-function androidWalletConnectedToastTitle(): string {
-  const name = state.selectedWalletName?.trim();
-  return name && name !== 'Mobile Wallet Adapter' ? `${name} connected` : 'Wallet connected';
+function walletConnectedToastTitle(walletName: string): string {
+  const name = walletName.trim();
+  const walletLabel = /\bwallet$/iu.test(name) ? name : `${name} wallet`;
+  return name && name !== 'Mobile Wallet Adapter'
+    ? tf('{name} connected', { name: walletLabel })
+    : t('Wallet connected');
+}
+
+function pushNativeWalletConnectedToast(): void {
+  const walletName = state.selectedWalletName?.trim() ?? '';
+  const logoId = state.selectedWalletLogoId ?? walletProviderLogoIdForName(walletName);
+  pushToast(
+    'success',
+    walletConnectedToastTitle(walletName),
+    short(state.address),
+    logoId ? { logoId } : {},
+  );
 }
 
 async function runDiscover(): Promise<void> {
@@ -42771,7 +42835,7 @@ async function runDiscover(): Promise<void> {
       await connectAndroidNativeWallet(true);
       await afterWalletConnected();
       trackWalletConnectSuccess('android_native', state.cluster, 'discover_button');
-      pushToast('success', androidWalletConnectedToastTitle(), short(state.address));
+      pushNativeWalletConnectedToast();
       return;
     }
     if (state.iosNativeEnvironment.isIosNative) {
@@ -42852,7 +42916,7 @@ async function runConnect(
       savePersistedState();
       trackWalletConnectSuccess(connectSurface, state.cluster, 'connect_button');
       if (showSuccessToast) {
-        pushToast('success', androidWalletConnectedToastTitle(), short(state.address));
+        pushNativeWalletConnectedToast();
       }
       return;
     }
@@ -42928,7 +42992,7 @@ async function runConnect(
       savePersistedState();
       trackWalletConnectSuccess(connectSurface, state.cluster, 'connect_button');
       if (showSuccessToast) {
-        pushToast('success', t('iOS wallet connected'), short(state.address));
+        pushNativeWalletConnectedToast();
       }
       return;
     }
@@ -43078,7 +43142,7 @@ async function runDisconnect(): Promise<void> {
     await refreshAndroidNativeCacheState();
     if (state.androidNativeEnvironment.isAndroidNative) {
       state.androidNativeStatus = state.androidAuthCacheCount > 0
-        ? 'Android MWA disconnected locally. Cached authorization retained.'
+        ? 'Android MWA disconnected locally. Cached authorization marked inactive.'
         : 'Android MWA disconnected.';
     }
     await refreshIosNativeCacheState();
@@ -71685,7 +71749,7 @@ function toastStack(): string {
         .map(
           (toast) => `
             <div class="toast ${toast.kind}" id="toast-${toast.id}">
-              <span class="toast-icon" aria-hidden="true">${toastIcon(toast.kind)}</span>
+              <span class="toast-icon" aria-hidden="true">${toastIconContent(toast)}</span>
               <div>
                 <strong>${escapeHtml(toast.title)}</strong>
                 ${toast.message ? `<p>${escapeHtml(toast.message)}</p>` : ''}
@@ -71737,6 +71801,9 @@ function replaceToastState(
       }
       if (!Object.prototype.hasOwnProperty.call(options, 'actionReForeground')) {
         delete replacement.actionReForeground;
+      }
+      if (!Object.prototype.hasOwnProperty.call(options, 'logoId')) {
+        delete replacement.logoId;
       }
       return replacement;
     });
@@ -71834,6 +71901,10 @@ function toastIcon(kind: ToastKind): string {
   if (kind === 'error') return errorIcon();
   if (kind === 'info') return infoIcon();
   return checkIcon();
+}
+
+function toastIconContent(toast: Toast): string {
+  return toast.logoId ? brandLogo(toast.logoId, 'toast-wallet-logo') : toastIcon(toast.kind);
 }
 
 function buttonSpinner(): string {

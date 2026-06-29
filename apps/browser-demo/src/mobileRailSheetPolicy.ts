@@ -3,9 +3,14 @@ export function mobileRailSheetRouteAllowed(route: string | null | undefined): b
 }
 
 const CHAT_TAB_MOBILE_RAIL_SHEETS = new Set(['chat-action', 'chat-wallet-balances', 'chat-research']);
+const ANY_TAB_MOBILE_RAIL_SHEETS = new Set(['connector-connect']);
 
 function isChatTabMobileRailSheet(sheet: string | null | undefined): boolean {
   return Boolean(sheet && CHAT_TAB_MOBILE_RAIL_SHEETS.has(sheet));
+}
+
+function isAnyTabMobileRailSheet(sheet: string | null | undefined): boolean {
+  return Boolean(sheet && ANY_TAB_MOBILE_RAIL_SHEETS.has(sheet));
 }
 
 export function shouldClearActiveMobileRailSheet(options: {
@@ -16,6 +21,7 @@ export function shouldClearActiveMobileRailSheet(options: {
 }): boolean {
   if (!options.sheet) return false;
   if (!mobileRailSheetRouteAllowed(options.route)) return true;
+  if (isAnyTabMobileRailSheet(options.sheet)) return !options.mobileViewport;
   // Chat-tab sheets are opened only on native mobile (gated at the
   // open site) and live on the Chat tab; clear them whenever we leave that tab.
   if (isChatTabMobileRailSheet(options.sheet)) return options.activeTab !== 'chat';
@@ -29,6 +35,7 @@ export function shouldApplyMobileRailBodyDataset(options: {
   sheet: string | null | undefined;
 }): boolean {
   if (!options.sheet || !mobileRailSheetRouteAllowed(options.route)) return false;
+  if (isAnyTabMobileRailSheet(options.sheet)) return options.mobileViewport;
   if (isChatTabMobileRailSheet(options.sheet)) return options.activeTab === 'chat';
   return options.mobileViewport && options.activeTab === 'overview';
 }

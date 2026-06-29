@@ -389,7 +389,7 @@ class MwaExampleActivity : ComponentActivity() {
         disconnectBridgeInternal()
         controller.disconnect()
         clearWalletBalance()
-        appendLog("Wallet disconnected. Auth cache retained.")
+        appendLog("Wallet disconnected. Cached authorization marked inactive.")
         renderState()
     }
 

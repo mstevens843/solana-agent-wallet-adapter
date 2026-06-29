@@ -257,10 +257,16 @@ internal fun authRecordFromJson(json: JSONObject): AgentMwaAuthRecord {
     val inferredWalletPackage = walletPackage.ifBlank { WalletRegistry.inferPackage(walletUriBase, walletIcon = walletIcon) }
     val inferredWalletType = WalletRegistry.walletType(inferredWalletPackage, walletUriBase, walletIcon)
     val storedWalletType = json.optInt("walletType", WalletRegistry.UNKNOWN)
+    val authToken = json.optString("authToken", "")
+    val authenticated = if (json.has("authenticated")) {
+        json.optBoolean("authenticated", false)
+    } else {
+        authToken.isNotBlank()
+    }
     return AgentMwaAuthRecord(
         publicKeyBase58 = pubkey,
         publicKeyBytes = pubkeyBytes,
-        authToken = json.optString("authToken", ""),
+        authToken = authToken,
         walletUriBase = walletUriBase,
         walletIcon = walletIcon,
         walletPackage = inferredWalletPackage,
@@ -268,7 +274,7 @@ internal fun authRecordFromJson(json: JSONObject): AgentMwaAuthRecord {
         accountLabel = json.optString("accountLabel", ""),
         cluster = AgentCluster.fromId(json.optString("cluster", "mainnet-beta")),
         timestampUnixSeconds = json.optLong("timestampUnixSeconds", 0L),
-        authenticated = json.optBoolean("authenticated", false),
+        authenticated = authenticated,
         capabilitiesCsv = json.optString("capabilitiesCsv", ""),
     )
 }
