@@ -11,8 +11,17 @@ export interface CloudSessionBoundaryInput {
 export function shouldAutoSignOutCloudSession(input: CloudSessionBoundaryInput): boolean {
   if (input.cloudStatus !== 'signed-in' || !input.cloudWalletAddress) return false;
   if (input.reason === 'wallet-disconnected') return true;
+  if (input.reason === 'wallet-changed') return true;
   if (input.cloudWalletAddress === input.connectedWalletAddress) return false;
-  return true;
+  if (!input.connectedWalletAddress) return false;
+  return input.reason === 'wallet-mismatch';
+}
+
+export function shouldClearNativeCloudSessionTokenAfterUnauthorized(input: {
+  nativeCloudApiSurfaceActive: boolean;
+  authorizationHeaderPresent: boolean;
+}): boolean {
+  return input.nativeCloudApiSurfaceActive && input.authorizationHeaderPresent;
 }
 
 export function hostedByokCloudSessionBlockReason(input: {

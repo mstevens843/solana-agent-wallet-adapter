@@ -73,6 +73,14 @@ export interface SaveConnectorSecretInput {
   baseUrl?: string;
 }
 
+type ConnectorSecretsFetch = (input: string, init?: RequestInit) => Promise<Response>;
+
+let connectorSecretsFetch: ConnectorSecretsFetch = (input, init) => fetch(input, init);
+
+export function configureConnectorSecretsFetch(fetcher: ConnectorSecretsFetch | undefined): void {
+  connectorSecretsFetch = fetcher ?? ((input, init) => fetch(input, init));
+}
+
 export function emptyConnectorSecretsSummary(): ConnectorSecretsSummary {
   return Object.fromEntries(
     BYO_KEY_CONNECTOR_IDS.map((id) => [id, { hasKey: false } as ConnectorSecretSummary]),
@@ -82,7 +90,7 @@ export function emptyConnectorSecretsSummary(): ConnectorSecretsSummary {
 const EMPTY_SECRETS_SUMMARY: ConnectorSecretsSummary = emptyConnectorSecretsSummary();
 
 export async function listConnectorSecrets(): Promise<ListConnectorSecretsResponse> {
-  const response = await fetch('/api/connector-secrets', {
+  const response = await connectorSecretsFetch('/api/connector-secrets', {
     method: 'GET',
     credentials: 'same-origin',
     headers: { accept: 'application/json' },
@@ -103,7 +111,7 @@ export async function saveConnectorSecret(
   connector: ByoKeyConnectorId,
   input: SaveConnectorSecretInput,
 ): Promise<ConnectorSecretSummary & { connector: ByoKeyConnectorId }> {
-  const response = await fetch(`/api/connector-secrets/${connector}`, {
+  const response = await connectorSecretsFetch(`/api/connector-secrets/${connector}`, {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'content-type': 'application/json', accept: 'application/json' },
@@ -121,7 +129,7 @@ export async function saveConnectorSecret(
 export async function deleteConnectorSecret(
   connector: ByoKeyConnectorId,
 ): Promise<{ removed: boolean }> {
-  const response = await fetch(`/api/connector-secrets/${connector}`, {
+  const response = await connectorSecretsFetch(`/api/connector-secrets/${connector}`, {
     method: 'DELETE',
     credentials: 'same-origin',
     headers: { accept: 'application/json' },

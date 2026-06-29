@@ -1,0 +1,290 @@
+- main [ref=e2]:
+  - generic [ref=e3]:
+    - generic "Agentic navigation" [ref=e4]:
+      - link "Agentic home" [ref=e5] [cursor=pointer]:
+        - /url: /
+        - img [ref=e6]
+        - generic [ref=e7]: Agentic
+      - navigation "Primary navigation" [ref=e8]:
+        - link "Home" [ref=e9] [cursor=pointer]:
+          - /url: /
+          - generic [ref=e10]: Home
+        - link "Docs" [ref=e11] [cursor=pointer]:
+          - /url: /docs
+          - generic [ref=e12]: Docs
+        - link "Builders" [ref=e13] [cursor=pointer]:
+          - /url: /builders
+          - generic [ref=e14]: Builders
+        - link "CLI" [ref=e15] [cursor=pointer]:
+          - /url: /cli
+          - generic [ref=e16]: CLI
+        - link "Desktop App" [ref=e17] [cursor=pointer]:
+          - /url: /desktop
+          - generic [ref=e18]: Desktop App
+        - link "Launch Demo" [ref=e19] [cursor=pointer]:
+          - /url: /demo
+          - generic [ref=e20]: Launch Demo
+        - link "Launch App" [ref=e21] [cursor=pointer]:
+          - /url: /app
+          - generic [ref=e22]: Launch App
+    - region "Agentic approval workspace." [ref=e23]:
+      - generic [ref=e25]:
+        - heading "Agentic approval workspace." [level=2] [ref=e26]
+        - paragraph [ref=e27]: AI or templates prepare review items. You check the route, recipient, amount, policy, and wallet action before signing.
+      - generic [ref=e28]:
+        - complementary [ref=e29]:
+          - generic [ref=e30]:
+            - generic [ref=e31]:
+              - generic [ref=e32]: SA
+              - generic [ref=e33]:
+                - paragraph [ref=e34]: Signer
+                - heading "Wallet standby" [level=2] [ref=e35]
+            - generic [ref=e38]:
+              - strong [ref=e39]: No signer connected
+              - paragraph [ref=e40]: No providers discovered
+          - button "Discover" [ref=e42] [cursor=pointer]
+          - generic [ref=e43]:
+            - group "Workspace storage status" [ref=e44]:
+              - generic "Workspace storage Browser-local workflow storage Sign in +" [ref=e45] [cursor=pointer]:
+                - generic [ref=e46]:
+                  - generic [ref=e47]: Workspace storage
+                  - emphasis [ref=e48]: Browser-local workflow storage
+                - button "Sign in" [disabled] [ref=e49]
+                - text: +
+            - group [ref=e50]:
+              - generic "AI connector Claude / Anthropic claude-opus-4-1-20250805 - Local Bridge not configured -" [ref=e51] [cursor=pointer]:
+                - generic [ref=e54]:
+                  - generic [ref=e55]: AI connector
+                  - strong [ref=e56]: Claude / Anthropic
+                  - emphasis [ref=e57]: claude-opus-4-1-20250805 - Local Bridge
+                - strong [ref=e58]: not configured
+                - text: "-"
+              - complementary [ref=e59]:
+                - tablist "AI setup type" [ref=e60]:
+                  - tab "API Key" [selected] [ref=e61] [cursor=pointer]
+                  - tab "Plan Connector" [ref=e62] [cursor=pointer]
+                - generic [ref=e63]:
+                  - generic [ref=e64]: AI provider key
+                  - generic [ref=e65]:
+                    - textbox "AI provider key" [ref=e66]:
+                      - /placeholder: Sent to local bridge memory
+                    - button "Paste key from clipboard" [ref=e67] [cursor=pointer]: Paste
+                - generic [ref=e68]:
+                  - generic [ref=e69]: AI path
+                  - generic [ref=e71]:
+                    - button "Local bridge AI - review via bridge" [ref=e72] [cursor=pointer]:
+                      - generic [ref=e73]:
+                        - generic [ref=e74]: AI path
+                        - strong [ref=e75]: Local bridge AI - review via bridge
+                    - text: ·
+                - generic [ref=e77]:
+                  - generic [ref=e78]: Provider preset
+                  - button "Claude / Anthropic" [ref=e81] [cursor=pointer]:
+                    - generic [ref=e83]:
+                      - generic [ref=e84]: Anthropic Messages API
+                      - strong [ref=e85]: Claude / Anthropic
+                - generic [ref=e87]:
+                  - generic [ref=e88]: Model
+                  - button "Claude Opus 4.1" [ref=e91] [cursor=pointer]:
+                    - generic [ref=e92]:
+                      - generic [ref=e93]:
+                        - text: Model preset
+                        - generic [ref=e94]: 500K tokens/minute
+                      - strong [ref=e95]: Claude Opus 4.1
+                - generic [ref=e97]:
+                  - generic [ref=e98]: Reasoning depth
+                  - button "Medium" [ref=e101] [cursor=pointer]:
+                    - generic [ref=e102]:
+                      - generic [ref=e103]: Balanced (default)
+                      - strong [ref=e104]: Medium
+                - button "Set and confirm API key" [disabled] [ref=e107]
+                - paragraph [ref=e108]:
+                  - text: AI suggests approve/deny and answers questions before signing. Your provider sees request details and public wallet address - never keys, seed phrase, location, or device IDs.
+                  - link "Privacy Policy" [ref=e109] [cursor=pointer]:
+                    - /url: /privacy
+                - group [ref=e110]:
+                  - generic "Setup needed Start the local runtime -" [ref=e111] [cursor=pointer]:
+                    - generic [ref=e112]: Setup needed
+                    - strong [ref=e113]: Start the local runtime
+                    - text: "-"
+                  - generic [ref=e114]:
+                    - paragraph [ref=e115]: Optional private AI path. Run the local runtime only if you want keys and workflow data to stay on this computer.
+                    - group "Local Bridge engine" [ref=e116]:
+                      - button "Provider API key" [ref=e117] [cursor=pointer]
+                      - button "Subscription connector" [ref=e118] [cursor=pointer]
+                    - generic [ref=e119]:
+                      - generic [ref=e120]: Run this in Terminal
+                      - generic [ref=e121]:
+                        - code [ref=e122]: npm exec @solana-agent-wallet-adapter/cli -- app
+                        - button "Copy" [ref=e123] [cursor=pointer]
+                      - paragraph [ref=e124]:
+                        - strong [ref=e125]: No separate install step.
+                        - text: This command downloads and starts Agentic's local runtime. Keep the Terminal window open.
+                      - list [ref=e126]:
+                        - listitem [ref=e127]: Paste the command and press Enter.
+                        - listitem [ref=e128]: Connect your wallet in the tab it opens.
+                        - listitem [ref=e129]: Return here and click Check.
+                      - group [ref=e130]:
+                        - generic "Desktop App or permanent install" [ref=e131] [cursor=pointer]
+                    - button "Check local bridge" [disabled] [ref=e132]
+                    - generic [ref=e133]:
+                      - generic [ref=e134]:
+                        - text: Endpoint
+                        - strong [ref=e135]: 127.0.0.1:8787
+                      - generic [ref=e136]:
+                        - text: Wallet
+                        - strong [ref=e137]: Not connected
+                      - generic [ref=e138]:
+                        - text: AI provider key
+                        - strong [ref=e139]: Not set
+                    - paragraph [ref=e140]: Paste your normal AI provider key below. It is sent to the local bridge and is not stored by Agentic.
+        - generic [ref=e141]:
+          - generic [ref=e142]:
+            - navigation "Workspace navigation" [ref=e143]:
+              - button "Home" [ref=e144] [cursor=pointer]:
+                - generic [ref=e145]: Home
+              - button "Chat" [ref=e146] [cursor=pointer]:
+                - generic [ref=e147]: Chat
+              - button "New Request" [ref=e148] [cursor=pointer]:
+                - generic [ref=e149]: New Request
+              - generic [ref=e150]:
+                - button "Sign Approval" [disabled] [ref=e151]:
+                  - generic [ref=e152]: Sign Approval
+                - text: Connect a wallet to review requests that need approval.
+              - button "Done" [ref=e153] [cursor=pointer]:
+                - generic [ref=e154]: Done
+              - group [ref=e155]:
+                - generic "More" [ref=e156] [cursor=pointer]:
+                  - generic [ref=e157]: More
+                  - generic [ref=e158]: ▾
+            - button "Open Preferences" [ref=e159] [cursor=pointer]: Preferences
+          - generic [ref=e340]:
+            - generic [ref=e341]:
+              - generic [ref=e342]: Chat
+              - generic [ref=e343]:
+                - button "Research" [ref=e345] [cursor=pointer]:
+                  - generic [ref=e346]: ⌕
+                  - generic [ref=e347]: Research
+                - button "New chat" [ref=e348] [cursor=pointer]
+            - generic [ref=e350]:
+              - heading "Talk to your agent" [level=3] [ref=e352]
+              - paragraph [ref=e353]: Ask about your wallet, tokens, prices, or risk. When you are ready, ask it to prepare a swap or a payment, then approve and sign here.
+              - generic [ref=e354]:
+                - button "What's my SOL balance worth right now?" [ref=e355] [cursor=pointer]
+                - button "Is BONK a safe token to hold?" [ref=e356] [cursor=pointer]
+                - button "Quote swapping 0.1 SOL to USDC" [ref=e357] [cursor=pointer]
+                - button "What can you help me do?" [ref=e358] [cursor=pointer]
+            - button "Scroll to bottom" [ref=e359] [cursor=pointer]:
+              - img [ref=e360]
+            - generic [ref=e362]:
+              - generic [ref=e497]:
+                - generic [ref=e498]:
+                  - generic [ref=e499]: Lend
+                  - button "Close" [ref=e500] [cursor=pointer]: ×
+                - generic [ref=e501]:
+                  - generic [ref=e502]:
+                    - generic [ref=e503]: Connector
+                    - generic [ref=e505]:
+                      - button "Jupiter" [expanded] [active] [ref=e506] [cursor=pointer]:
+                        - generic [ref=e508]:
+                          - generic [ref=e509]: First-class
+                          - strong [ref=e510]: Jupiter
+                      - listbox "Jupiter" [ref=e558]:
+                        - generic [ref=e559]:
+                          - option "First-class Jupiter First-class adapter. Agentic can prepare connector-backed work; wallet still signs after review. Lend · Limit orders · DCA orders" [selected] [ref=e560] [cursor=pointer]:
+                            - generic [ref=e562]:
+                              - generic [ref=e563]: First-class
+                              - strong [ref=e564]: Jupiter
+                              - emphasis [ref=e565]: First-class adapter. Agentic can prepare connector-backed work; wallet still signs after review. Lend · Limit orders · DCA orders
+                          - option "Tap to enable Kamino Finance Kamino Finance is disabled. Enable it in Protocol Connectors before preparing work. Deposit · Withdraw · Earnings proof" [ref=e566] [cursor=pointer]:
+                            - generic [ref=e568]:
+                              - generic [ref=e569]: Tap to enable
+                              - strong [ref=e570]: Kamino Finance
+                              - emphasis [ref=e571]: Kamino Finance is disabled. Enable it in Protocol Connectors before preparing work. Deposit · Withdraw · Earnings proof
+                          - option "Tap to enable Drift Vaults Drift Vaults is disabled. Enable it in Protocol Connectors before preparing work. Vault deposit · Request withdraw · Cancel withdraw" [ref=e572] [cursor=pointer]:
+                            - generic [ref=e574]:
+                              - generic [ref=e575]: Tap to enable
+                              - strong [ref=e576]: Drift Vaults
+                              - emphasis [ref=e577]: Drift Vaults is disabled. Enable it in Protocol Connectors before preparing work. Vault deposit · Request withdraw · Cancel withdraw
+                          - option "Tap to enable MarginFi MarginFi is disabled. Enable it in Protocol Connectors before preparing work. Deposit · Withdraw · Borrow" [ref=e578] [cursor=pointer]:
+                            - generic [ref=e580]:
+                              - generic [ref=e581]: Tap to enable
+                              - strong [ref=e582]: MarginFi
+                              - emphasis [ref=e583]: MarginFi is disabled. Enable it in Protocol Connectors before preparing work. Deposit · Withdraw · Borrow
+                          - option "Tap to enable Save Save is disabled. Enable it in Protocol Connectors before preparing work. Deposit · Withdraw · Borrow" [ref=e584] [cursor=pointer]:
+                            - generic [ref=e586]:
+                              - generic [ref=e587]: Tap to enable
+                              - strong [ref=e588]: Save
+                              - emphasis [ref=e589]: Save is disabled. Enable it in Protocol Connectors before preparing work. Deposit · Withdraw · Borrow
+                          - option "Tap to enable Lulo Lulo is disabled. Enable it in Protocol Connectors before preparing work. Deposit or withdraw · Position check" [ref=e590] [cursor=pointer]:
+                            - generic [ref=e592]:
+                              - generic [ref=e593]: Tap to enable
+                              - strong [ref=e594]: Lulo
+                              - emphasis [ref=e595]: Lulo is disabled. Enable it in Protocol Connectors before preparing work. Deposit or withdraw · Position check
+                          - option "Tap to enable Project 0 Project 0 is disabled. Enable it in Protocol Connectors before preparing work. Create account · Deposit · Withdraw" [ref=e596] [cursor=pointer]:
+                            - generic [ref=e598]:
+                              - generic [ref=e599]: Tap to enable
+                              - strong [ref=e600]: Project 0
+                              - emphasis [ref=e601]: Project 0 is disabled. Enable it in Protocol Connectors before preparing work. Create account · Deposit · Withdraw
+                  - generic [ref=e512]:
+                    - generic [ref=e513]: Plan template
+                    - generic [ref=e514]:
+                      - button "Jupiter Lend" [ref=e515] [cursor=pointer]:
+                        - generic [ref=e516]:
+                          - generic [ref=e517]: Jupiter
+                          - strong [ref=e518]: Jupiter Lend
+                      - generic [ref=e520]: Jupiter - Jupiter Lend
+                  - generic [ref=e521]:
+                    - strong [ref=e522]: Approval-ready
+                    - paragraph [ref=e523]: Earn yield in a Jupiter Lend pool or borrow against collateral.
+                  - generic [ref=e524]:
+                    - generic [ref=e525]:
+                      - generic [ref=e526]: Lend type
+                      - button "Earn - deposit" [ref=e529] [cursor=pointer]:
+                        - generic [ref=e530]:
+                          - generic [ref=e531]: Lend type
+                          - strong [ref=e532]: Earn - deposit
+                    - generic [ref=e534]:
+                      - generic [ref=e535]: Earn asset *
+                      - button "Choose Earn asset" [ref=e538] [cursor=pointer]:
+                        - strong [ref=e540]: Choose Earn asset
+                      - generic [ref=e542]: Updated just now
+                    - generic [ref=e543]:
+                      - generic [ref=e544]: Amount *
+                      - textbox "Amount *" [ref=e545]:
+                        - /placeholder: ""
+                        - text: "0.01"
+                    - generic [ref=e546]:
+                      - generic [ref=e547]: Reason
+                      - textbox "Reason" [ref=e548]:
+                        - /placeholder: ""
+                  - button "Confirm" [ref=e550] [cursor=pointer]
+              - generic [ref=e551]:
+                - button "Wallet Actions" [ref=e553] [cursor=pointer]:
+                  - generic [ref=e554]: +
+                  - generic [ref=e555]: Wallet Actions
+                - textbox "Message your agent" [ref=e556]:
+                  - /placeholder: Message your agent…
+                - button "Send" [ref=e557] [cursor=pointer]: ↑
+            - paragraph [ref=e370]: The agent reads live data to answer. You always review and sign.
+    - generic "Agentic footer" [ref=e326]:
+      - generic [ref=e327]:
+        - generic [ref=e328]:
+          - img [ref=e329]
+          - text: Agentic
+        - paragraph [ref=e330]: Render serves the web app and hosted BYOK AI proxy. CLI, Desktop App, local bridge, and wallet approvals run on your device.
+        - paragraph [ref=e331]:
+          - generic [ref=e332]: SolPulse LLC
+          - link "support@solpulse.trade" [ref=e333] [cursor=pointer]:
+            - /url: mailto:support@solpulse.trade
+      - navigation "Footer navigation" [ref=e334]:
+        - link "Docs" [ref=e335] [cursor=pointer]:
+          - /url: /docs
+        - link "Releases" [ref=e336] [cursor=pointer]:
+          - /url: https://github.com/mstevens843/solana-agent-wallet-adapter/releases
+        - link "Terms" [ref=e337] [cursor=pointer]:
+          - /url: /terms
+        - link "Privacy" [ref=e338] [cursor=pointer]:
+          - /url: /privacy
+        - link "Delete Account" [ref=e339] [cursor=pointer]:
+          - /url: /delete-account

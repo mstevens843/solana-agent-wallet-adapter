@@ -106,6 +106,34 @@ describe('mobile rail sheet policy', () => {
     })).toBe(true);
   });
 
+  it('keeps the chat-research sheet on the chat tab and clears it elsewhere', () => {
+    expect(shouldClearActiveMobileRailSheet({
+      activeTab: 'chat',
+      mobileViewport: true,
+      route: '/app',
+      sheet: 'chat-research',
+    })).toBe(false);
+    // Native chat sheets are gated at the open site, not by viewport width.
+    expect(shouldClearActiveMobileRailSheet({
+      activeTab: 'chat',
+      mobileViewport: false,
+      route: '/app',
+      sheet: 'chat-research',
+    })).toBe(false);
+    expect(shouldClearActiveMobileRailSheet({
+      activeTab: 'overview',
+      mobileViewport: true,
+      route: '/app',
+      sheet: 'chat-research',
+    })).toBe(true);
+    expect(shouldClearActiveMobileRailSheet({
+      activeTab: 'chat',
+      mobileViewport: true,
+      route: '/connect',
+      sheet: 'chat-research',
+    })).toBe(true);
+  });
+
   it('applies the body sheet dataset for the chat-wallet-balances sheet on the chat tab', () => {
     expect(shouldApplyMobileRailBodyDataset({
       activeTab: 'chat',
@@ -133,6 +161,21 @@ describe('mobile rail sheet policy', () => {
       mobileViewport: true,
       route: '/app',
       sheet: 'chat-action',
+    })).toBe(false);
+  });
+
+  it('applies the body sheet dataset for the chat-research sheet on the chat tab', () => {
+    expect(shouldApplyMobileRailBodyDataset({
+      activeTab: 'chat',
+      mobileViewport: true,
+      route: '/app',
+      sheet: 'chat-research',
+    })).toBe(true);
+    expect(shouldApplyMobileRailBodyDataset({
+      activeTab: 'overview',
+      mobileViewport: true,
+      route: '/app',
+      sheet: 'chat-research',
     })).toBe(false);
   });
 

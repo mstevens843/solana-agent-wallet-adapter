@@ -381,6 +381,7 @@ import {
 import { setUiLanguage } from './demo-i18n/uiLang.js';
 import {
   hostedByokCloudSessionBlockReason,
+  shouldClearNativeCloudSessionTokenAfterUnauthorized,
   shouldAutoSignOutCloudSession,
 } from './cloudSessionPolicy.js';
 import { wipeLocalAppStorage } from './localAppStorageWipe.js';
@@ -633,6 +634,7 @@ import {
 import {
   mountConnectorKeysPanel,
   BYO_KEY_CONNECTOR_META,
+  configureConnectorSecretsFetch,
   emptyConnectorSecretsSummary,
   listConnectorSecrets,
   saveConnectorSecret,
@@ -2728,6 +2730,10 @@ interface ChatResearchListItem {
   title: string;
   subtitle?: string;
   mint?: string;
+  swapMint?: string;
+  swapSymbol?: string;
+  swapDecimals?: number;
+  swapLogoURI?: string;
   value?: string;
   meta?: string;
   tone?: ChatResearchTone;
@@ -2777,6 +2783,10 @@ interface ChatResearchCard {
   title: string;
   subtitle?: string;
   target?: string;
+  swapMint?: string;
+  swapSymbol?: string;
+  swapDecimals?: number;
+  swapLogoURI?: string;
   source?: string;
   generatedAt: string;
   summary: string;
@@ -5831,10 +5841,12 @@ async function bootstrap(): Promise<void> {
   }
   await refreshAndroidNativeCacheState();
   if (state.androidNativeEnvironment.isAndroidNative) {
-    await restoreAndroidNativeSession().catch((err) => {
+    const restored = await restoreAndroidNativeSession().catch((err) => {
       console.warn('[bootstrap] restoreAndroidNativeSession failed', err);
       state.androidNativeStatus = 'Could not restore the cached Android MWA authorization. Tap Discover to reconnect.';
+      return false;
     });
+    if (restored) await afterWalletConnected();
   }
   state.tauriNativeEnvironment = detectTauriNativeEnvironment();
   if (state.tauriNativeEnvironment.isTauriNative) {
@@ -5887,8 +5899,7 @@ async function bootstrap(): Promise<void> {
     // below so we re-validate the cloud session.
     void tauriNativeCloudSessionToken();
     window.addEventListener(CLOUD_SESSION_REHYDRATED_EVENT, () => {
-      void refreshCloudSession(true)
-        .then(() => signOutCloudSessionForWalletBoundary('startup'))
+      void refreshCloudSessionAfterNativeTokenRehydrated()
         .then(() => render())
         .catch((err) => {
           console.warn('[bootstrap] refreshCloudSession after rehydrate failed', err);
@@ -5929,8 +5940,7 @@ async function bootstrap(): Promise<void> {
   if (state.iosNativeEnvironment.isIosNative) {
     void iosNativeCloudSessionToken();
     window.addEventListener(IOS_CLOUD_SESSION_REHYDRATED_EVENT, () => {
-      void refreshCloudSession(true)
-        .then(() => signOutCloudSessionForWalletBoundary('startup'))
+      void refreshCloudSessionAfterNativeTokenRehydrated()
         .then(() => render())
         .catch((err) => {
           console.warn('[bootstrap] refreshCloudSession after iOS rehydrate failed', err);
@@ -5939,9 +5949,11 @@ async function bootstrap(): Promise<void> {
   }
   await refreshIosNativeCacheState();
   if (state.iosNativeEnvironment.isIosNative) {
-    await restoreIosNativeSession().catch((err) => {
+    const restored = await restoreIosNativeSession().catch((err) => {
       console.warn('[bootstrap] restoreIosNativeSession failed', err);
+      return false;
     });
+    if (restored) await afterWalletConnected();
   }
   if (multiPathWalletFlowAvailable()) {
     // Restore any previously-paired WalletConnect sessions. Lazy — skips if
@@ -5963,8 +5975,10 @@ async function bootstrap(): Promise<void> {
       render();
     });
   }
-  await refreshCloudSession(false);
-  await signOutCloudSessionForWalletBoundary('startup');
+  if (nativeCloudApiSurfaceActive()) {
+    await ensureNativeCloudTokenReady(2500);
+  }
+  await refreshCloudSessionWithWalletBoundary(false);
   reconcileAiModeForSurface();
   const walletBoundDeviceAgentStatus = loadDeviceAgentStatusCache();
   if (walletBoundDeviceAgentStatus) {
@@ -10443,6 +10457,7 @@ function render(): void {
     chatRenderDeferredDuringComposition = true;
     return;
   }
+  if (chatResearchFixturesEnabled() && !chatTabHidden() && chatTabAiConnected()) state.activeTab = 'chat';
   // Normalize a stranded Chat tab before any markup is built, so
   // the tab bar and active panel agree on the same active tab in this render.
   if (state.activeTab === 'chat' && (chatTabHidden() || !chatTabAiConnected())) state.activeTab = 'overview';
@@ -17373,8 +17388,6 @@ function protocolConnectorAddSelectedDisabled(connector: ProtocolConnector | und
   if (!readiness.canEnable) return true;
   if (!connectorNeedsCredential(connector.id)) return false;
   const draft = connectorCredentialDraft(connector.id);
-  if (state.connectorSecrets.loading) return true;
-  if (!state.connectorSecrets.available || state.connectorSecrets.error) return true;
   return !connectorCredentialReady(connector.id, draft.apiKey);
 }
 
@@ -17402,7 +17415,7 @@ function protocolConnectorCredentialInline(connector: ProtocolConnector | undefi
       : saved
         ? tf('{label} saved for this wallet.', { label: fieldLabel })
         : tf('{label} required before enabling {connector}.', { label: fieldLabel, connector: connector.name });
-  const credentialInput = saved || storageBlocked
+  const credentialInput = saved
     ? ''
     : `
       <label class="field compact protocol-connector-key-field">
@@ -21752,7 +21765,7 @@ interface ChatConnectorSession {
 interface ConnectorConnectSession {
   connectorId: string;
   category: ActionCategory | null;
-  surface: 'create' | 'recurring' | 'preferences';
+  surface: 'create' | 'chat' | 'recurring' | 'preferences';
   openerRoute: AppRoute | null;
   openerTab: ActiveTab;
   draftApiKey?: string;
@@ -21863,7 +21876,9 @@ function chatPanel(): string {
     state.chatPendingOpen = false;
     state.chatPendingSelectedId = null;
   }
-  const messages = session?.messages ?? [];
+  const fixtureMessages = chatResearchFixturesEnabled() ? chatResearchFixtureMessages() : [];
+  const messages = fixtureMessages.length ? fixtureMessages : (session?.messages ?? []);
+  const displaySessionId = fixtureMessages.length ? 'chat-research-fixtures' : (session?.id ?? 'chat');
   const hasMessages = messages.length > 0;
   // An active cloud stub (messages not yet fetched) shows a loading placeholder
   // rather than the empty "Talk to your agent" state, which would mismatch the
@@ -21871,7 +21886,7 @@ function chatPanel(): string {
   const loadErrored = Boolean(session?.cloudLoadError);
   const loadingStub = Boolean(session && chatSessionIsCloudStub(session)) && !loadErrored;
   const transcript = hasMessages
-    ? messages.map((m) => chatMessageHtml(m, session!.id)).join('')
+    ? messages.map((m) => chatMessageHtml(m, displaySessionId)).join('')
     : loadErrored ? chatLoadErrorState(session!)
       : loadingStub ? chatLoadingState() : chatEmptyState();
   return `
@@ -22167,9 +22182,67 @@ function chatResearchToneClass(tone: ChatResearchTone | undefined): string {
   return tone === 'good' ? ' good' : tone === 'warn' ? ' warn' : tone === 'fail' ? ' fail' : '';
 }
 
+const CHAT_RESEARCH_CARD_BUY_KINDS = new Set<ChatResearchActionId>([
+  'token-safety',
+  'rug-scan',
+  'token-lifecycle',
+  'whale-scan',
+  'top-traders',
+]);
+const CHAT_RESEARCH_TOKEN_LIST_BUY_KINDS = new Set<ChatResearchActionId>([
+  'trending-tokens',
+  'smart-money-tokens',
+  'new-listings',
+]);
+
 function solscanAccountUrl(account: string, cluster: Cluster = state.cluster): string {
   const clusterParam = cluster === 'mainnet-beta' ? '' : `?cluster=${cluster}`;
   return `https://solscan.io/account/${account}${clusterParam}`;
+}
+
+function chatResearchSwapFields(
+  mint: string | undefined,
+  opts: { symbol?: string; decimals?: number; logoURI?: string } = {},
+): Pick<ChatResearchCard, 'swapMint' | 'swapSymbol' | 'swapDecimals' | 'swapLogoURI'> {
+  const normalized = mint?.trim();
+  if (!normalized || !CHAT_BASE58_MINT.test(normalized)) return {};
+  const metadata = tokenMarketMetadata.get(normalized);
+  const known = knownBrowserTokenByMint(normalized);
+  const logoURI = opts.logoURI || metadata?.logoURI || knownTokenLogo(normalized);
+  const symbol = opts.symbol || metadata?.symbol || known?.symbol || tokenDisplayLabel(normalized);
+  const decimals = opts.decimals ?? metadata?.decimals ?? known?.decimals;
+  return {
+    swapMint: normalized,
+    swapSymbol: symbol,
+    ...(typeof decimals === 'number' && Number.isFinite(decimals) ? { swapDecimals: decimals } : {}),
+    ...(logoURI ? { swapLogoURI: logoURI } : {}),
+  };
+}
+
+function chatResearchCardSwapFields(base: ChatResearchCardBase): Pick<ChatResearchCard, 'swapMint' | 'swapSymbol' | 'swapDecimals' | 'swapLogoURI'> {
+  return CHAT_RESEARCH_CARD_BUY_KINDS.has(base.kind) ? chatResearchSwapFields(base.target) : {};
+}
+
+function chatResearchCardBuyMint(card: ChatResearchCard): string {
+  if (!CHAT_RESEARCH_CARD_BUY_KINDS.has(card.kind)) return '';
+  const mint = card.swapMint || card.target || '';
+  return CHAT_BASE58_MINT.test(mint) ? mint : '';
+}
+
+function chatResearchItemBuyMint(item: ChatResearchListItem, kind: ChatResearchActionId): string {
+  const mint = item.swapMint || (CHAT_RESEARCH_TOKEN_LIST_BUY_KINDS.has(kind) ? item.mint : '');
+  return mint && CHAT_BASE58_MINT.test(mint) ? mint : '';
+}
+
+function chatResearchBuyButtonHtml(
+  target: Pick<ChatResearchListItem, 'swapSymbol' | 'swapDecimals' | 'swapLogoURI'>,
+  mint: string,
+  variant: 'row' | 'footer',
+): string {
+  if (!mint) return '';
+  const label = t('Buy');
+  const classes = `chat-research-buy chat-research-buy--${variant}`;
+  return `<button type="button" class="${classes}" data-chat-research-buy="${escapeHtml(mint)}"${target.swapSymbol ? ` data-chat-research-buy-symbol="${escapeHtml(target.swapSymbol)}"` : ''}${typeof target.swapDecimals === 'number' ? ` data-chat-research-buy-decimals="${target.swapDecimals}"` : ''}${target.swapLogoURI ? ` data-chat-research-buy-logo="${escapeHtml(target.swapLogoURI)}"` : ''} title="${escapeHtml(t('Buy token'))}" aria-label="${escapeHtml(t('Buy token'))}">${escapeHtml(label)}</button>`;
 }
 
 function chatResearchRowsHtml(rows: ChatResearchRow[] | undefined): string {
@@ -22312,13 +22385,14 @@ function chatResearchChecklistHtml(items: ChatResearchIndicator[] | undefined): 
     </div>`;
 }
 
-function chatResearchItemsHtml(items: ChatResearchListItem[] | undefined): string {
+function chatResearchItemsHtml(items: ChatResearchListItem[] | undefined, kind: ChatResearchActionId): string {
   if (!items?.length) return '';
   return `
     <div class="chat-research-items">
       ${items.slice(0, 20).map((item) => {
         const copy = item.mint || item.subtitle || item.title;
         const solscan = item.mint ? solscanAccountUrl(item.mint) : '';
+        const buyMint = chatResearchItemBuyMint(item, kind);
         const facts = [
           item.price ? `${t('Price')} ${item.price}` : '',
           item.change ? `${t('24h')} ${item.change}` : '',
@@ -22337,6 +22411,7 @@ function chatResearchItemsHtml(items: ChatResearchListItem[] | undefined): strin
             </span>
             ${item.value ? `<span class="chat-research-item-value">${escapeHtml(item.value)}</span>` : ''}
             <span class="chat-research-item-actions">
+              ${chatResearchBuyButtonHtml(item, buyMint, 'row')}
               ${copy ? `<button type="button" data-copy="${escapeHtml(copy)}" data-copy-name="${escapeHtml(t('Research item'))}" title="${escapeHtml(t('Copy'))}" aria-label="${escapeHtml(t('Copy'))}">${copyButtonIcon()}</button>` : ''}
               ${solscan ? `<a href="${escapeHtml(solscan)}" target="_blank" rel="noreferrer" title="${escapeHtml(t('Open Solscan'))}" aria-label="${escapeHtml(t('Open Solscan'))}">↗</a>` : ''}
             </span>
@@ -22348,6 +22423,7 @@ function chatResearchItemsHtml(items: ChatResearchListItem[] | undefined): strin
 function chatResearchCardHtml(card: ChatResearchCard): string {
   const targetLine = card.target ? short(card.target) : '';
   const generated = card.generatedAt ? new Date(card.generatedAt).toLocaleString() : '';
+  const buyMint = chatResearchCardBuyMint(card);
   return `
     <article class="chat-research-card">
       <header class="chat-research-card-head">
@@ -22373,9 +22449,10 @@ function chatResearchCardHtml(card: ChatResearchCard): string {
           ${section.bullets?.length ? `<ul>${section.bullets.slice(0, 6).map((bullet) => `<li>${escapeHtml(bullet)}</li>`).join('')}</ul>` : ''}
         </section>
       `).join('')}
-      ${chatResearchItemsHtml(card.items)}
+      ${chatResearchItemsHtml(card.items, card.kind)}
       <footer class="chat-research-foot">
         ${generated ? `<span>${escapeHtml(generated)}</span>` : ''}
+        ${chatResearchBuyButtonHtml(card, buyMint, 'footer')}
         ${card.target ? `<button type="button" data-copy="${escapeHtml(card.target)}" data-copy-name="${escapeHtml(t('Research target'))}">${escapeHtml(t('Copy'))}</button>` : ''}
         ${card.target && CHAT_BASE58_MINT.test(card.target) ? `<a href="${escapeHtml(solscanAccountUrl(card.target))}" target="_blank" rel="noreferrer">${escapeHtml(t('Open Solscan'))}</a>` : ''}
       </footer>
@@ -23166,7 +23243,6 @@ function chatProofConfirm(): void {
 // chatConnectorPopoverHtml. Read-only ("Evidence only") forms sign a proof receipt; queueable
 // forms drop a chat-originated PreparedAction into the same approval rail.
 
-// Connectors the user has enabled (and that work on this cluster + expose a Create flow).
 // The first connector form usable in chat: its template must exist in AGENT_PLAN_TEMPLATES (blink +
 // generic position-check forms are excluded there, and templateById() would otherwise fall back to the
 // SWAP template). Prefer a queueable action so the surface opens on something actionable, not a
@@ -23178,25 +23254,28 @@ function firstChatUsableConnectorForm(connector: ProtocolConnector): ConnectorAc
   return forms.find((form) => form.outcome === 'queueable') ?? forms[0];
 }
 
-function chatEnabledConnectorsForCreate(): ProtocolConnector[] {
+function chatConnectorsForCreate(): ProtocolConnector[] {
   const env = connectorDraftEnvironment();
   // Action-scoped surfaces filter the route picker to the verb's connectors (Sanctum excluded);
-  // otherwise all connectors. Then keep only enabled+supported ones with a chat-usable form.
+  // otherwise all connectors. Keep enabled connectors plus disabled/credential-required connectors
+  // that can open the same Enable/API-key sheet as New Request.
   const cat = state.createActionCategory;
   const scoped = isConnectorAction(cat);
   const base = scoped ? connectorsForCategory(cat as ActionCategory, env) : connectorCreateConnectors(env);
-  return base.filter((connector) =>
-    connectorCreateStatus(connector, env).selectable &&
+  return base.filter((connector) => {
+    const status = connectorCreateStatus(connector, env);
     // Scoped: require a template-backed form IN the category (so switching connectors stays in-scope
     // and never resolves to a wrong/undefined form). Unscoped: any chat-usable form.
-    Boolean(scoped ? firstFormForCategory(connector, cat as ActionCategory) : firstChatUsableConnectorForm(connector)));
+    return (status.selectable || connectorCreateStatusIsConnectable(status.kind)) &&
+      Boolean(scoped ? firstFormForCategory(connector, cat as ActionCategory) : firstChatUsableConnectorForm(connector));
+  });
 }
 
 function chatConnectorSurfaceBodyHtml(): string {
-  const connectors = chatEnabledConnectorsForCreate();
+  const connectors = chatConnectorsForCreate();
   if (connectors.length === 0) {
     // Action-scoped with no enabled connector → offer to enable the top one inline (else generic hint).
-    const gate = isConnectorAction(state.createActionCategory) ? connectGateFor(state.createActionCategory) : '';
+    const gate = isConnectorAction(state.createActionCategory) ? connectGateFor(state.createActionCategory, 'chat') : '';
     return `
       <div class="chat-sheet-form chat-connector-form" data-chat-sheet-form>
         <p class="chat-token-empty">${escapeHtml(t('No connectors enabled. Enable a protocol connector in Preferences to prepare connector actions.'))}</p>
@@ -23206,6 +23285,11 @@ function chatConnectorSurfaceBodyHtml(): string {
   const env = connectorDraftEnvironment();
   const template = selectedTemplate();
   const selectedConnector = selectedConnectorForCreate(template);
+  const selectedStatus = selectedConnector ? connectorCreateStatus(selectedConnector, env) : null;
+  const selectedNeedsConnect = Boolean(selectedConnector && selectedStatus && !selectedStatus.selectable && connectorCreateStatusIsConnectable(selectedStatus.kind));
+  const selectedConnectGate = selectedConnector && selectedNeedsConnect && isConnectorAction(state.createActionCategory)
+    ? connectorConnectGateButton(selectedConnector, state.createActionCategory as ActionCategory, 'chat')
+    : '';
   // Reuse the New Request connector picker options, minus the "Use connector" clear row
   // (the chat surface always keeps a connector selected), wired to the SAME global handler.
   const connectorOptions = connectorCreatePickerOptions(connectors, env).filter((option) => option.value !== '');
@@ -23223,6 +23307,7 @@ function chatConnectorSurfaceBodyHtml(): string {
         <span>${escapeHtml(t('Connector'))}</span>
         ${connectorPicker}
       </div>
+      ${selectedConnectGate}
       <div class="field compact planner-field">
         <span>${escapeHtml(t('Plan template'))}</span>
         ${templatePicker(template)}
@@ -23235,7 +23320,7 @@ function chatConnectorSurfaceBodyHtml(): string {
         ${plannerFieldsHtml(template)}
       </div>
       <div class="chat-sheet-confirm">
-        <button type="button" class="primary" data-chat-connector-confirm>${escapeHtml(t('Confirm'))}</button>
+        <button type="button" class="primary" data-chat-connector-confirm ${selectedNeedsConnect ? 'disabled' : ''}>${escapeHtml(t('Confirm'))}</button>
       </div>
     </div>`;
 }
@@ -23304,6 +23389,12 @@ function openChatActionSurface(category: ActionCategory): void {
   const form = top ? firstFormForCategory(top, category) : undefined;
   if (form) {
     applyConnectorActionFormForCategory(form, category);
+    if (top) {
+      const status = connectorCreateStatus(top, env);
+      if (!status.selectable && connectorCreateStatusIsConnectable(status.kind)) {
+        openConnectorConnect(top.id, category, 'chat');
+      }
+    }
   } else {
     render();
   }
@@ -23899,9 +23990,12 @@ function chatResearchPanelHtml(variant: 'web' | 'sheet'): string {
 
 function chatResearchButtonHtml(surface: 'web' | 'mobile'): string {
   if (!researchTabsVisible()) return '';
+  const expanded = surface === 'mobile'
+    ? state.activeMobileRailSheet === 'chat-research'
+    : state.chatResearchOpen;
   return `
-    <div class="chat-research-trigger-wrap chat-research-trigger-wrap--${surface}${state.chatResearchOpen ? ' open' : ''}" data-chat-research>
-      <button type="button" class="chat-research-trigger" data-chat-research-toggle aria-haspopup="${surface === 'mobile' ? 'dialog' : 'menu'}" aria-expanded="${state.chatResearchOpen ? 'true' : 'false'}">
+    <div class="chat-research-trigger-wrap chat-research-trigger-wrap--${surface}${expanded ? ' open' : ''}" data-chat-research>
+      <button type="button" class="chat-research-trigger" data-chat-research-toggle aria-haspopup="${surface === 'mobile' ? 'dialog' : 'menu'}" aria-expanded="${expanded ? 'true' : 'false'}">
         <span class="chat-research-trigger-icon" aria-hidden="true">⌕</span>
         <span>${escapeHtml(t('Research'))}</span>
       </button>
@@ -26810,11 +26904,17 @@ function researchListFromTokens(data: Record<string, unknown>, kind: ChatResearc
       : price;
     const meta = [change, volume ? `${volume} vol` : '', mcap ? `${mcap} mcap` : ''].filter(Boolean).join(' · ');
     const subtitle = [name, mint ? short(mint) : ''].filter(Boolean).join(' · ');
+    const swapFields = chatResearchSwapFields(mint, {
+      symbol,
+      decimals: researchNumber(row, ['decimals']),
+      logoURI: researchString(row, ['logoURI', 'logoUri', 'logo', 'icon']),
+    });
     return {
       rank: index + 1,
       title: symbol,
       ...(subtitle ? { subtitle } : {}),
       ...(mint ? { mint } : {}),
+      ...swapFields,
       ...(value ? { value } : {}),
       ...(meta ? { meta } : {}),
       ...(price ? { price } : {}),
@@ -26851,6 +26951,172 @@ function chatResearchToolData(results: ChatResearchToolResult[], tool: string): 
 
 type ChatResearchCardBase = Pick<ChatResearchCard, 'kind' | 'title' | 'target' | 'source' | 'generatedAt'>;
 
+const CHAT_RESEARCH_FIXTURE_MINT = '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr';
+const CHAT_RESEARCH_FIXTURE_WALLET = 'FvRKx98tsAzZxRXsSypdKVR4a1FGnBSiEed55udkn1pk';
+const CHAT_RESEARCH_FIXTURE_TIME = '2026-06-29T07:00:00.000Z';
+
+function chatResearchFixturesEnabled(): boolean {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const requested = String(params.get('researchFixtures') ?? '').trim().toLowerCase();
+    if (requested !== '1' && requested !== 'true') return false;
+    const viteDev = (import.meta as ImportMeta & { env?: { DEV?: boolean; MODE?: string } }).env;
+    const host = window.location.hostname.toLowerCase();
+    return viteDev?.DEV === true || viteDev?.MODE === 'test' || host === 'localhost' || host === '127.0.0.1';
+  } catch {
+    return false;
+  }
+}
+
+function chatResearchFixtureBase(actionId: ChatResearchActionId, target = ''): ChatResearchCardBase {
+  const action = chatResearchActionById(actionId);
+  const base: ChatResearchCardBase = {
+    kind: actionId,
+    title: action ? t(action.title) : actionId,
+    source: 'fixture',
+    generatedAt: CHAT_RESEARCH_FIXTURE_TIME,
+  };
+  if (target) base.target = target;
+  return base;
+}
+
+function chatResearchFixtureTokenMarket(): Record<string, unknown> {
+  return {
+    source: 'fixture',
+    usdPrice: 0.0452,
+    liquidity: 3720000,
+    marketCap: 44330000,
+    fdv: 44330000,
+    volume24h: 509920,
+    holderCount: 136100,
+    topHoldersPercentage: 30.15,
+    priceChange24h: 3.96,
+    organicScore: 100,
+  };
+}
+
+function chatResearchFixtureTokenActivity(): Record<string, unknown> {
+  return {
+    source: 'fixture',
+    priceChangePct: { '1h': 1.2, '4h': -0.6, '24h': 3.6 },
+    buyVsSell24hUsd: { buy: 82000, sell: 510000 },
+    volumeUsd: { '24h': 590000 },
+    uniqueWallets24h: 25,
+    trades24h: 100,
+    holders: 136100,
+  };
+}
+
+function chatResearchFixtureTokenList(kind: ChatResearchActionId): Record<string, unknown>[] {
+  const base = [
+    ['POPCAT', 'Popcat', 'CzLSujWBLFsA8b5wqD9C8Xn1x3aR5aoCjQ9gYxRSo111', 0.0452, 3.96, 509920, 44330000, 3720000],
+    ['ANSEM', 'The Black Bull', '3MgULuLz4DkR3fWbY9jNmF8j8kYqZfJH5x2pAnpump1', 0.000121, 171.7, 16800000, 4300000, 4300],
+    ['LIKE', 'I LIKE THIS COIN', 'CJMihkLqN7NVrYk6jK63wAnEqxvK4TuM9VtPz3y11111', 0.000784, 62.7, 783900, 7800000, 7500000],
+    ['JUP', 'Jupiter', 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN', 1.05, 2.4, 145000000, 1430000000, 64200000],
+    ['BONK', 'Bonk', 'DezXAZ8z7PnrnRJjz3K5H7nqQ9pPB2634DkP3x4rBONK', 0.000018, -4.8, 38300000, 1240000000, 19800000],
+    ['WIF', 'dogwifhat', 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzL3qR4a1WIF11', 0.86, 11.2, 89000000, 862000000, 32100000],
+    ['PYUSD', 'PayPal USD', '2b1kV6D9pMjxZVwJmduN6zF7NPv2SxyLWXBAypYUSD11', 0.999, 0.02, 6200000, 384000000, 6900000],
+    ['HONEY', 'Hivemapper', '4vMEe23M9w6t4q2xQ58G3aCNeQwXwRzwoHONEY111', 0.072, 6.3, 4800000, 219000000, 8100000],
+  ];
+  return base.map((row, index) => {
+    const [symbol, name, mint, price, change, volume, marketCap, liquidity] = row;
+    return {
+      symbol,
+      name,
+      mint,
+      usdPrice: price,
+      priceChange24h: change,
+      volume24h: volume,
+      marketCap,
+      liquidity,
+      netFlowUsd: kind === 'smart-money-tokens' ? 38000 - index * 4200 : undefined,
+      smartTraders: kind === 'smart-money-tokens' ? 18 - index : undefined,
+    };
+  });
+}
+
+function chatResearchFixtureTraders(): Record<string, unknown>[] {
+  return [
+    { address: '9kqqqJaayL2SXWcYg6drbNk1FQnF3SgzCG1R4n6nSayL', pnlUsd: 18700, volumeUsd: 112000, trades: 1836 },
+    { address: '3tRfaJ4pRC9dKXxuwkNyoqkYtA3Bx9bGc1DQsGPRPC9', pnlUsd: 9200, volumeUsd: 169900, trades: 1846 },
+    { address: '2FFz3EqZNNkE4cR7cLSMNkzTu2Qno6sQwLgygTVZNNk', pnlUsd: -1430, volumeUsd: 46300, trades: 27 },
+    { address: 'GcP6seQKQ5tHHo6RZEn1q5q9FQ2g5Cwz5d2J3JQUKa1', pnlUsd: 6400, volumeUsd: 457300, trades: 1917 },
+    { address: 'GQWDz3JmOBoXbqP6sx4EtnXwQbG9pxwW4S1j5nOBoX', pnlUsd: 2100, volumeUsd: 460100, trades: 1929 },
+  ];
+}
+
+function chatResearchFixtureCards(): ChatResearchCard[] {
+  const safety = { source: 'fixture', verified: true, mintAuthorityDisabled: true, freezeAuthorityDisabled: true, organicScore: 100 };
+  const market = chatResearchFixtureTokenMarket();
+  const holders = { source: 'fixture', count: 136100, topHoldersPct: 30.15, topHolderPct: 12.04 };
+  const rugHolders = { source: 'fixture', count: 136100, topHoldersPct: 40.95, topHolderPct: 12.04 };
+  const activity = chatResearchFixtureTokenActivity();
+  const age = { source: 'fixture', createdAt: '2023-12-13T15:20:00.000Z', ageSeconds: 929 * 86400 };
+  const supply = { source: 'fixture', mintCount: 0, burnCount: 1, changes: [] };
+  const portfolio = {
+    source: 'fixture',
+    netWorthUsd: 862,
+    holdings: [
+      { symbol: 'SOL', mint: WSOL_MINT, uiAmount: 7.83, valueUsd: 565 },
+      { symbol: 'weremeow', mint: 'WEREmeowwqN5onrN7sP4xQ7zQen2pK8y9Yq9Qmeow11', uiAmount: 11970000, valueUsd: 245 },
+      { symbol: 'Cloudy', mint: 'CLoudYcoPiLot11111111111111111111111111111111', uiAmount: 3560000, valueUsd: 18 },
+      { symbol: 'HIGHER', mint: 'HiGHerCo1n1111111111111111111111111111111111', uiAmount: 933100, valueUsd: 4.2 },
+      { symbol: 'KIRBY', mint: 'K1RBY11111111111111111111111111111111111111', uiAmount: 5670, valueUsd: 3.7 },
+    ],
+  };
+  const pnl = { source: 'fixture', totalPnlUsd: 328.1, roiPct: 38, winRatePct: 61, tradeCount: 13 };
+  const origin = { source: 'fixture', funder: '8LAnvx7wx7DqE2zQd5CBYvaQmVFXts8rGHr3gLKe1L' };
+  const worth = {
+    source: 'fixture',
+    changePct: 12.4,
+    series: [612, 644, 620, 688, 701, 760, 743, 808, 862].map((netWorthUsd) => ({ netWorthUsd })),
+  };
+  const regime = {
+    source: 'fixture',
+    fearGreed: 12,
+    fearGreedLabel: 'Extreme Fear',
+    totalMarketCapUsd: 2190000000000,
+    marketCapChangePct24hUsd: -0.8,
+    btcDominancePct: 55.8,
+    ethDominancePct: 9.6,
+  };
+  const priority = { source: 'fixture', recommendedMicroLamports: 183000, congestion: 'low' };
+  return [
+    buildTokenSafetyResearchCard(chatResearchFixtureBase('token-safety', CHAT_RESEARCH_FIXTURE_MINT), safety, market, holders),
+    buildRugScanResearchCard(chatResearchFixtureBase('rug-scan', CHAT_RESEARCH_FIXTURE_MINT), safety, market, supply, activity, rugHolders, age),
+    buildWhaleScanResearchCard(chatResearchFixtureBase('whale-scan', CHAT_RESEARCH_FIXTURE_MINT), rugHolders, { source: 'fixture', traders: chatResearchFixtureTraders() }, activity),
+    buildLifecycleResearchCard(chatResearchFixtureBase('token-lifecycle', CHAT_RESEARCH_FIXTURE_MINT), age, market, activity),
+    buildDevForensicsResearchCard(chatResearchFixtureBase('dev-forensics', CHAT_RESEARCH_FIXTURE_MINT), safety, market, age, supply),
+    buildWalletXrayResearchCard(chatResearchFixtureBase('wallet-xray', CHAT_RESEARCH_FIXTURE_WALLET), portfolio, pnl, origin, worth),
+    buildMarketRegimeResearchCard(chatResearchFixtureBase('market-regime'), regime, priority),
+    buildTokenListResearchCard(chatResearchFixtureBase('trending-tokens'), 'trending-tokens', { source: 'fixture', tokens: chatResearchFixtureTokenList('trending-tokens') }),
+    buildTokenListResearchCard(chatResearchFixtureBase('new-listings'), 'new-listings', { source: 'fixture', note: t('Fresh pairs. Run a safety check before trading.'), tokens: chatResearchFixtureTokenList('new-listings') }),
+    buildTokenListResearchCard(chatResearchFixtureBase('smart-money-tokens'), 'smart-money-tokens', { source: 'fixture', tokens: chatResearchFixtureTokenList('smart-money-tokens') }),
+    buildTopTradersResearchCard(chatResearchFixtureBase('top-traders', CHAT_RESEARCH_FIXTURE_MINT), { source: 'fixture', traders: chatResearchFixtureTraders() }),
+  ];
+}
+
+function chatResearchFixtureMessages(): ChatMessage[] {
+  let filter = '';
+  try {
+    filter = String(new URLSearchParams(window.location.search).get('researchFixture') ?? '').trim().toLowerCase();
+  } catch {
+    filter = '';
+  }
+  const cards = chatResearchFixtureCards();
+  const filtered = filter
+    ? cards.filter((card, index) => card.kind === filter || String(index + 1) === filter)
+    : cards;
+  return (filtered.length ? filtered : cards).map((card, index) => ({
+    id: `research-fixture-${index + 1}`,
+    role: 'assistant',
+    content: card.summary,
+    createdAt: CHAT_RESEARCH_FIXTURE_TIME,
+    status: 'done',
+    researchCard: card,
+  }));
+}
+
 function chatResearchCompactSections(sections: ChatResearchSection[]): ChatResearchSection[] {
   return sections.filter((section) => (section.rows?.length ?? 0) > 0 || (section.bullets?.length ?? 0) > 0).slice(0, 4);
 }
@@ -26883,6 +27149,7 @@ function buildTokenSafetyResearchCard(
   pushResearchRow(whaleRows, t('Holders scanned'), researchCompact(researchNumber(holders, ['count'])));
   return {
     ...base,
+    ...chatResearchCardSwapFields(base),
     summary: t('Token safety research complete.'),
     subtitle: t('Compact token health check.'),
     hero: {
@@ -26939,6 +27206,7 @@ function buildRugScanResearchCard(
     ];
   return {
     ...base,
+    ...chatResearchCardSwapFields(base),
     summary: t('Rug scanner research complete.'),
     subtitle: t('Heuristic risk scan from market, authority, holder, and flow data.'),
     hero: {
@@ -26991,6 +27259,7 @@ function buildWhaleScanResearchCard(
   pushResearchRow(rows, t('Top holders share'), researchPct(researchNumber(holders, ['topHoldersPct', 'topHoldersPercentage'])));
   return {
     ...base,
+    ...chatResearchCardSwapFields(base),
     summary: t('Whale scanner research complete.'),
     subtitle: t('Flow, top-holder, and top-trader snapshot.'),
     hero: {
@@ -27048,6 +27317,7 @@ function buildLifecycleResearchCard(
   ];
   return {
     ...base,
+    ...chatResearchCardSwapFields(base),
     summary: t('Token lifecycle research complete.'),
     subtitle: t('Heuristic trajectory and survival snapshot.'),
     hero: {
@@ -27274,6 +27544,7 @@ function buildTopTradersResearchCard(
   const items = researchListFromTraders(traders);
   return {
     ...base,
+    ...chatResearchCardSwapFields(base),
     summary: t('Top trader research complete.'),
     subtitle: t('Highest activity wallets returned by the trader feed.'),
     hero: {
@@ -27775,6 +28046,92 @@ function handleChatReceiveAction(): void {
   chatScrollPinned = true;
   chatForceScrollBottom = true;
   saveChatHistoryState();
+  render();
+}
+
+function chatResearchBuyBuilderToken(mint: string, symbol = '', decimalsRaw: number | undefined, logoURI?: string): ChatBuilderToken | null {
+  const normalized = mint.trim();
+  if (!CHAT_BASE58_MINT.test(normalized)) return null;
+  const metadata = tokenMarketMetadata.get(normalized);
+  const known = knownBrowserTokenByMint(normalized);
+  return {
+    mint: normalized,
+    symbol: symbol || metadata?.symbol || known?.symbol || tokenDisplayLabel(normalized),
+    decimals: decimalsRaw ?? metadata?.decimals ?? known?.decimals ?? 0,
+    ...(logoURI || metadata?.logoURI ? { logoURI: logoURI || metadata?.logoURI } : {}),
+  };
+}
+
+function hydrateChatResearchBuyToken(mint: string): void {
+  void fetchTokenMetadataForMints([mint])
+    .then((changed) => {
+      if (!changed || state.activeTab !== 'chat') return;
+      const builder = state.chatActionBuilder;
+      if (builder?.kind !== 'swap' || builder.toToken?.mint !== mint) return;
+      const metadata = tokenMarketMetadata.get(mint);
+      if (!metadata) return;
+      builder.toToken = {
+        ...builder.toToken,
+        symbol: metadata.symbol || builder.toToken.symbol,
+        decimals: metadata.decimals ?? builder.toToken.decimals,
+        ...(metadata.logoURI ? { logoURI: metadata.logoURI } : {}),
+      };
+      if (!chatUsesSheet()) applyChatBuilderDraft();
+      render();
+    })
+    .catch(() => undefined);
+}
+
+function handleChatResearchBuyAction(button: HTMLButtonElement): void {
+  const mint = button.dataset.chatResearchBuy?.trim() ?? '';
+  const decimals = Number(button.dataset.chatResearchBuyDecimals ?? '');
+  if (!CHAT_BASE58_MINT.test(mint)) {
+    pushToast('error', t('Invalid token'), t('This research card does not include a valid token mint.'));
+    return;
+  }
+  if (mint === WSOL_MINT) {
+    pushToast('error', t('Pick a different token'), t('Choose two different tokens to swap.'));
+    return;
+  }
+  const toToken = chatResearchBuyBuilderToken(
+    mint,
+    button.dataset.chatResearchBuySymbol ?? '',
+    Number.isFinite(decimals) ? decimals : undefined,
+    button.dataset.chatResearchBuyLogo || undefined,
+  );
+  if (!toToken) {
+    pushToast('error', t('Invalid token'), t('This research card does not include a valid token mint.'));
+    return;
+  }
+  state.chatComposerOpen = false;
+  state.chatResearchOpen = false;
+  state.chatResearchDraft = null;
+  state.chatResearchConfirm = null;
+  state.chatActionPicker = null;
+  chatSheetTokenOpen = null;
+  chatSheetNoteOpen = false;
+  closeChatConnectorSurface(true);
+  closeChatRecurringSurface(true);
+  document.querySelector('.chat-plus-menu')?.classList.remove('open');
+  state.chatActionBuilder = {
+    kind: 'swap',
+    fromToken: { ...CHAT_BUILDER_SOL },
+    toToken,
+  };
+  chatTokenPickerModes.fromToken = 'list';
+  chatTokenPickerModes.toToken = 'list';
+  chatTokenListLimits.fromToken = CHAT_TOKEN_PAGE;
+  chatTokenListLimits.toToken = CHAT_TOKEN_PAGE;
+  if (state.address) startWalletBalanceFullLoad(false, { openOverlay: false });
+  ensureChatTokenLogos();
+  hydrateChatResearchBuyToken(mint);
+  if (chatUsesSheet()) {
+    openChatActionSheet();
+    render();
+    return;
+  }
+  chatActionPopoverOpen = true;
+  applyChatBuilderDraft();
   render();
 }
 
@@ -28403,30 +28760,39 @@ function bindChat(): void {
       if (action) { chatForceScrollBottom = true; render(); }
     });
   }
-  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-research-toggle]'), 'click', (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (!researchTabsVisible()) return;
-    if (chatUsesSheet()) {
-      state.chatResearchOpen = false;
-      state.chatResearchDraft = null;
-      state.chatResearchConfirm = null;
-      openMobileRailSheet('chat-research');
-      return;
-    }
-    state.chatResearchOpen = !state.chatResearchOpen;
-    if (state.chatResearchOpen) {
-      state.chatHistoryOpen = false;
-      state.chatPendingOpen = false;
-      state.chatPendingSelectedId = null;
-      state.chatComposerOpen = false;
-      chatActionPopoverOpen = false;
-    } else {
-      state.chatResearchDraft = null;
-      state.chatResearchConfirm = null;
-    }
-    render();
-  });
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-research-buy]')) {
+    bindOnce(button, 'click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      handleChatResearchBuyAction(button);
+    });
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-research-toggle]')) {
+    bindOnce(button, 'click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!researchTabsVisible()) return;
+      if (chatUsesSheet()) {
+        state.chatResearchOpen = false;
+        state.chatResearchDraft = null;
+        state.chatResearchConfirm = null;
+        openMobileRailSheet('chat-research');
+        return;
+      }
+      state.chatResearchOpen = !state.chatResearchOpen;
+      if (state.chatResearchOpen) {
+        state.chatHistoryOpen = false;
+        state.chatPendingOpen = false;
+        state.chatPendingSelectedId = null;
+        state.chatComposerOpen = false;
+        chatActionPopoverOpen = false;
+      } else {
+        state.chatResearchDraft = null;
+        state.chatResearchConfirm = null;
+      }
+      render();
+    });
+  }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-research-tab]')) {
     bindOnce(button, 'click', (event) => {
       event.stopPropagation();
@@ -31494,18 +31860,30 @@ function selectCreateAction(category: ActionCategory): void {
   else render();
 }
 
+function connectorCreateStatusIsConnectable(kind: ConnectorCreateStatusKind): boolean {
+  return kind === 'disabled' || kind === 'needs-credential';
+}
+
+function connectorConnectGateButton(
+  connector: ProtocolConnector,
+  category: ActionCategory,
+  surface: ConnectorConnectSession['surface'],
+): string {
+  return `<button type="button" class="utility create-connect-gate" data-connector-connect-gate data-connect-gate-id="${escapeHtml(connector.id)}" data-connect-gate-category="${escapeHtml(category)}" data-connect-gate-surface="${escapeHtml(surface)}">${escapeHtml(tf('Enable {connector} to continue', { connector: connector.name }))}</button>`;
+}
+
 // Inline connect-gate: if the action has connectors but none enabled, offer to connect the top one.
 // Opens the inline connect surface (keyless Enable OR BYO-key form) — same flow as the dropdown's
 // "Tap to connect" — so a key-required top (e.g. lulo/sanctum) gets its key prompt instead of being
-// toggled on credential-less. Shared by New Request (surface 'create') + Repeat ('recurring').
+// toggled on credential-less. Shared by New Request ('create'), Chat ('chat'), and Repeat ('recurring').
 // Returns '' for base/connectorless actions (swap/send/proof) — they need no connector.
-function connectGateFor(category: ActionCategory | '', surface: 'create' | 'recurring' = 'create'): string {
+function connectGateFor(category: ActionCategory | '', surface: ConnectorConnectSession['surface'] = 'create'): string {
   if (!category) return '';
   const env = connectorDraftEnvironment();
   const connectors = connectorsForCategory(category, env);
   const top = connectors[0];
   if (!top || connectors.some((c) => connectorCreateStatus(c, env).selectable)) return '';
-  return `<button type="button" class="utility create-connect-gate" data-connector-connect-gate data-connect-gate-id="${escapeHtml(top.id)}" data-connect-gate-category="${escapeHtml(category)}" data-connect-gate-surface="${escapeHtml(surface)}">${escapeHtml(tf('Enable {connector} to continue', { connector: top.name }))}</button>`;
+  return connectorConnectGateButton(top, category, surface);
 }
 function createConnectGate(): string {
   return connectGateFor(state.createActionCategory);
@@ -31647,14 +32025,16 @@ function connectorCreatePickerOptions(
       const status = connectorCreateStatus(connector, env);
       // Never disable a connector that is merely un-enabled — keep it selectable so a tap
       // enables it inline. Only genuinely-unusable states (wrong cluster / no flow) stay disabled.
-      const connectable = status.kind === 'disabled' || status.kind === 'needs-credential';
+      const connectable = connectorCreateStatusIsConnectable(status.kind);
+      const credentialConnectable = connectable && connectorNeedsCredential(connector.id);
+      const detailKind: ConnectorCreateStatusKind = credentialConnectable ? 'needs-credential' : status.kind;
       return {
         value: connector.id,
         label: connector.name,
-        meta: status.kind === 'needs-credential' ? t('Add credential') : connectable ? t('Tap to enable') : t(status.meta),
-        detail: connectorCreateOptionDetail(connector, status.kind),
+        meta: credentialConnectable || status.kind === 'needs-credential' ? t('Add credential') : connectable ? t('Tap to enable') : t(status.meta),
+        detail: connectorCreateOptionDetail(connector, detailKind),
         disabled: !status.selectable && !connectable,
-        title: connectorCreateStatusDetailText(connector, status.kind),
+        title: connectorCreateStatusDetailText(connector, detailKind),
         logoId: protocolConnectorLogoId(connector.id),
       };
     }),
@@ -31696,7 +32076,9 @@ function connectorCreateOptionDetail(connector: ProtocolConnector, kind: Connect
     .slice(0, 3)
     .map((form) => t(form.operationLabel))
     .join(' · ');
-  const detail = connectorCreateStatusDetailText(connector, kind);
+  const detail = connectorNeedsCredential(connector.id) && connectorCreateStatusIsConnectable(kind)
+    ? connectorCreateStatusDetailText(connector, 'needs-credential')
+    : connectorCreateStatusDetailText(connector, kind);
   return forms ? `${detail} ${forms}` : detail;
 }
 
@@ -38985,14 +39367,19 @@ function bind(): void {
     });
   });
 
-  // "Enable {connector} to continue" gate (New Request + Repeat): open the inline connect surface
+  // "Enable {connector} to continue" gate (New Request + Chat + Repeat): open the inline connect surface
   // for the top connector — keyless Enable OR BYO-key form — instead of a credential-less toggle.
   for (const gate of document.querySelectorAll<HTMLButtonElement>('[data-connector-connect-gate]')) {
     bindOnce(gate, 'click', () => {
       const id = gate.dataset.connectGateId;
       if (!id) return;
       const category = (gate.dataset.connectGateCategory || '') as ActionCategory | '';
-      const surface = gate.dataset.connectGateSurface === 'recurring' ? 'recurring' : 'create';
+      const surface: ConnectorConnectSession['surface'] =
+        gate.dataset.connectGateSurface === 'recurring'
+          ? 'recurring'
+          : gate.dataset.connectGateSurface === 'chat'
+            ? 'chat'
+            : 'create';
       openConnectorConnect(id, category || null, surface);
     });
   }
@@ -41816,7 +42203,7 @@ function selectConnectorForCreate(connectorId: string): void {
   const status = connectorCreateStatus(connector, env);
   if (!status.selectable) {
     // Un-enabled but otherwise valid → connect it inline instead of dead-ending on a disabled option.
-    if (status.kind === 'disabled' || status.kind === 'needs-credential') connectProtocolConnectorThenSelect(connector);
+    if (connectorCreateStatusIsConnectable(status.kind)) connectProtocolConnectorThenSelect(connector);
     return;
   }
   // Under an active action, pick the connector's first form FOR that action (keeps the route
@@ -41834,7 +42221,10 @@ function connectProtocolConnectorThenSelect(connector: ProtocolConnector): void 
   // connector. Keyless connectors get a one-tap "Enable" confirm; BYO-key connectors get a
   // credential form. On success the selection sticks + the action form applies; cancel only closes
   // the prompt and leaves the caller's tab/surface in place.
-  openConnectorConnect(connector.id, state.createActionCategory || null);
+  const surface: ConnectorConnectSession['surface'] = state.activeTab === 'chat' && state.chatConnectorSession?.active
+    ? 'chat'
+    : 'create';
+  openConnectorConnect(connector.id, state.createActionCategory || null, surface);
 }
 
 function openConnectorConnect(connectorId: string, category: ActionCategory | null, surface: ConnectorConnectSession['surface'] = 'create'): void {
@@ -41897,6 +42287,15 @@ function connectorConnectFinish(connectorId: string, category: ActionCategory | 
     render();
     return;
   }
+  if (surface === 'chat') {
+    if (!form) {
+      render();
+      return;
+    }
+    if (category) applyConnectorActionFormForCategory(form, category);
+    else applyConnectorActionForm(form);
+    return;
+  }
   if (!form) {
     render();
     return;
@@ -41925,6 +42324,13 @@ function connectorConnectSurfaceHtml(): string {
   const savedCredential = connectorHasSavedCredential(session.connectorId);
   const credentialStorageBlocked = byo && (!state.connectorSecrets.available || Boolean(state.connectorSecrets.error));
   const credentialLoading = byo && state.connectorSecrets.loading;
+  const credentialNotice = !byo || savedCredential || (!credentialLoading && !credentialStorageBlocked)
+    ? ''
+    : `
+      <div class="connector-connect-credential-status ${credentialStorageBlocked ? 'blocked' : 'ready'}">
+        <strong>${escapeHtml(credentialLoading ? t('Checking saved credential') : t('Credential save needs Cloud'))}</strong>
+        <p>${escapeHtml(credentialLoading ? t('You can paste the credential now while Agentic checks for a saved one.') : state.connectorSecrets.error || t('Connector key storage is unavailable. Paste the key here; save will retry Cloud storage.'))}</p>
+      </div>`;
   const body = byo
     ? savedCredential
       ? `
@@ -41938,20 +42344,10 @@ function connectorConnectSurfaceHtml(): string {
         <button type="button" class="connector-connect-secondary" data-connector-connect-cancel>${escapeHtml(t('Cancel'))}</button>
         <button type="button" class="connector-connect-primary primary" data-connector-connect-enable>${escapeHtml(t('Enable'))}</button>
       </div>`
-      : credentialLoading || credentialStorageBlocked
-        ? `
+      : `
       <p class="connector-connect-intro">${escapeHtml(readiness.detail)}</p>
       ${readinessHtml}
-      <div class="connector-connect-credential-status blocked">
-        <strong>${escapeHtml(credentialLoading ? t('Checking saved credential') : t('Credential required'))}</strong>
-        <p>${escapeHtml(credentialLoading ? t('Wait for saved connector credentials to finish loading.') : state.connectorSecrets.error || t('Connector key storage is unavailable.'))}</p>
-      </div>
-      <div class="connector-connect-actions">
-        <button type="button" class="connector-connect-secondary" data-connector-connect-cancel>${escapeHtml(t('Cancel'))}</button>
-      </div>`
-        : `
-      <p class="connector-connect-intro">${escapeHtml(readiness.detail)}</p>
-      ${readinessHtml}
+      ${credentialNotice}
       <label class="field compact connector-connect-field"><span>${escapeHtml(credentialLabel)}</span>
         <div class="ai-key-input-wrap">
           <input data-connector-connect-key type="password" autocomplete="off" spellcheck="false" value="${escapeHtml(session.draftApiKey ?? '')}" placeholder="${escapeHtml(meta?.credentialKind === 'access-code' ? t('Paste access code') : t('Paste API key'))}" />
@@ -52211,6 +52607,18 @@ async function refreshCloudSession(strict: boolean): Promise<void> {
   }
 }
 
+async function refreshCloudSessionWithWalletBoundary(strict: boolean): Promise<void> {
+  await refreshCloudSession(strict);
+  await signOutCloudSessionForWalletBoundary('wallet-mismatch');
+}
+
+async function refreshCloudSessionAfterNativeTokenRehydrated(): Promise<void> {
+  await refreshCloudSessionWithWalletBoundary(true);
+  if (cloudSessionMatchesWallet()) {
+    await refreshCloudWorkspaceData().catch(() => undefined);
+  }
+}
+
 async function refreshActiveWorkflowData(): Promise<void> {
   switch (activeWorkflowMode()) {
     case 'agentic-cloud':
@@ -52308,7 +52716,12 @@ async function refreshCloudWorkspaceData(): Promise<void> {
 
 const CLOUD_EVIDENCE_SYNC_TTL_MS = 60_000;
 
-async function cloudFetch(path: string, init: RequestInit = {}): Promise<Response> {
+interface CloudFetchResult {
+  response: Response;
+  authorizationHeaderPresent: boolean;
+}
+
+async function cloudFetchWithContext(path: string, init: RequestInit = {}): Promise<CloudFetchResult> {
   const headers = new Headers(init.headers);
   if (init.body !== undefined && !headers.has('content-type')) {
     headers.set('content-type', 'application/json');
@@ -52325,12 +52738,27 @@ async function cloudFetch(path: string, init: RequestInit = {}): Promise<Respons
       headers.set('authorization', `Bearer ${token}`);
     }
   }
-  return fetch(cloudRequestUrl(path), {
+  const authorizationHeaderPresent = headers.has('authorization');
+  const response = await fetch(cloudRequestUrl(path), {
     ...init,
     credentials: remote ? 'omit' : 'include',
     headers,
   });
+  return { response, authorizationHeaderPresent };
 }
+
+async function cloudFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  return (await cloudFetchWithContext(path, init)).response;
+}
+
+async function connectorSecretsCloudFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  if (nativeCloudApiSurfaceActive()) {
+    await ensureNativeCloudTokenReady();
+  }
+  return cloudFetch(path, init);
+}
+
+configureConnectorSecretsFetch(connectorSecretsCloudFetch);
 
 function hostedAiRequestOptions(options: { signal?: AbortSignal } = {}) {
   return {
@@ -52367,8 +52795,11 @@ function isCloudUnreachableError(err: unknown): err is CloudUnreachableError {
 
 async function cloudRequest<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
   let response: Response;
+  let authorizationHeaderPresent = false;
   try {
-    response = await cloudFetch(path, init);
+    const result = await cloudFetchWithContext(path, init);
+    response = result.response;
+    authorizationHeaderPresent = result.authorizationHeaderPresent;
   } catch (err) {
     if (isAbortError(err)) throw err;
     const url = (() => { try { return cloudRequestUrl(path); } catch { return path; } })();
@@ -52385,8 +52816,21 @@ async function cloudRequest<T = unknown>(path: string, init: RequestInit = {}): 
   const payload = await response.json().catch(() => null) as unknown;
   if (!response.ok) {
     if (response.status === 401) {
-      state.cloudSession = emptyCloudSession('signed-out');
-      await clearNativeCloudSessionToken();
+      if (
+        !nativeCloudApiSurfaceActive() ||
+        shouldClearNativeCloudSessionTokenAfterUnauthorized({
+          nativeCloudApiSurfaceActive: true,
+          authorizationHeaderPresent,
+        })
+      ) {
+        state.cloudSession = emptyCloudSession('signed-out');
+      }
+      if (shouldClearNativeCloudSessionTokenAfterUnauthorized({
+        nativeCloudApiSurfaceActive: nativeCloudApiSurfaceActive(),
+        authorizationHeaderPresent,
+      })) {
+        await clearNativeCloudSessionToken();
+      }
     }
     throw new Error(cloudErrorMessage(payload, response.status));
   }
@@ -52403,6 +52847,9 @@ async function applyNativeCloudSessionResponse(path: string, payload: unknown): 
   const record = payload as Record<string, unknown>;
   if (typeof record.sessionToken === 'string' && record.sessionToken.trim()) {
     await setNativeCloudSessionToken(record.sessionToken.trim());
+    if (path.startsWith('/api/auth/')) {
+      void refreshConnectorSecretsSummary({ force: true, renderOnChange: true });
+    }
     return;
   }
   if (path.startsWith('/api/auth/logout') || record.signedIn === false || record.signedOut === true) {
@@ -62771,10 +63218,10 @@ async function applyAndroidNativeRestore(restored: AndroidNativeRestoreResult): 
   savePersistedState();
 }
 
-async function restoreAndroidNativeSession(): Promise<void> {
+async function restoreAndroidNativeSession(): Promise<boolean> {
   if (state.cluster === 'localnet') {
     state.androidNativeStatus = t('Android native MWA supports mainnet-beta, devnet, and testnet. Select devnet for local testing.');
-    return;
+    return false;
   }
   const expectedAddress =
     state.walletPathSession?.path === 'android-native' &&
@@ -62790,9 +63237,10 @@ async function restoreAndroidNativeSession(): Promise<void> {
     state.androidNativeStatus = expectedAddress
       ? tf('No cached Android MWA authorization found for {wallet}. Tap Discover to reconnect that wallet.', { wallet: short(expectedAddress) })
       : t('No cached Android MWA authorization found. Tap Discover to open the wallet picker.');
-    return;
+    return false;
   }
   await applyAndroidNativeRestore(restored);
+  return true;
 }
 
 async function refreshAndroidNativeCacheState(): Promise<void> {
@@ -62827,7 +63275,7 @@ function assertAndroidNativeRuntime(): void {
   }
 }
 
-async function restoreIosNativeSession(): Promise<void> {
+async function restoreIosNativeSession(): Promise<boolean> {
   const savedIosWalletId =
     state.walletPathSession?.path === 'ios-native' &&
     state.walletPathSession.cluster === state.cluster &&
@@ -62852,7 +63300,7 @@ async function restoreIosNativeSession(): Promise<void> {
       });
   if (!restored) {
     state.iosNativeStatus = `No cached ${iosWalletLabel(savedIosWalletId)} authorization found.`;
-    return;
+    return false;
   }
   walletBackend = restored.backend;
   client = new SolanaSigningClient({ backend: walletBackend });
@@ -62871,6 +63319,8 @@ async function restoreIosNativeSession(): Promise<void> {
     walletBrandId: restored.walletId,
     iosWalletId: restored.walletId,
   });
+  savePersistedState();
+  return true;
 }
 
 async function refreshIosNativeCacheState(): Promise<void> {
@@ -72948,6 +73398,20 @@ function normalizeChatResearchChecklist(input: unknown): ChatResearchIndicator[]
   return items.length ? items : undefined;
 }
 
+function normalizeChatResearchSwapFields(input: Record<string, unknown>): Partial<Pick<ChatResearchCard, 'swapMint' | 'swapSymbol' | 'swapDecimals' | 'swapLogoURI'>> {
+  const mint = typeof input.swapMint === 'string' ? input.swapMint.trim().slice(0, 60) : '';
+  if (!mint || !CHAT_BASE58_MINT.test(mint)) return {};
+  const decimals = typeof input.swapDecimals === 'number' && Number.isFinite(input.swapDecimals)
+    ? Math.max(0, Math.min(18, Math.floor(input.swapDecimals)))
+    : undefined;
+  return {
+    swapMint: mint,
+    ...(typeof input.swapSymbol === 'string' ? { swapSymbol: input.swapSymbol.slice(0, 40) } : {}),
+    ...(decimals !== undefined ? { swapDecimals: decimals } : {}),
+    ...(typeof input.swapLogoURI === 'string' ? { swapLogoURI: input.swapLogoURI.slice(0, 300) } : {}),
+  };
+}
+
 function normalizeChatResearchItems(input: unknown): ChatResearchListItem[] | undefined {
   if (!Array.isArray(input)) return undefined;
   const items = input.slice(0, 30).map((raw): ChatResearchListItem | null => {
@@ -72957,6 +73421,7 @@ function normalizeChatResearchItems(input: unknown): ChatResearchListItem[] | un
       title: item.title.slice(0, 80),
       ...(typeof item.subtitle === 'string' ? { subtitle: item.subtitle.slice(0, 140) } : {}),
       ...(typeof item.mint === 'string' ? { mint: item.mint.slice(0, 60) } : {}),
+      ...normalizeChatResearchSwapFields(item),
       ...(typeof item.value === 'string' ? { value: item.value.slice(0, 80) } : {}),
       ...(typeof item.meta === 'string' ? { meta: item.meta.slice(0, 140) } : {}),
       ...(normalizeChatResearchTone(item.tone) ? { tone: normalizeChatResearchTone(item.tone) } : {}),
@@ -73015,6 +73480,7 @@ function normalizeChatResearchCard(input: unknown): ChatResearchCard | undefined
     title: card.title.slice(0, 120),
     ...(typeof card.subtitle === 'string' ? { subtitle: card.subtitle.slice(0, 220) } : {}),
     ...(typeof card.target === 'string' ? { target: card.target.slice(0, 120) } : {}),
+    ...normalizeChatResearchSwapFields(card),
     ...(typeof card.source === 'string' ? { source: card.source.slice(0, 80) } : {}),
     generatedAt: typeof card.generatedAt === 'string' ? card.generatedAt : new Date().toISOString(),
     summary: card.summary.slice(0, 240),

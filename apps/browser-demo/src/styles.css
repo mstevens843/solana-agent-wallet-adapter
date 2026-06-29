@@ -38,6 +38,8 @@
   --mobile-nav-top-gap: 8px;
   --mobile-content-gap: 10px;
   --mobile-nav-height: 58px;
+  --toast-mobile-top-clearance: calc(16px + env(safe-area-inset-top, 0px));
+  --toast-mobile-bottom-clearance: calc(16px + env(safe-area-inset-bottom, 0px));
   color: var(--text);
   background: var(--bg);
   font-family:
@@ -15229,9 +15231,21 @@ button.danger:hover:not(:disabled) {
   .toast-stack {
     bottom: auto;
     left: calc(16px + env(safe-area-inset-left, 0px));
+    max-height: calc(100dvh - var(--toast-mobile-top-clearance) - var(--toast-mobile-bottom-clearance));
     max-width: calc(100vw - 32px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+    overflow-y: auto;
     right: calc(16px + env(safe-area-inset-right, 0px));
-    top: calc(var(--mobile-nav-safe-top) + 16px);
+    top: var(--toast-mobile-top-clearance);
+  }
+
+  body:has(.shell.android-shell) {
+    --toast-mobile-bottom-clearance: var(--bottom-dock-clearance);
+    --toast-mobile-top-clearance: max(48px, calc(env(safe-area-inset-top, 0px) + 16px));
+  }
+
+  body:has(.shell.ios-native-shell) {
+    --toast-mobile-bottom-clearance: var(--bottom-dock-clearance);
+    --toast-mobile-top-clearance: max(64px, calc(env(safe-area-inset-top, 0px) + 16px));
   }
 
   .homepage-demo-cta {
@@ -22972,6 +22986,21 @@ button.danger:hover:not(:disabled) {
   gap: 9px;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   padding: 12px;
+}
+
+.command-ai-panel .ai-settings-card.plan-connector-settings-card[data-ai-settings-scope="command"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.command-ai-panel .ai-settings-card.plan-connector-settings-card[data-ai-settings-scope="command"] > * {
+  grid-column: 1 / -1;
+}
+
+.command-ai-panel .plan-connector-settings-card[data-ai-settings-scope="command"] .website-plan-connector-command code {
+  display: block;
+  overflow-x: auto;
+  overflow-wrap: normal;
+  white-space: nowrap;
 }
 
 .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] > .ai-settings-intro,
@@ -37346,7 +37375,7 @@ button.danger:hover:not(:disabled) {
   align-items: center;
   display: grid;
   gap: 8px;
-  grid-template-columns: 82px minmax(0, 1fr) 44px;
+  grid-template-columns: 82px minmax(0, 1fr) 56px;
   min-width: 0;
 }
 .chat-research-mini-bar span {
@@ -37376,7 +37405,10 @@ button.danger:hover:not(:disabled) {
   color: var(--text);
   font-size: 0.7rem;
   font-weight: 900;
+  min-width: 0;
+  overflow: hidden;
   text-align: right;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .chat-research-checklist {
@@ -37565,9 +37597,22 @@ button.danger:hover:not(:disabled) {
 .chat-research-item-actions button {
   width: 30px;
 }
+.chat-research-item-actions .chat-research-buy {
+  background: rgba(95, 227, 161, 0.1);
+  border-color: rgba(95, 227, 161, 0.24);
+  color: var(--accent);
+  min-width: 42px;
+  padding-inline: 8px;
+  width: auto;
+}
 .chat-research-item-actions svg {
   height: 13px;
   width: 13px;
+}
+.chat-research-foot .chat-research-buy {
+  background: rgba(95, 227, 161, 0.1);
+  border-color: rgba(95, 227, 161, 0.24);
+  color: var(--accent);
 }
 .chat-research-foot {
   align-items: center;
@@ -37578,6 +37623,204 @@ button.danger:hover:not(:disabled) {
   font-size: 0.7rem;
   gap: 7px;
   padding-top: 9px;
+}
+
+@media (max-width: 520px) {
+  .chat-research-card {
+    gap: 8px;
+  }
+  .chat-research-card-head {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 7px;
+    padding-bottom: 8px;
+  }
+  .chat-research-card-head strong {
+    font-size: 0.96rem;
+  }
+  .chat-research-card-head p {
+    font-size: 0.76rem;
+  }
+  .chat-research-card-head code {
+    align-self: start;
+    max-width: 100%;
+  }
+  .chat-research-hero {
+    border-radius: 10px;
+    gap: 8px;
+    padding: 9px;
+  }
+  .chat-research-hero.has-meter {
+    grid-template-columns: 66px minmax(0, 1fr);
+  }
+  .chat-research-hero-meter {
+    padding: 6px;
+    width: 64px;
+  }
+  .chat-research-hero-meter::before {
+    inset: 6px;
+  }
+  .chat-research-hero-meter strong {
+    font-size: 0.84rem;
+    max-width: 46px;
+  }
+  .chat-research-hero-meter em {
+    font-size: 0.48rem;
+    max-width: 46px;
+  }
+  .chat-research-hero-copy strong {
+    font-size: 0.94rem;
+  }
+  .chat-research-hero-copy p {
+    font-size: 0.72rem;
+  }
+  .chat-research-badges {
+    gap: 5px;
+  }
+  .chat-research-badges span {
+    font-size: 0.62rem;
+    min-height: 22px;
+    padding: 3px 7px;
+  }
+  .chat-research-highlights {
+    gap: 5px;
+  }
+  .chat-research-highlights span {
+    padding: 7px;
+  }
+  .chat-research-highlights em,
+  .chat-research-highlights strong {
+    white-space: normal;
+  }
+  .chat-research-mini-bars,
+  .chat-research-chart {
+    padding: 8px;
+  }
+  .chat-research-mini-bar {
+    gap: 6px;
+    grid-template-columns: 66px minmax(0, 1fr) 52px;
+  }
+  .chat-research-mini-bar span {
+    font-size: 0.64rem;
+  }
+  .chat-research-mini-bar strong {
+    font-size: 0.66rem;
+  }
+  .chat-research-bar {
+    gap: 6px;
+    grid-template-columns: 36px minmax(0, 1fr) auto;
+  }
+  .chat-research-check {
+    align-items: start;
+    gap: 3px 8px;
+    grid-template-columns: 10px minmax(0, 1fr);
+    min-height: 0;
+    padding: 7px 8px;
+  }
+  .chat-research-check span {
+    margin-top: 5px;
+  }
+  .chat-research-check strong {
+    white-space: normal;
+  }
+  .chat-research-check em {
+    grid-column: 2;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+  .chat-research-row {
+    gap: 8px;
+    grid-template-columns: minmax(76px, 0.74fr) minmax(0, 1fr);
+    padding: 7px 0;
+  }
+  .chat-research-row dt {
+    font-size: 0.66rem;
+  }
+  .chat-research-row dd {
+    font-size: 0.78rem;
+  }
+  .chat-research-section {
+    padding-top: 8px;
+  }
+  .chat-research-item {
+    align-items: start;
+    gap: 5px 7px;
+    grid-template-areas:
+      "rank logo main actions"
+      ". . value value";
+    grid-template-columns: 20px auto minmax(0, 1fr) auto;
+    padding: 7px;
+  }
+  .chat-research-rank {
+    grid-area: rank;
+    padding-top: 5px;
+  }
+  .chat-research-item > .chat-action-logo,
+  .chat-research-item > .chat-research-item-dot {
+    grid-area: logo;
+  }
+  .chat-research-item-main {
+    grid-area: main;
+  }
+  .chat-research-item-value {
+    grid-area: value;
+    justify-self: end;
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .chat-research-item-actions {
+    grid-area: actions;
+  }
+  .chat-research-item-actions button,
+  .chat-research-item-actions a {
+    min-height: 28px;
+  }
+  .chat-research-item-actions .chat-research-buy {
+    min-width: 40px;
+    padding-inline: 7px;
+  }
+  .chat-research-foot {
+    font-size: 0.66rem;
+    gap: 6px;
+  }
+}
+
+@media (max-width: 380px) {
+  .chat-research-highlights {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .chat-research-hero.has-meter {
+    grid-template-columns: 58px minmax(0, 1fr);
+  }
+  .chat-research-hero-meter {
+    width: 56px;
+  }
+  .chat-research-hero-meter strong,
+  .chat-research-hero-meter em {
+    max-width: 40px;
+  }
+  .chat-research-mini-bar {
+    grid-template-columns: minmax(0, 1fr) 52px;
+  }
+  .chat-research-mini-bar span {
+    grid-column: 1 / -1;
+  }
+  .chat-research-bar {
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+  }
+  .chat-research-item {
+    grid-template-columns: 18px auto minmax(0, 1fr) auto;
+  }
+  .chat-research-item-main strong {
+    font-size: 0.82rem;
+  }
+  .chat-research-item-main em,
+  .chat-research-item-main small {
+    font-size: 0.66rem;
+  }
 }
 
 /* Desktop/web connector popover is a touch wider than the swap/send popover (forms are denser). */

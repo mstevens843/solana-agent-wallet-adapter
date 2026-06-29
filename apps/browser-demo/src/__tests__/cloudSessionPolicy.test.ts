@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   HOSTED_BYOK_CLOUD_SESSION_REQUIRED,
   hostedByokCloudSessionBlockReason,
+  shouldClearNativeCloudSessionTokenAfterUnauthorized,
   shouldAutoSignOutCloudSession,
 } from '../cloudSessionPolicy.js';
 
@@ -42,13 +43,22 @@ describe('cloud session policy helpers', () => {
     })).toBe(true);
   });
 
-  it('auto signs out a signed-in cloud session during startup when no wallet restored yet', () => {
+  it('keeps a signed-in cloud session during startup when no wallet restored yet', () => {
     expect(shouldAutoSignOutCloudSession({
       cloudStatus: 'signed-in',
       cloudWalletAddress: 'wallet-a',
       connectedWalletAddress: '',
       reason: 'startup',
-    })).toBe(true);
+    })).toBe(false);
+  });
+
+  it('does not let startup sign out a signed-in cloud session by itself', () => {
+    expect(shouldAutoSignOutCloudSession({
+      cloudStatus: 'signed-in',
+      cloudWalletAddress: 'wallet-a',
+      connectedWalletAddress: 'wallet-b',
+      reason: 'startup',
+    })).toBe(false);
   });
 
   it('auto signs out a stale cloud session when another wallet connects', () => {
@@ -58,6 +68,15 @@ describe('cloud session policy helpers', () => {
       connectedWalletAddress: 'wallet-b',
       reason: 'wallet-mismatch',
     })).toBe(true);
+  });
+
+  it('does not auto sign out a stale cloud session until a wallet is actually connected', () => {
+    expect(shouldAutoSignOutCloudSession({
+      cloudStatus: 'signed-in',
+      cloudWalletAddress: 'wallet-a',
+      connectedWalletAddress: '',
+      reason: 'wallet-mismatch',
+    })).toBe(false);
   });
 
   it('does not sign out non-active cloud states', () => {
@@ -80,5 +99,22 @@ describe('cloud session policy helpers', () => {
       aiMode: 'session',
       cloudSessionMatchesWallet: false,
     })).toBe('');
+  });
+
+  it('clears native cloud tokens only after a token-bearing unauthorized response', () => {
+    expect(shouldClearNativeCloudSessionTokenAfterUnauthorized({
+      nativeCloudApiSurfaceActive: true,
+      authorizationHeaderPresent: true,
+    })).toBe(true);
+
+    expect(shouldClearNativeCloudSessionTokenAfterUnauthorized({
+      nativeCloudApiSurfaceActive: true,
+      authorizationHeaderPresent: false,
+    })).toBe(false);
+
+    expect(shouldClearNativeCloudSessionTokenAfterUnauthorized({
+      nativeCloudApiSurfaceActive: false,
+      authorizationHeaderPresent: true,
+    })).toBe(false);
   });
 });
