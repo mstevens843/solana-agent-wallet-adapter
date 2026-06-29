@@ -2133,7 +2133,8 @@ class MainActivity : FragmentActivity() {
                 "status" -> statusJson()
                 "connect" -> {
                     val walletPackage = payload.optString("walletPackage", "")
-                    val record = activity.mwaController.connect(activity.activityResultSender, clusterFromPayload(payload), walletPackage)
+                    val walletType = payload.optInt("walletType", WalletRegistry.UNKNOWN)
+                    val record = activity.mwaController.connect(activity.activityResultSender, clusterFromPayload(payload), walletPackage, walletType)
                     statusJson(record)
                 }
                 "reconnectLatest" -> {
@@ -2171,6 +2172,8 @@ class MainActivity : FragmentActivity() {
                         clusterFromPayload(payload),
                         domain,
                         statement,
+                        payload.optString("walletPackage", ""),
+                        payload.optInt("walletType", WalletRegistry.UNKNOWN),
                     )
                     signInResultJson(signInResult)
                 }
@@ -2262,6 +2265,7 @@ class MainActivity : FragmentActivity() {
                 .put("authToken", result.authToken)
                 .put("authTokenLen", result.authToken.length)
                 .put("walletPackage", result.walletPackage)
+                .put("walletType", result.walletType)
                 .put("cluster", result.cluster)
                 .put("path", result.path)
             AgentMwaLog.info(

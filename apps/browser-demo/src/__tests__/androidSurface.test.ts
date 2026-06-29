@@ -94,6 +94,37 @@ describe('AndroidNativeWalletBackend cached restore', () => {
     expect(calls).toEqual([]);
   });
 
+  it('can restore provider-scoped native latest when startup explicitly allows it', async () => {
+    const calls: string[] = [];
+    installAndroidBridge((method) => {
+      calls.push(method);
+      if (method === 'reconnectLatest') {
+        return androidStatus({
+          connected: true,
+          address: 'Android11111111111111111111111111111111',
+          authCacheKey: 'mainnet-beta|pkg:com.solflare.mobile|Android11111111111111111111111111111111',
+          walletPackage: 'com.solflare.mobile',
+          walletType: 25,
+        });
+      }
+      throw new Error(`unexpected Android MWA method ${method}`);
+    });
+
+    const restored = await restoreLatestAndroidNativeWallet({
+      cluster: 'mainnet-beta',
+      allowNativeLatest: true,
+    });
+
+    expect(restored).toMatchObject({
+      address: 'Android11111111111111111111111111111111',
+      walletName: 'Solflare',
+      authCacheKey: 'mainnet-beta|pkg:com.solflare.mobile|Android11111111111111111111111111111111',
+      walletPackage: 'com.solflare.mobile',
+      walletType: 25,
+    });
+    expect(calls).toEqual(['reconnectLatest']);
+  });
+
   it('lazy getAddress opens a fresh connect instead of restoring arbitrary latest after a cold start', async () => {
     const calls: string[] = [];
     installAndroidBridge((method) => {
@@ -111,6 +142,80 @@ describe('AndroidNativeWalletBackend cached restore', () => {
 
     await expect(backend.getAddress()).resolves.toBe('Android22222222222222222222222222222222');
     expect(calls).toEqual(['status', 'connect']);
+  });
+
+  it('passes selected provider metadata into fresh connect', async () => {
+    installAndroidBridge((method, payload) => {
+      if (method === 'connect') {
+        expect(payload.walletPackage).toBe('com.solflare.mobile');
+        expect(payload.walletType).toBe(25);
+        return androidStatus({
+          connected: true,
+          address: 'Android33333333333333333333333333333333',
+          authCacheKey: 'mainnet-beta|pkg:com.solflare.mobile|Android33333333333333333333333333333333',
+          walletPackage: 'com.solflare.mobile',
+          walletType: 25,
+        });
+      }
+      throw new Error(`unexpected Android MWA method ${method}`);
+    });
+
+    const backend = new AndroidNativeWalletBackend({
+      cluster: 'mainnet-beta',
+      walletPackage: 'com.solflare.mobile',
+      walletType: 25,
+    });
+
+    await expect(backend.connect()).resolves.toBe('Android33333333333333333333333333333333');
+    expect(backend.walletName()).toBe('Solflare');
+    expect(backend.authCacheKey()).toBe('mainnet-beta|pkg:com.solflare.mobile|Android33333333333333333333333333333333');
+  });
+
+  it('passes selected provider metadata into Android SIWS', async () => {
+    installAndroidBridge((method, payload) => {
+      if (method === 'signIn') {
+        expect(payload.walletPackage).toBe('app.phantom');
+        expect(payload.walletType).toBe(20);
+        return {
+          signature: 'sig',
+          signedMessage: 'bWVzc2FnZQ==',
+          publicKey: 'Android44444444444444444444444444444444',
+          address: 'Android44444444444444444444444444444444',
+          authToken: 'auth',
+          authTokenLen: 4,
+          walletPackage: 'app.phantom',
+          walletType: 20,
+          cluster: 'mainnet-beta',
+          path: 'native',
+        };
+      }
+      if (method === 'status') {
+        return androidStatus({
+          connected: true,
+          address: 'Android44444444444444444444444444444444',
+          authCacheKey: 'mainnet-beta|pkg:app.phantom|Android44444444444444444444444444444444',
+          walletPackage: 'app.phantom',
+          walletType: 20,
+        });
+      }
+      throw new Error(`unexpected Android MWA method ${method}`);
+    });
+
+    const backend = new AndroidNativeWalletBackend({
+      cluster: 'mainnet-beta',
+      walletPackage: 'app.phantom',
+      walletType: 20,
+    });
+
+    await expect(backend.signInWithSolana({
+      domain: 'agentic-signer.com',
+      statement: 'Sign in',
+    })).resolves.toMatchObject({
+      address: 'Android44444444444444444444444444444444',
+      walletPackage: 'app.phantom',
+      walletType: 20,
+    });
+    expect(backend.walletName()).toBe('Phantom');
   });
 
   it('does not report a disconnected native authorization as restored', async () => {
@@ -170,6 +275,8 @@ function androidStatus(input: {
   address?: string;
   authCacheKey?: string;
   cachedCount?: number;
+  walletPackage?: string;
+  walletType?: number;
 }): Record<string, unknown> {
   const address = input.address ?? '';
   return {
@@ -179,8 +286,8 @@ function androidStatus(input: {
       address,
       authCacheKey: input.authCacheKey ?? `mainnet-beta|pkg:app.phantom|${address}`,
       cluster: 'mainnet-beta',
-      walletPackage: 'app.phantom',
-      walletType: 1,
+      walletPackage: input.walletPackage ?? 'app.phantom',
+      walletType: input.walletType ?? 20,
       capabilities: {
         backend: 'android-native-mwa',
         cluster: ['mainnet-beta'],

@@ -32,6 +32,7 @@ class MwaAuthorizationMergeTest {
             walletUriBase = "",
             walletIcon = "",
             targetWalletPackage = "",
+            targetWalletType = WalletRegistry.UNKNOWN,
             accountLabel = "",
             cluster = AgentCluster.MainnetBeta,
             existing = existing,
@@ -66,6 +67,7 @@ class MwaAuthorizationMergeTest {
             walletUriBase = "https://phantom.app/ul/v1",
             walletIcon = "",
             targetWalletPackage = "app.phantom",
+            targetWalletType = WalletRegistry.PHANTOM,
             accountLabel = "Fresh signer",
             cluster = AgentCluster.MainnetBeta,
             existing = existing,
@@ -91,6 +93,7 @@ class MwaAuthorizationMergeTest {
             walletUriBase = "",
             walletIcon = "",
             targetWalletPackage = "",
+            targetWalletType = WalletRegistry.UNKNOWN,
             accountLabel = "",
             cluster = AgentCluster.MainnetBeta,
             existing = null,
@@ -103,5 +106,41 @@ class MwaAuthorizationMergeTest {
         assertEquals("", freshUnknownProvider.walletIcon)
         assertEquals("", freshUnknownProvider.walletPackage)
         assertEquals(WalletRegistry.UNKNOWN, freshUnknownProvider.walletType)
+    }
+
+    @Test
+    fun buildAppliedAuthorizationRecord_usesExplicitProviderWhenSamePubkeyPreviouslyUsedDifferentWallet() {
+        val publicKeyBytes = ByteArray(32) { 14 }
+        val publicKeyBase58 = Base58.encode(publicKeyBytes)
+        val staleSeedVault = AgentMwaAuthRecord(
+            publicKeyBase58 = publicKeyBase58,
+            publicKeyBytes = publicKeyBytes,
+            authToken = "seed-auth-token",
+            walletPackage = "com.solanamobile.seedvaultimpl",
+            walletType = WalletRegistry.SEED_VAULT,
+            accountLabel = "Seed signer",
+            cluster = AgentCluster.MainnetBeta,
+            authenticated = true,
+        )
+
+        val solflare = buildAppliedAuthorizationRecord(
+            publicKeyBase58 = publicKeyBase58,
+            publicKeyBytes = publicKeyBytes,
+            incomingAuthToken = "solflare-auth-token",
+            walletUriBase = "",
+            walletIcon = "",
+            targetWalletPackage = "com.solflare.mobile",
+            targetWalletType = WalletRegistry.SOLFLARE,
+            accountLabel = "",
+            cluster = AgentCluster.MainnetBeta,
+            existing = staleSeedVault,
+            capabilitiesCsv = "",
+            timestampUnixSeconds = 1_716_000_100L,
+        )
+
+        assertEquals("solflare-auth-token", solflare.authToken)
+        assertEquals("com.solflare.mobile", solflare.walletPackage)
+        assertEquals(WalletRegistry.SOLFLARE, solflare.walletType)
+        assertEquals("", solflare.accountLabel)
     }
 }
