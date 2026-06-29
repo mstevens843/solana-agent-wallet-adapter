@@ -55,6 +55,44 @@ describe('connector drafting helpers', () => {
     expect(connectors.find((connector) => connector.id === 'orca')).toBeDefined();
   });
 
+  it('blocks enabled required-credential connectors until their own credential is ready', () => {
+    const connectedDapps = setConnectedDappEnabled(emptyConnectedDapps(), 'lulo', true);
+    const lulo = PROTOCOL_CONNECTORS.find((connector) => connector.id === 'lulo')!;
+
+    expect(connectorCreateStatus(lulo, {
+      connectedDapps,
+      cluster: 'mainnet-beta',
+    })).toMatchObject({
+      selectable: false,
+      enabled: true,
+      kind: 'needs-credential',
+    });
+
+    expect(connectorCreateStatus(lulo, {
+      connectedDapps,
+      cluster: 'mainnet-beta',
+      connectorCredentialReadyIds: ['lulo'],
+    })).toMatchObject({
+      selectable: true,
+      enabled: true,
+      kind: 'first-class',
+    });
+
+    const form = connectorActionFormsForConnector(lulo)[0]!;
+    const validation = validateConnectorDraftParameters(templateById(form.templateId), {
+      connectorId: 'lulo',
+      connectorOperationId: form.id,
+      protocol: 'Lulo',
+      operation: form.operationLabel,
+    }, {
+      connectedDapps,
+      cluster: 'mainnet-beta',
+    }, 'template');
+
+    expect(validation.errors.protocol).toContain('needs a connector credential');
+    expect(validation.missingFacts).toContain('connector credential');
+  });
+
   it('normalizes selected connector parameters to canonical connector identity', () => {
     const parameters = normalizeConnectorDraftParameters(template, {
       protocol: 'meteora dlmm',
@@ -959,7 +997,7 @@ describe('connector drafting helpers', () => {
       for (const { connectorId, templateId } of expected) {
         const connectedDapps = setConnectedDappEnabled(emptyConnectedDapps(), connectorId, true);
         const template = templateById(templateId);
-        const env = { connectedDapps, cluster: 'mainnet-beta' };
+        const env = { connectedDapps, cluster: 'mainnet-beta', connectorCredentialReadyIds: [connectorId] };
 
         const collection = validateConnectorDraftParameters(template, {
           bidPriceSol: '.01',

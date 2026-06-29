@@ -6,15 +6,21 @@ import {
   clampConnectorFacts,
   connectorActionCard,
   connectorCapabilityIndex,
+  connectorFactArgsFromInput,
   findConnectorAtomByIntent,
   formatAmmLiquidity,
+  formatConnectorFactRows,
   formatDriftVault,
+  formatGovernanceFacts,
   formatJitoStake,
   formatJupiterSwapQuote,
   formatKaminoLend,
   formatLuloLend,
   formatMarinadeStake,
+  formatNftMarketplaceFacts,
   formatPythOracle,
+  formatPhoenixPerps,
+  formatSanctumFacts,
   formatWormholeBridge,
   getConnectorAtom,
 } from '../connectorAtoms/index.js';
@@ -35,8 +41,7 @@ describe('getConnectorAtom', () => {
   it('returns undefined for unknown action / connector', () => {
     expect(getConnectorAtom('jupiter', 'nope')).toBeUndefined();
     expect(getConnectorAtom('jupiter', '')).toBeUndefined();
-    // marginfi has no connector atom yet (covered connectors return their atom).
-    expect(getConnectorAtom('marginfi', 'lend')).toBeUndefined();
+    expect(getConnectorAtom('unknown', 'lend')).toBeUndefined();
   });
 });
 
@@ -152,6 +157,61 @@ describe('atom registry invariants', () => {
         expect(() => atom.factSpec!.buildInput({})).not.toThrow();
       }
     }
+  });
+
+  it('normalizes connector fact args shared by browser and server executors', () => {
+    const args = connectorFactArgsFromInput({
+      collectionId: '  mad-lads  ',
+      proposalAddress: ' proposal-1 ',
+      multisigAddress: ' multisig-1 ',
+      inputMint: ' input-mint ',
+      outputMint: ' output-mint ',
+      vaultIndex: '2',
+      transactionIndex: 3,
+      subAccountId: '4',
+      limit: '5',
+      includeListings: true,
+      includeBids: false,
+      listedOnly: true,
+      bankAddress: ' ',
+      badNumber: 'nope',
+    }, 'wallet-1', 'mint-1', 'query-1');
+
+    expect(args).toMatchObject({
+      walletAddress: 'wallet-1',
+      mint: 'mint-1',
+      query: 'query-1',
+      collectionId: 'mad-lads',
+      proposalAddress: 'proposal-1',
+      multisigAddress: 'multisig-1',
+      inputMint: 'input-mint',
+      outputMint: 'output-mint',
+      vaultIndex: 2,
+      transactionIndex: 3,
+      subAccountId: 4,
+      limit: 5,
+      includeListings: true,
+      includeBids: false,
+      listedOnly: true,
+    });
+    expect(args).not.toHaveProperty('bankAddress');
+
+    expect(getConnectorAtom('magiceden', 'marketplace')!.factSpec!.buildInput(args)).toMatchObject({
+      collectionId: 'mad-lads',
+      includeListings: true,
+      includeBids: false,
+      limit: 5,
+    });
+    expect(getConnectorAtom('squads', 'treasury')!.factSpec!.buildInput(args)).toMatchObject({
+      walletAddress: 'wallet-1',
+      multisigAddress: 'multisig-1',
+      vaultIndex: 2,
+      transactionIndex: 3,
+    });
+    expect(getConnectorAtom('sanctum', 'swap')!.factSpec!.buildInput(args)).toMatchObject({
+      inputMint: 'input-mint',
+      outputMint: 'output-mint',
+    });
   });
 });
 
@@ -386,5 +446,84 @@ describe('Jupiter swap quote + Lulo / Wormhole / Pyth atoms', () => {
     expect(index).toContain('lulo/lend');
     expect(index).toContain('wormhole/bridge');
     expect(index).toContain('pyth/oracle');
+  });
+});
+
+describe('expanded connector atoms', () => {
+  it('resolves lending, marketplace, governance, sanctum, and phoenix atoms', () => {
+    expect(getConnectorAtom('marginfi', 'lend')?.factSpec?.capability).toBe('positions');
+    expect(getConnectorAtom('project0', 'strategies')?.factSpec?.capability).toBe('strategies');
+    expect(getConnectorAtom('save', 'borrow')?.factSpec?.capability).toBe('positions');
+    expect(getConnectorAtom('magiceden', 'floor')?.action).toBe('marketplace');
+    expect(getConnectorAtom('tensor', 'wallet')?.factSpec?.capability).toBe('positions');
+    expect(getConnectorAtom('sanctum', 'inf')?.action).toBe('stake');
+    expect(getConnectorAtom('realms', 'proposal')?.action).toBe('governance');
+    expect(getConnectorAtom('squads', 'treasury')?.factSpec?.capability).toBe('treasury');
+    expect(getConnectorAtom('phoenix', 'perps')?.factSpec?.capability).toBe('perps');
+  });
+
+  it('intent detection covers newly registered connector tokens and aliases', () => {
+    expect(findConnectorAtomByIntent('show my marginfi lending positions')?.connectorId).toBe('marginfi');
+    expect(findConnectorAtomByIntent('project 0 strategies')?.action).toBe('strategies');
+    expect(findConnectorAtomByIntent('show my save obligation')?.connectorId).toBe('save');
+    expect(findConnectorAtomByIntent('magic eden floor for mad lads')?.action).toBe('marketplace');
+    expect(findConnectorAtomByIntent('tensor wallet nfts')?.action).toBe('wallet');
+    expect(findConnectorAtomByIntent('sanctum infinity liquidity')?.action).toBe('liquidity');
+    expect(findConnectorAtomByIntent('realms proposal votes')?.connectorId).toBe('realms');
+    expect(findConnectorAtomByIntent('squads multisig proposal')?.connectorId).toBe('squads');
+    expect(findConnectorAtomByIntent('squads vault treasury')?.action).toBe('treasury');
+    expect(findConnectorAtomByIntent('phoenix funding markets')?.action).toBe('markets');
+    expect(findConnectorAtomByIntent('phoenix perps positions')?.connectorId).toBe('phoenix');
+  });
+
+  it('fact-row formatter keeps connector facts compact', () => {
+    const raw = {
+      connector: { heavy: 'x'.repeat(300) },
+      capability: 'marketplace',
+      source: 'collection_snapshot',
+      facts: [
+        { label: 'Collection Mad Lads', value: '42 SOL floor', tone: 'good', detail: { ignored: true } },
+        { label: 'Listings', value: '12 active listings', tone: 'neutral' },
+      ],
+    };
+    const out = formatConnectorFactRows(raw, 'magiceden_nft_marketplace', 'empty');
+    expect(out).toMatchObject({ kind: 'magiceden_nft_marketplace', count: 2, capability: 'marketplace' });
+    expect((out.facts as Array<Record<string, unknown>>)[0]).toEqual({ label: 'Collection Mad Lads', value: '42 SOL floor', tone: 'good' });
+    expect(JSON.stringify(out)).not.toContain('xxxxx');
+  });
+
+  it('expanded format helpers use fact rows for common adapter envelopes', () => {
+    const raw = { facts: [{ label: 'Health factor', value: '1.900', tone: 'good' }] };
+    expect(formatGovernanceFacts(raw, 'realms')).toMatchObject({ kind: 'realms_governance', count: 1 });
+    expect(formatNftMarketplaceFacts(raw, 'tensor')).toMatchObject({ kind: 'tensor_nft_marketplace', count: 1 });
+    expect(formatSanctumFacts(raw)).toMatchObject({ kind: 'sanctum_lst', count: 1 });
+  });
+
+  it('formatPhoenixPerps summarizes markets and wallet positions', () => {
+    const markets = formatPhoenixPerps({
+      source: 'market_catalog',
+      catalog: { markets: [{ symbol: 'SOL-PERP', markPriceUsd: '180', fundingRateHourly: '0.001', openInterestUsd: '1000000', maxLeverage: 10 }] },
+    });
+    expect(markets).toMatchObject({ kind: 'phoenix_perps_markets', count: 1 });
+    expect((markets.markets as Array<Record<string, unknown>>)[0]).toMatchObject({ symbol: 'SOL-PERP', markPriceUsd: '180' });
+
+    const positions = formatPhoenixPerps({
+      source: 'wallet_positions',
+      snapshot: {
+        freeCollateralUsd: '100',
+        positions: [{ symbol: 'SOL-PERP', side: 'long', baseSize: '2', entryPriceUsd: '170', markPriceUsd: '180', unrealizedPnlUsd: '20' }],
+        openOrders: [{}],
+        triggers: [],
+      },
+    });
+    expect(positions).toMatchObject({ kind: 'phoenix_perps_positions', count: 1, freeCollateralUsd: '100', openOrders: 1 });
+  });
+
+  it('capability index lists the expanded connector families', () => {
+    const index = connectorCapabilityIndex();
+    for (const id of ['marginfi', 'project0', 'save', 'magiceden', 'tensor', 'sanctum', 'realms', 'squads', 'phoenix']) {
+      expect(index).toContain(`${id}/`);
+      expect(index).toContain('get_connector_facts action=');
+    }
   });
 });

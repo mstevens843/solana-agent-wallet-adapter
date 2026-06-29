@@ -110,6 +110,8 @@ describe('KNOWN_CONNECTED_DAPPS', () => {
     });
     expect(mayan?.actionSource).toBeUndefined();
     expect(mayan?.readSource).toBeUndefined();
+    expect(KNOWN_CONNECTED_DAPPS.find((adapter) => adapter.id === 'lulo')?.requiresClientKey).toBe(true);
+    expect(KNOWN_CONNECTED_DAPPS.find((adapter) => adapter.id === 'sanctum')?.requiresClientKey).toBe(true);
   });
 });
 
@@ -251,6 +253,32 @@ describe('summary copy', () => {
       enabled: false,
       readiness: 'disabled',
       limitation: 'Meteora is not enabled in Protocol Connectors.',
+    });
+  });
+
+  it('reports required connector credentials per connector id in planner context', () => {
+    const state = setConnectedDappEnabled(emptyConnectedDapps(), 'lulo', true);
+    const missing = protocolConnectorPlannerContext(state, 'mainnet-beta', {
+      includeDisabled: true,
+      connectorCredentialReadyIds: [],
+    }).find((entry) => entry.id === 'lulo');
+
+    expect(missing).toMatchObject({
+      enabled: true,
+      readiness: 'needs_credential',
+      readApiReady: false,
+      limitation: 'Read and action APIs need this connector credential before Agentic can prepare runtime work.',
+    });
+
+    const ready = protocolConnectorPlannerContext(state, 'mainnet-beta', {
+      includeDisabled: true,
+      connectorCredentialReadyIds: ['lulo'],
+    }).find((entry) => entry.id === 'lulo');
+
+    expect(ready).toMatchObject({
+      enabled: true,
+      readiness: 'ready',
+      readApiReady: true,
     });
   });
 });

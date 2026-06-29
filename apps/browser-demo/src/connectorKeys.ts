@@ -1,15 +1,16 @@
 // BYO-API-key UX for the cloud workspace.
 //
-// Magic Eden, Tensor, Sanctum, and Lulo require per-user API keys obtained
-// from each connector's developer portal. The cloud persists these per-wallet
+// Magic Eden, Tensor, Sanctum, Lulo, and Phoenix require per-user credentials
+// obtained from each connector's developer portal. The cloud persists these per-wallet
 // encrypted (see apps/render-web/src/cloud/connectorSecrets.ts) and injects
 // them into the prepare-transaction path at request time. This module is the
 // user-facing UX for managing those keys.
 
 import { t, tf, uiLanguage } from './demo-i18n/uiLang.js';
+import { CONNECTOR_CREDENTIAL_IDS, type ConnectorCredentialId } from './connectorReadiness.js';
 
-export const BYO_KEY_CONNECTOR_IDS = ['magiceden', 'tensor', 'sanctum', 'lulo', 'phoenix'] as const;
-export type ByoKeyConnectorId = (typeof BYO_KEY_CONNECTOR_IDS)[number];
+export const BYO_KEY_CONNECTOR_IDS = CONNECTOR_CREDENTIAL_IDS;
+export type ByoKeyConnectorId = ConnectorCredentialId;
 
 export interface ByoKeyConnectorMeta {
   id: ByoKeyConnectorId;
@@ -72,9 +73,13 @@ export interface SaveConnectorSecretInput {
   baseUrl?: string;
 }
 
-const EMPTY_SECRETS_SUMMARY: ConnectorSecretsSummary = Object.fromEntries(
-  BYO_KEY_CONNECTOR_IDS.map((id) => [id, { hasKey: false } as ConnectorSecretSummary]),
-) as ConnectorSecretsSummary;
+export function emptyConnectorSecretsSummary(): ConnectorSecretsSummary {
+  return Object.fromEntries(
+    BYO_KEY_CONNECTOR_IDS.map((id) => [id, { hasKey: false } as ConnectorSecretSummary]),
+  ) as ConnectorSecretsSummary;
+}
+
+const EMPTY_SECRETS_SUMMARY: ConnectorSecretsSummary = emptyConnectorSecretsSummary();
 
 export async function listConnectorSecrets(): Promise<ListConnectorSecretsResponse> {
   const response = await fetch('/api/connector-secrets', {

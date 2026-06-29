@@ -14,8 +14,13 @@
 export type ConnectorFactCapability =
   | 'earn'
   | 'borrow'
+  | 'withdraw'
+  | 'repay'
   | 'positions'
+  | 'rewards'
   | 'markets'
+  | 'blinks'
+  | 'marketplace'
   | 'price'
   | 'tokens'
   | 'prediction'
@@ -23,7 +28,13 @@ export type ConnectorFactCapability =
   | 'trigger'
   | 'recurring'
   | 'swap'
-  | 'oracle';
+  | 'add_liquidity'
+  | 'close'
+  | 'oracle'
+  | 'governance'
+  | 'treasury'
+  | 'bridge'
+  | 'strategies';
 
 // Static capability card: what an action does + how to use it. Short and
 // capability-level (stable), never parameter-level (volatile), to minimize drift.
@@ -42,6 +53,29 @@ export interface ConnectorFactArgs {
   mint?: string;
   query?: string;
   limit?: number;
+  token?: string;
+  bankAddress?: string;
+  bankMint?: string;
+  marginfiAccount?: string;
+  project0Account?: string;
+  collectionId?: string;
+  collectionSymbol?: string;
+  mintAddress?: string;
+  assetId?: string;
+  includeListings?: boolean;
+  includeBids?: boolean;
+  listedOnly?: boolean;
+  lstMint?: string;
+  inputMint?: string;
+  outputMint?: string;
+  realmAddress?: string;
+  governanceAddress?: string;
+  proposalAddress?: string;
+  multisigAddress?: string;
+  vaultIndex?: number;
+  transactionIndex?: number;
+  vaultAddress?: string;
+  subAccountId?: number;
   // Swap-quote args (Jupiter swap action). Optional; only the swap factSpec reads them.
   amount?: string;
   inputToken?: string;

@@ -24,7 +24,7 @@
       "toolName": "solana_tensor_collection_snapshot",
       "source": "first-class-adapter",
       "implemented": true,
-      "requiresClientKey": false,
+      "requiresClientKey": true,
       "returns": "Tensor collection floor, listed count, total supply, 24h volume, top bid, verification, optional listings and bids.",
       "facts": ["collectionId", "floorPriceSol", "listedCount", "topBidPriceSol", "verified", "warnings"]
     },
@@ -32,7 +32,7 @@
       "toolName": "solana_tensor_collection_listings",
       "source": "first-class-adapter",
       "implemented": true,
-      "requiresClientKey": false,
+      "requiresClientKey": true,
       "returns": "Active Tensor listings for a collection (price, seller, listingId, compressed flag, marketplace).",
       "facts": ["priceSol", "seller", "compressed", "marketplace"]
     },
@@ -40,7 +40,7 @@
       "toolName": "solana_tensor_collection_bids",
       "source": "first-class-adapter",
       "implemented": true,
-      "requiresClientKey": false,
+      "requiresClientKey": true,
       "returns": "Active Tensor bids for a collection (bidder, bidPriceSol, quantity, escrow).",
       "facts": ["bidId", "bidPriceSol", "bidder", "escrowLamports"]
     },
@@ -48,7 +48,7 @@
       "toolName": "solana_tensor_recent_sales",
       "source": "first-class-adapter",
       "implemented": true,
-      "requiresClientKey": false,
+      "requiresClientKey": true,
       "returns": "Recent Tensor marketplace sales for a collection (signature, mint, priceSol, buyer/seller, marketplace).",
       "facts": ["priceSol", "marketplace", "signature", "blockTime"]
     },
@@ -56,7 +56,7 @@
       "toolName": "solana_tensor_wallet_nfts",
       "source": "first-class-adapter",
       "implemented": true,
-      "requiresClientKey": false,
+      "requiresClientKey": true,
       "returns": "Wallet-owned NFTs tracked by Tensor with listed status, compressed flag, and listing price.",
       "facts": ["walletAddress", "mintAddress", "assetId", "compressed", "listed", "listingPriceSol"]
     },
@@ -64,7 +64,7 @@
       "toolName": "solana_tensor_nft_detail",
       "source": "first-class-adapter",
       "implemented": true,
-      "requiresClientKey": false,
+      "requiresClientKey": true,
       "returns": "One Tensor NFT detail including owner, top listing, top bids, royalty, frozen flag, and warnings.",
       "facts": ["mintAddress", "assetId", "owner", "compressed", "topListing", "topBids", "warnings"]
     },
@@ -72,7 +72,7 @@
       "toolName": "solana_tensor_wallet_marketplace_exposure",
       "source": "first-class-adapter",
       "implemented": true,
-      "requiresClientKey": false,
+      "requiresClientKey": true,
       "returns": "Wallet exposure across Tensor: owned collections, open listings, open bids, margin escrow balance.",
       "facts": ["walletAddress", "openListings", "openBids", "marginBalanceSol"]
     }

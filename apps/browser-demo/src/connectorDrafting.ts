@@ -50,6 +50,7 @@ export interface ConnectorActionForm {
 export interface ConnectorDraftEnvironment {
   connectedDapps: ConnectedDappsState;
   cluster: string;
+  connectorCredentialReadyIds?: readonly string[];
   dialectClientKeyConfigured?: boolean;
 }
 
@@ -318,7 +319,7 @@ export function connectorCreateConnectors(
 
 // The display copy below stays English here (this module has no i18n import); `kind` lets the
 // render site localize meta/detail/label via t()/tf() with the connector name as a placeholder.
-export type ConnectorCreateStatusKind = 'no-flow' | 'wrong-cluster' | 'disabled' | 'first-class' | 'blink';
+export type ConnectorCreateStatusKind = 'no-flow' | 'wrong-cluster' | 'disabled' | 'needs-credential' | 'first-class' | 'blink';
 
 export function connectorCreateStatus(
   connector: ProtocolConnector,
@@ -366,6 +367,17 @@ export function connectorCreateStatus(
       label: 'Connector disabled',
       meta: 'Off',
       detail: `${connector.name} is disabled. Enable it in Protocol Connectors before preparing work.`,
+    };
+  }
+  if (!connectorCredentialReady(connector, env)) {
+    return {
+      selectable: false,
+      enabled: true,
+      clusterSupported,
+      kind: 'needs-credential',
+      label: 'Credential required',
+      meta: 'Needs key',
+      detail: `${connector.name} needs a connector credential before Agentic can prepare work.`,
     };
   }
   return {
@@ -728,6 +740,16 @@ export function connectorDraftStatus(
       detail: `${connector.name} is disabled. Enable it in Protocol Connectors before preparing executable work.`,
     };
   }
+  if (!connectorCredentialReady(connector, env)) {
+    return {
+      selectable: false,
+      enabled: true,
+      clusterSupported,
+      label: 'Credential required',
+      meta: 'Needs key',
+      detail: `${connector.name} needs a connector credential before Agentic can prepare executable work.`,
+    };
+  }
   return {
     selectable: true,
     enabled: true,
@@ -992,6 +1014,9 @@ export function validateConnectorDraftParameters(
     errors.protocol = `${connector.name} is only available on ${connector.supportedClusters.join(', ')}; current cluster is ${env.cluster}.`;
   } else if (!isDappEnabled(connector.id, env.connectedDapps, env.cluster)) {
     errors.protocol = `${connector.name} is not enabled. Enable it in Protocol Connectors before sending.`;
+  } else if (!connectorCredentialReady(connector, env)) {
+    errors.protocol = `${connector.name} needs a connector credential before Agentic can prepare work.`;
+    missingFacts.push('connector credential');
   }
 
   const url = normalized.blinkUrl?.trim() || normalized.actionUrl?.trim() || '';
@@ -3250,6 +3275,13 @@ function connectorCreateRank(connector: ProtocolConnector, env: ConnectorDraftEn
   return 2;
 }
 
+function connectorCredentialReady(connector: ProtocolConnector, env: ConnectorDraftEnvironment): boolean {
+  if (!connector.requiresClientKey) return true;
+  if (env.connectorCredentialReadyIds?.includes(connector.id)) return true;
+  // Backward compatibility for tests/callers that still provide the old global key flag.
+  return Boolean(env.dialectClientKeyConfigured);
+}
+
 function connectorDraftRequiresBlink(
   template: Pick<AgentPlanTemplate, 'id' | 'actionType' | 'connectorCapability'>,
   parameters: Record<string, string>,
@@ -3289,6 +3321,7 @@ export function connectorAiPlannerContext(
   const selected = selectedConnectorForDraftParameters(parameters);
   if (!isConnectorCapableTemplate(template) && !selected) {
     return protocolConnectorPlannerContext(env.connectedDapps, env.cluster, {
+      connectorCredentialReadyIds: env.connectorCredentialReadyIds,
       dialectClientKeyConfigured: Boolean(env.dialectClientKeyConfigured),
       includeDisabled: true,
     });
@@ -3296,6 +3329,7 @@ export function connectorAiPlannerContext(
   if (!selected) return [];
   const validation = validateConnectorDraftParameters(template, parameters, env, 'ai');
   const base = protocolConnectorPlannerContext(env.connectedDapps, env.cluster, {
+    connectorCredentialReadyIds: env.connectorCredentialReadyIds,
     dialectClientKeyConfigured: Boolean(env.dialectClientKeyConfigured),
     includeDisabled: true,
   }).find((entry) => entry.id === selected.id) ?? {};

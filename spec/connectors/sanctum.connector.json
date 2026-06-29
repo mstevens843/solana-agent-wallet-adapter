@@ -30,7 +30,7 @@
       "toolName": "solana_sanctum_lst_list",
       "source": "first-class-adapter",
       "implemented": true,
-      "requiresClientKey": false,
+      "requiresClientKey": true,
       "returns": "Sanctum LST catalog metadata, including mint, symbol, decimals, disabled status, and validator or pool metadata where the API exposes it.",
       "facts": ["mint", "symbol", "decimals", "disabled", "validatorVoteAccount"]
     },
@@ -38,7 +38,7 @@
       "toolName": "solana_sanctum_lst_snapshot",
       "source": "first-class-adapter",
       "implemented": true,
-      "requiresClientKey": false,
+      "requiresClientKey": true,
       "returns": "One Sanctum LST metadata snapshot by mint or symbol, with optional APY rows.",
       "facts": ["mint", "symbol", "decimals", "name", "apy", "apyTimestamp"]
     },
@@ -46,7 +46,7 @@
       "toolName": "solana_sanctum_infinity_pool_snapshot",
       "source": "first-class-adapter",
       "implemented": true,
-      "requiresClientKey": false,
+      "requiresClientKey": true,
       "returns": "Infinity pool metadata, INF mint, known Sanctum program ids, supported LST count, and optional catalog-derived composition.",
       "facts": ["infMint", "programIds", "supportedLstCount", "composition"]
     },
@@ -54,7 +54,7 @@
       "toolName": "solana_sanctum_wallet_positions",
       "source": "first-class-adapter",
       "implemented": true,
-      "requiresClientKey": false,
+      "requiresClientKey": true,
       "returns": "Wallet LST and INF balances found in SPL Token and Token-2022 accounts.",
       "facts": ["walletAddress", "mint", "symbol", "uiAmount", "rawAmount", "programId"]
     },
@@ -62,7 +62,7 @@
       "toolName": "solana_sanctum_quote",
       "source": "first-class-adapter",
       "implemented": true,
-      "requiresClientKey": false,
+      "requiresClientKey": true,
       "returns": "Sanctum Token Swap order preview for a supported input mint, output mint, amount, and slippage.",
       "facts": ["inputMint", "outputMint", "inputAmountRaw", "outputAmountRaw", "minOutputAmountRaw", "feeBps", "routeSources"]
     }

@@ -197,6 +197,13 @@ for (const s of ['weekly', 'monthly', 'interval_days', 'token', 'shares', 'yes',
 // Chat proof template picker eyebrows: rendered meta: t(titleCase(tpl.category)). Seed the
 // post-titleCase OUTPUT strings (not the raw category) so the lookup key matches.
 for (const s of ['Recurring', 'Staking', 'Governance', 'Security', 'Defi', 'Nft', 'Portfolio', 'Developer', 'Mobile', 'Integration', 'Custom', 'Oracle']) add(s);
+// Chat tool thinking pills live in chatAgent/toolLabels.ts and are rendered via
+// t(dynamicMapValue), so literal-call extraction cannot see them.
+const toolLabelsSrc = readFileSync(join(srcDir, 'chatAgent', 'toolLabels.ts'), 'utf8');
+for (const name of ['CHAT_TOOL_DISPLAY_LABELS', 'CHAT_TOOL_RUNNING_LABELS']) {
+  const block = findConstBlock(toolLabelsSrc, name);
+  for (const m of block.matchAll(/:\s*(['"])((?:[^\\]|\\.)*?)\1/g)) add(m[2]);
+}
 
 // ---- merge into en.json ----
 const en = JSON.parse(readFileSync(enPath, 'utf8'));

@@ -39,6 +39,26 @@ describe('connector connect native sheet', () => {
     expect(mainSource).toContain('reconcileConnectorConnectSession(route)');
   });
 
+  it('keeps connector enablement separate from wallet signing APIs', () => {
+    const enableBody = sourceBetween('function connectorConnectEnable', 'function connectorConnectFinish');
+    const bindBody = sourceBetween('function bindConnectorConnectSurface', 'function selectConnectorActionForCreate');
+
+    expect(enableBody).not.toMatch(/signMessage|signTransaction|signAndSendTransaction/);
+    expect(bindBody).not.toMatch(/signMessage|signTransaction|signAndSendTransaction/);
+    expect(bindBody).toContain('No wallet signature was requested.');
+    expect(bindBody).toContain('runPasteProtocolConnectorCredential');
+    expect(mainSource).toContain('data-connector-connect-key-paste');
+  });
+
+  it('renders connector-specific credential controls instead of the old global client-key row', () => {
+    const panelBody = sourceBetween('function connectedDappsPanel', 'function connectedDappRow');
+
+    expect(panelBody).toContain('protocolConnectorCredentialInline(selectedCatalogConnector)');
+    expect(panelBody).toContain('data-protocol-connector-credential-paste');
+    expect(panelBody).not.toContain('Dialect client key');
+    expect(mainSource).toContain('function enableProtocolConnectorFromPreferences');
+  });
+
   it('renders a branded native bottom sheet instead of inline-styled popover controls', () => {
     expect(mainSource).toContain("brandLogo(protocolConnectorLogoId(connector.id), 'connector-connect-logo')");
     expect(mainSource).toContain("'connector-connect-popover connector-connect-sheet'");

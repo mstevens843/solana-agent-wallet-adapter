@@ -7,20 +7,35 @@ import { AMM_ATOMS } from './amm.js';
 import { STAKING_ATOMS } from './staking.js';
 import { LEND_VAULT_ATOMS } from './lendVault.js';
 import { BRIDGE_ORACLE_ATOMS } from './bridgeOracle.js';
+import { EXPANDED_CONNECTOR_ATOMS } from './expandedConnectors.js';
 
 export type { ConnectorActionAtom, ConnectorActionKnowledge, ConnectorFactSpec, ConnectorFactArgs, ConnectorFactCapability } from './types.js';
 export { DEFAULT_CONNECTOR_FACT_MAX_CHARS } from './types.js';
+export {
+  CONNECTOR_FACT_BOOLEAN_ARG_KEYS,
+  CONNECTOR_FACT_NUMBER_ARG_KEYS,
+  CONNECTOR_FACT_STRING_ARG_KEYS,
+  connectorFactArgsFromInput,
+} from './factArgs.js';
 export { clampConnectorFacts };
 export { formatAmmLiquidity } from './amm.js';
 export { formatJupiterSwapQuote } from './jupiter.js';
 export { formatJitoStake, formatMarinadeStake } from './staking.js';
 export { formatKaminoLend, formatDriftVault, formatLuloLend } from './lendVault.js';
 export { formatWormholeBridge, formatPythOracle } from './bridgeOracle.js';
+export {
+  formatConnectorFactRows,
+  formatGovernanceFacts,
+  formatLendingFacts,
+  formatNftMarketplaceFacts,
+  formatPhoenixPerps,
+  formatSanctumFacts,
+} from './expandedConnectors.js';
 
 // Jupiter (built-in API) + first-class AMM liquidity, liquid-staking, lend/vault, and
 // bridge/oracle connectors. The remaining connectors slot in by pushing atoms of the
 // same shape.
-export const CONNECTOR_ATOMS: ConnectorActionAtom[] = [...JUPITER_ATOMS, ...AMM_ATOMS, ...STAKING_ATOMS, ...LEND_VAULT_ATOMS, ...BRIDGE_ORACLE_ATOMS];
+export const CONNECTOR_ATOMS: ConnectorActionAtom[] = [...JUPITER_ATOMS, ...AMM_ATOMS, ...STAKING_ATOMS, ...LEND_VAULT_ATOMS, ...BRIDGE_ORACLE_ATOMS, ...EXPANDED_CONNECTOR_ATOMS];
 
 // Connector-name tokens that gate single-shot intent detection (so a bare "lend
 // position" / "my positions" question can't hijack a generic chat). Extend as
@@ -37,10 +52,23 @@ const CONNECTOR_INTENT_TOKENS: Record<string, string[]> = {
   lulo: ['lulo'],
   wormhole: ['wormhole', 'portal'],
   pyth: ['pyth'],
+  marginfi: ['marginfi', 'mrgn'],
+  project0: ['project0', 'project 0', 'p0', 'zero'],
+  save: ['save', 'save finance', 'solend'],
+  magiceden: ['magiceden', 'magic eden', 'magic-eden'],
+  tensor: ['tensor', 'tensor trade', 'tensor nft'],
+  sanctum: ['sanctum', 'infinity', 'inf', 'lst'],
+  realms: ['realms', 'realms.today', 'spl governance'],
+  squads: ['squads', 'multisig', 'sqds'],
+  phoenix: ['phoenix', 'phoenix perp', 'phoenix perps', 'ellipsis perps'],
 };
 
 function normalize(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function regexEscape(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // Resolve an atom by connectorId (default 'jupiter') + an action key OR any of its aliases.
@@ -66,14 +94,14 @@ export function findConnectorAtomByIntent(text: string): ConnectorActionAtom | u
   const haystack = normalize(text);
   if (!haystack) return undefined;
   for (const [connectorId, tokens] of Object.entries(CONNECTOR_INTENT_TOKENS)) {
-    const hasConnector = tokens.some((token) => new RegExp(`\\b${token}\\b`, 'i').test(haystack));
+    const hasConnector = tokens.some((token) => new RegExp(`\\b${regexEscape(token)}\\b`, 'i').test(haystack));
     if (!hasConnector) continue;
     const candidates = connectorAtomsFor(connectorId).filter((atom) => atom.factSpec);
     const ranked = candidates
       .flatMap((atom) => atom.aliases.map((alias) => ({ atom, alias: normalize(alias) })))
       .sort((a, b) => b.alias.length - a.alias.length);
     for (const { atom, alias } of ranked) {
-      if (new RegExp(`\\b${alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(haystack)) return atom;
+      if (new RegExp(`\\b${regexEscape(alias)}\\b`, 'i').test(haystack)) return atom;
     }
   }
   return undefined;

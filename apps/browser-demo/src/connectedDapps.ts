@@ -69,7 +69,7 @@ export interface ProtocolConnector {
   readSource?: 'dialect-markets' | 'meteora-api' | 'first-class-adapter';
   /** Generic transaction layer used by the agent, if the connector can prepare actions. */
   actionSource?: 'blink' | 'first-class-adapter';
-  /** Whether read APIs need a configured client key before use. */
+  /** Whether runtime APIs need a configured user credential before use. */
   requiresClientKey?: boolean;
 }
 
@@ -550,7 +550,7 @@ export const PROTOCOL_CONNECTORS: ProtocolConnector[] = [
     initials: 'LU',
     readSource: 'first-class-adapter',
     actionSource: 'first-class-adapter',
-    requiresClientKey: false,
+    requiresClientKey: true,
   },
   {
     id: 'save',
@@ -693,7 +693,7 @@ export const PROTOCOL_CONNECTORS: ProtocolConnector[] = [
     initials: 'ST',
     readSource: 'first-class-adapter',
     actionSource: 'first-class-adapter',
-    requiresClientKey: false,
+    requiresClientKey: true,
   },
   {
     id: 'magiceden',
@@ -1103,14 +1103,17 @@ export function connectedDappsSummary(state: ConnectedDappsState, cluster: strin
 export function protocolConnectorPlannerContext(
   state: ConnectedDappsState,
   cluster: string,
-  opts: { dialectClientKeyConfigured?: boolean; includeDisabled?: boolean } = {},
+  opts: { connectorCredentialReadyIds?: readonly string[]; dialectClientKeyConfigured?: boolean; includeDisabled?: boolean } = {},
 ): Array<Record<string, unknown>> {
   const connectors = opts.includeDisabled
     ? PROTOCOL_CONNECTORS.filter((connector) => isClusterSupported(connector, cluster))
     : enabledProtocolConnectors(state, cluster);
   return connectors.map((connector) => {
     const enabled = isDappEnabled(connector.id, state, cluster);
-    const readReady = enabled && (connector.requiresClientKey ? Boolean(opts.dialectClientKeyConfigured) : true);
+    const credentialReady = connector.requiresClientKey
+      ? (opts.connectorCredentialReadyIds?.includes(connector.id) ?? Boolean(opts.dialectClientKeyConfigured))
+      : true;
+    const readReady = enabled && credentialReady;
     return {
       id: connector.id,
       name: connector.name,
@@ -1137,12 +1140,12 @@ export function protocolConnectorPlannerContext(
       readiness: enabled
         ? readReady
           ? 'ready'
-          : 'needs_client_key'
+          : 'needs_credential'
         : 'disabled',
       limitation: !enabled
         ? `${connector.name} is not enabled in Protocol Connectors.`
-        : connector.requiresClientKey && !opts.dialectClientKeyConfigured
-          ? 'Read APIs need a Dialect client key; Blink/action URLs can still be reviewed if supplied.'
+        : connector.requiresClientKey && !credentialReady
+          ? 'Read and action APIs need this connector credential before Agentic can prepare runtime work.'
           : undefined,
     };
   });

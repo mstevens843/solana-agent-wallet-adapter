@@ -24,7 +24,7 @@
       "toolName": "solana_lulo_rates",
       "source": "first-class-adapter",
       "implemented": true,
-      "requiresClientKey": false,
+      "requiresClientKey": true,
       "returns": "Protected/Boost/Regular APY by mint, with TVL and liquidity facts when the Lulo API exposes them.",
       "facts": ["mintAddress", "depositType", "apy", "tvlUsd", "liquidityAvailable"]
     },
@@ -32,7 +32,7 @@
       "toolName": "solana_lulo_pool_meta",
       "source": "first-class-adapter",
       "implemented": true,
-      "requiresClientKey": false,
+      "requiresClientKey": true,
       "returns": "Pool program ids, supported deposit types, decimals when reported, and regular-withdrawal cooldown seconds.",
       "facts": ["mintAddress", "supportedDepositTypes", "programIds", "decimals", "cooldownSeconds"]
     },
@@ -40,7 +40,7 @@
       "toolName": "solana_lulo_wallet_balances",
       "source": "first-class-adapter",
       "implemented": true,
-      "requiresClientKey": false,
+      "requiresClientKey": true,
       "returns": "Wallet deposit positions, earned interest, withdrawable balance, and pending regular withdrawals. Returns balances_unavailable when the Lulo API does not expose this for the wallet.",
       "facts": ["walletAddress", "mintAddress", "depositType", "amountUi", "earnedInterestUi", "pendingWithdrawals"]
     }

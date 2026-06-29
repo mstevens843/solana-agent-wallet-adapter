@@ -6,7 +6,7 @@
 // data and NEVER throws the turn: on failure it returns { unavailable | error }.
 
 import type { ChatToolExecutor } from '@solana-agent-wallet-adapter/workflow';
-import { clampConnectorFacts, getConnectorAtom, resolveChatFactChain } from '@solana-agent-wallet-adapter/workflow';
+import { clampConnectorFacts, connectorFactArgsFromInput, getConnectorAtom, resolveChatFactChain } from '@solana-agent-wallet-adapter/workflow';
 
 const BASE58_MINT_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 type ClientChatFactProviderSpec = Parameters<typeof resolveChatFactChain>[0][number];
@@ -333,15 +333,7 @@ export function createClientChatToolExecutor(deps: ClientChatToolDeps): ChatTool
         return { summary: `${connectorId} ${atom.action} info`, data: { knowledge: atom.knowledge } };
       }
       const factSpec = atom.factSpec;
-      const argStr = (key: string): string | undefined => (typeof input[key] === 'string' && (input[key] as string).trim() ? (input[key] as string).trim() : undefined);
-      const factArgs = {
-        ...(walletAddress ? { walletAddress } : {}),
-        ...(mintArg ? { mint: mintArg } : {}),
-        ...(query ? { query } : {}),
-        ...(argStr('amount') ? { amount: argStr('amount') } : {}),
-        ...(argStr('inputToken') ? { inputToken: argStr('inputToken') } : {}),
-        ...(argStr('outputToken') ? { outputToken: argStr('outputToken') } : {}),
-      };
+      const factArgs = connectorFactArgsFromInput(input, walletAddress, mintArg, query);
       try {
         const raw = await deps.connectorFacts({ connectorId, capability: factSpec.capability, ...factSpec.buildInput(factArgs) });
         const formatted = clampConnectorFacts(factSpec.format(raw), factSpec.maxChars);

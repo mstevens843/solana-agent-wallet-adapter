@@ -521,7 +521,7 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
     name: 'Realms',
     aliases: ['realms', 'spl governance', 'spl-governance', 'realms.today'],
     supportedClusters: ['mainnet-beta'],
-    readCapabilities: ['positions', 'markets'],
+    readCapabilities: ['positions', 'markets', 'governance'],
     writeCapabilities: ['earn', 'withdraw'],
     readTools: [
       'solana_connector_read_facts',

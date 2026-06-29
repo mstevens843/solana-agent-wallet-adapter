@@ -105,6 +105,10 @@ services:
       # the SAME release as the new APK.
       - key: HIDE_CHAT_TAB
         value: "android"
+      # HIDE_RESEARCH_TABS: true/1 hides the Chat tab's read-only Research surface
+      # while the implementation is staged. Empty/0/false shows it.
+      - key: HIDE_RESEARCH_TABS
+        value: "true"
       # CHAT_AGENT: true/1 → the Chat tab uses the NEW agentic chat loop (device chat
       # agent); empty/0/false → it uses the on-device PLANNER (safe interim). Baked at
       # build, so flipping it is a Render redeploy (no native build) and reaches every

@@ -67,6 +67,7 @@ import {
 import {
   buildConnectorContext,
   clampConnectorFacts,
+  connectorFactArgsFromInput,
   findConnectorAtomByIntent,
   getConnectorAtom,
   type ConnectorFactCapability,
@@ -209,7 +210,6 @@ const ALLOWED_AI_HOSTS: ReadonlySet<string> = new Set([
 ]);
 
 const SOLANA_PUBKEY_LIKE = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/g;
-
 interface AiResearchCitation {
   title?: string;
   url: string;
@@ -1381,15 +1381,8 @@ export class BridgeAiPlanner {
         return { summary: `${connectorId} ${atom.action} info`, data: { knowledge: atom.knowledge } };
       }
       const factSpec = atom.factSpec;
-      const argStr = (key: string): string | undefined => (typeof input[key] === 'string' && (input[key] as string).trim() ? (input[key] as string).trim() : undefined);
-      const args = {
-        ...(walletAddress ? { walletAddress } : {}),
-        ...(argStr('mint') ? { mint: argStr('mint') } : {}),
-        ...(query ? { query } : {}),
-        ...(argStr('amount') ? { amount: argStr('amount') } : {}),
-        ...(argStr('inputToken') ? { inputToken: argStr('inputToken') } : {}),
-        ...(argStr('outputToken') ? { outputToken: argStr('outputToken') } : {}),
-      };
+      const mintArg = typeof input.mint === 'string' && input.mint.trim() ? input.mint.trim() : '';
+      const args = connectorFactArgsFromInput(input, walletAddress, mintArg, query);
       const raw = await this.connectorFactResolver(factSpec.capability, factSpec.buildInput(args), connectorId);
       const formatted = clampConnectorFacts(factSpec.format(raw), factSpec.maxChars);
       return { summary: `${connectorId} ${atom.action} facts`, data: { connectorId, action: atom.action, ...formatted } };
