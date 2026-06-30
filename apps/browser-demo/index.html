@@ -30,9 +30,77 @@
     <meta name="twitter:description" content="Let agents use your Solana wallet without giving them one." />
     <meta name="twitter:image" content="https://agentic-signer.com/og/og-card.png" />
     <meta name="twitter:image:alt" content="Agentic logo: a saturn-like planet with a glowing white ring." />
+    <style>
+      html {
+        background: #020303;
+      }
+
+      body {
+        background:
+          radial-gradient(900px 520px at 48% -14%, rgba(47, 159, 111, 0.1), transparent 68%),
+          linear-gradient(180deg, #070908 0%, #030404 76%, #010202 100%);
+        margin: 0;
+        min-height: 100dvh;
+        min-width: 320px;
+      }
+
+      .agentic-launch-screen {
+        display: grid;
+        isolation: isolate;
+        min-height: 100dvh;
+        overflow: hidden;
+        place-items: center;
+        position: relative;
+      }
+
+      .agentic-launch-screen::before,
+      .agentic-launch-screen::after {
+        content: "";
+        pointer-events: none;
+        position: fixed;
+      }
+
+      .agentic-launch-screen::before {
+        background-image:
+          radial-gradient(circle at 2.4% 6.2%, rgba(252, 255, 254, 0.82) 0, rgba(252, 255, 254, 0.82) 0.44px, rgba(252, 255, 254, 0.18) 1.18px, transparent 2.6px),
+          radial-gradient(circle at 17.1% 88.7%, rgba(252, 255, 254, 0.76) 0, rgba(252, 255, 254, 0.76) 0.42px, rgba(252, 255, 254, 0.16) 1.14px, transparent 2.5px),
+          radial-gradient(circle at 31.4% 5.1%, rgba(252, 255, 254, 0.66) 0, rgba(252, 255, 254, 0.66) 0.38px, rgba(252, 255, 254, 0.13) 1px, transparent 2.3px),
+          radial-gradient(circle at 48.2% 57.7%, rgba(244, 252, 249, 0.62) 0, rgba(244, 252, 249, 0.62) 0.36px, rgba(244, 252, 249, 0.13) 1px, transparent 2.3px),
+          radial-gradient(circle at 66.9% 74.8%, rgba(252, 255, 254, 0.68) 0, rgba(252, 255, 254, 0.68) 0.38px, rgba(252, 255, 254, 0.14) 1.04px, transparent 2.4px),
+          radial-gradient(circle at 76.1% 49.6%, rgba(244, 252, 249, 0.74) 0, rgba(244, 252, 249, 0.74) 0.42px, rgba(244, 252, 249, 0.16) 1.12px, transparent 2.5px),
+          radial-gradient(circle at 92.6% 63.8%, rgba(252, 255, 254, 0.78) 0, rgba(252, 255, 254, 0.78) 0.44px, rgba(252, 255, 254, 0.16) 1.14px, transparent 2.5px),
+          radial-gradient(circle at 95.8% 96.2%, rgba(244, 252, 249, 0.76) 0, rgba(244, 252, 249, 0.76) 0.42px, rgba(244, 252, 249, 0.16) 1.14px, transparent 2.5px);
+        filter:
+          drop-shadow(0 0 1.5px rgba(252, 255, 254, 0.22))
+          drop-shadow(0 0 4px rgba(131, 199, 163, 0.08));
+        inset: -5vh -5vw;
+        opacity: 0.68;
+        z-index: 0;
+      }
+
+      .agentic-launch-screen::after {
+        background:
+          radial-gradient(820px 520px at 46% 0%, rgba(47, 159, 111, 0.13), transparent 72%),
+          linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.16) 100%);
+        inset: -10vh -8vw;
+        opacity: 0.78;
+        z-index: 0;
+      }
+
+      .agentic-launch-logo {
+        height: auto;
+        position: relative;
+        width: clamp(92px, 22vw, 148px);
+        z-index: 1;
+      }
+    </style>
   </head>
   <body>
-    <main id="app"></main>
+    <main id="app">
+      <section class="agentic-launch-screen" aria-label="Loading Agentic">
+        <img class="agentic-launch-logo" src="/icons/agentic-launch.png" alt="" />
+      </section>
+    </main>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -445,7 +445,7 @@ tasks.matching { task ->
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("com.google.androidbrowserhelper:androidbrowserhelper:2.7.0")
-    implementation("com.solanamobile:mobile-wallet-adapter-clientlib-ktx:2.0.8")
+    implementation("com.solanamobile:mobile-wallet-adapter-clientlib-ktx:2.1.1")
     implementation("androidx.activity:activity-ktx:1.9.3")
     implementation("androidx.camera:camera-camera2:1.4.2")
     implementation("androidx.camera:camera-core:1.4.2")

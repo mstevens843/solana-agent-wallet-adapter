@@ -28,7 +28,7 @@ class RemoteConfigSchemaTest {
               "walletRegistry": [
                 {"id":20,"name":"phantom","packageNames":["app.phantom"],"uriPatterns":["phantom.app"],"supportsSignMessages":false,"supportsSiws":true,"forceSignThenRpc":false},
                 {"id":25,"name":"solflare","packageNames":["com.solflare.mobile"],"uriPatterns":["solflare.com"],"iconSha256First8":"245123d8a7fd8aa5","supportsSignMessages":false,"supportsSiws":false,"forceSignThenRpc":false},
-                {"id":36,"name":"backpack","packageNames":["app.backpack.mobile"],"uriPatterns":["backpack.app"],"supportsSignMessages":true,"supportsSiws":true,"forceSignThenRpc":true},
+                {"id":36,"name":"backpack","packageNames":["app.backpack.mobile.standalone","app.backpack.mobile"],"uriPatterns":["backpack.app"],"supportsSignMessages":true,"supportsSiws":true,"forceSignThenRpc":true},
                 {"id":40,"name":"jupiter","packageNames":["ag.jup.jupiter.android"],"uriPatterns":["jup.ag","jupiter"],"supportsSignMessages":true,"supportsSiws":true,"forceSignThenRpc":true},
                 {"id":50,"name":"seedvault","packageNames":["com.solanamobile.seedvaultimpl"],"uriPatterns":["seedvault","seed-vault","seedvaultwallet","solanamobilewallet"],"supportsSignMessages":false,"supportsSiws":false,"forceSignThenRpc":false}
               ],
@@ -65,6 +65,7 @@ class RemoteConfigSchemaTest {
         requireNotNull(backpack)
         assertEquals(true, backpack.supportsSignMessages)
         assertEquals(true, backpack.forceSignThenRpc)
+        assertEquals(backpack, parsed.walletEntryByPackage("app.backpack.mobile.standalone"))
     }
 
     @Test
@@ -267,7 +268,7 @@ class RemoteConfigSchemaTest {
         val expected = listOf(
             ExpectedWallet(20, "phantom", listOf("app.phantom"), false, true, false),
             ExpectedWallet(25, "solflare", listOf("com.solflare.mobile"), false, false, false),
-            ExpectedWallet(36, "backpack", listOf("app.backpack.mobile"), true, true, true),
+            ExpectedWallet(36, "backpack", listOf("app.backpack.mobile.standalone", "app.backpack.mobile"), true, true, true),
             ExpectedWallet(40, "jupiter", listOf("ag.jup.jupiter.android"), true, true, true),
             ExpectedWallet(50, "seedvault", listOf("com.solanamobile.seedvaultimpl"), false, false, false),
         )

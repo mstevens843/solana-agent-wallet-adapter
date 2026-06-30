@@ -5,4 +5,8 @@
         <item name="android:navigationBarColor">@color/navigation_bar_color</item>
         <item name="android:windowLightNavigationBar">false</item>
     </style>
+
+    <style name="AppTheme.Launch" parent="AppTheme">
+        <item name="android:windowBackground">@drawable/agentic_launch_screen</item>
+    </style>
 </resources>

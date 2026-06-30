@@ -13,7 +13,9 @@ object WalletRegistry {
 
     private const val PHANTOM_PACKAGE = "app.phantom"
     private const val SOLFLARE_PACKAGE = "com.solflare.mobile"
-    private const val BACKPACK_PACKAGE = "app.backpack.mobile"
+    const val BACKPACK_PACKAGE = "app.backpack.mobile.standalone"
+    const val BACKPACK_LEGACY_PACKAGE = "app.backpack.mobile"
+    val BACKPACK_PACKAGES: List<String> = listOf(BACKPACK_PACKAGE, BACKPACK_LEGACY_PACKAGE)
     private const val JUPITER_PACKAGE = "ag.jup.jupiter.android"
     private const val SEED_VAULT_PACKAGE = "com.solanamobile.seedvaultimpl"
     private const val SEED_VAULT_ICON_HEAD = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAANgAAADY"
@@ -54,6 +56,11 @@ object WalletRegistry {
             isKnownSeedVaultIcon(walletIcon) -> SEED_VAULT
             else -> UNKNOWN
         }
+    }
+
+    fun isBackpackPackage(packageName: String): Boolean {
+        val normalized = packageName.trim().lowercase()
+        return BACKPACK_PACKAGES.any { it == normalized }
     }
 
     fun isKnownSeedVaultIcon(walletIcon: String): Boolean {

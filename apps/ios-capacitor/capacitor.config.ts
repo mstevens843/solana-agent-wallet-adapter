@@ -28,7 +28,7 @@ const config: CapacitorConfig = {
   plugins: {
     SplashScreen: {
       launchAutoHide: true,
-      backgroundColor: '#050806',
+      backgroundColor: '#050706',
     },
   },
   // Capacitor 8 discovers plugins via packageClassList for SPM-linked targets.

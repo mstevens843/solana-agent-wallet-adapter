@@ -31,7 +31,7 @@ class MwaAuthorizationMergeTest {
             incomingAuthToken = "",
             walletUriBase = "",
             walletIcon = "",
-            targetWalletPackage = "",
+            targetWalletPackage = "ag.jup.jupiter.android",
             accountLabel = "",
             cluster = AgentCluster.MainnetBeta,
             existing = existing,
@@ -103,5 +103,47 @@ class MwaAuthorizationMergeTest {
         assertEquals("", freshUnknownProvider.walletIcon)
         assertEquals("", freshUnknownProvider.walletPackage)
         assertEquals(WalletRegistry.UNKNOWN, freshUnknownProvider.walletType)
+    }
+
+    @Test
+    fun buildAppliedAuthorizationRecord_doesNotInheritDifferentProviderMetadataForSamePubkey() {
+        val publicKeyBytes = ByteArray(32) { 14 }
+        val publicKeyBase58 = Base58.encode(publicKeyBytes)
+        val existingSeedVault = AgentMwaAuthRecord(
+            publicKeyBase58 = publicKeyBase58,
+            publicKeyBytes = publicKeyBytes,
+            authToken = "seed-auth-token",
+            walletUriBase = "solanamobilewallet://wallet",
+            walletIcon = "seed-icon",
+            walletPackage = "com.solanamobile.seedvaultimpl",
+            walletType = WalletRegistry.SEED_VAULT,
+            accountLabel = "Seed Vault signer",
+            cluster = AgentCluster.MainnetBeta,
+            timestampUnixSeconds = 1_716_000_000L,
+            authenticated = true,
+            capabilitiesCsv = "sign_transactions",
+        )
+
+        val freshPhantom = buildAppliedAuthorizationRecord(
+            publicKeyBase58 = publicKeyBase58,
+            publicKeyBytes = publicKeyBytes,
+            incomingAuthToken = "phantom-auth-token",
+            walletUriBase = "",
+            walletIcon = "",
+            targetWalletPackage = "app.phantom",
+            accountLabel = "Phantom signer",
+            cluster = AgentCluster.MainnetBeta,
+            existing = existingSeedVault,
+            capabilitiesCsv = "",
+            timestampUnixSeconds = 1_716_000_100L,
+        )
+
+        assertEquals("phantom-auth-token", freshPhantom.authToken)
+        assertEquals("", freshPhantom.walletUriBase)
+        assertEquals("", freshPhantom.walletIcon)
+        assertEquals("app.phantom", freshPhantom.walletPackage)
+        assertEquals(WalletRegistry.PHANTOM, freshPhantom.walletType)
+        assertEquals("Phantom signer", freshPhantom.accountLabel)
+        assertEquals("", freshPhantom.capabilitiesCsv)
     }
 }

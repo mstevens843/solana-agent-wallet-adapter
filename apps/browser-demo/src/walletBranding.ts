@@ -30,11 +30,13 @@ const WALLET_BRANDS: readonly WalletBrand[] = [
   {
     displayName: 'Backpack',
     logoId: 'backpack',
+    walletTypes: [36],
     matchers: ['backpack'],
   },
   {
     displayName: 'Phantom',
     logoId: 'phantom',
+    walletTypes: [20],
     matchers: ['phantom'],
   },
   {
@@ -46,6 +48,7 @@ const WALLET_BRANDS: readonly WalletBrand[] = [
   {
     displayName: 'Jupiter',
     logoId: 'jupiter',
+    walletTypes: [40],
     matchers: ['jupiter', 'jup.ag'],
   },
   {

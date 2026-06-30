@@ -66,7 +66,7 @@ class ConfigDrivenRoutingTest {
         val backpackNative = WalletEntry(
             id = 36,
             name = "backpack",
-            packageNames = listOf("app.backpack.mobile"),
+            packageNames = listOf("app.backpack.mobile.standalone", "app.backpack.mobile"),
             uriPatterns = emptyList(),
             iconSha256First8 = null,
             supportsSignMessages = true,
@@ -75,6 +75,7 @@ class ConfigDrivenRoutingTest {
         )
         seedConfig(walletRegistry = listOf(backpackNative))
 
+        assertFalse(WalletRegistry.forceSignThenRpc("app.backpack.mobile.standalone"))
         assertFalse(WalletRegistry.forceSignThenRpc("app.backpack.mobile"))
     }
 
@@ -128,7 +129,7 @@ class ConfigDrivenRoutingTest {
         val backpackOnly = WalletEntry(
             id = 36,
             name = "backpack",
-            packageNames = listOf("app.backpack.mobile"),
+            packageNames = listOf("app.backpack.mobile.standalone", "app.backpack.mobile"),
             uriPatterns = emptyList(),
             iconSha256First8 = null,
             supportsSignMessages = true,
@@ -142,6 +143,8 @@ class ConfigDrivenRoutingTest {
         assertTrue(MemoProofRouter.useMemoTxFallback("app.phantom"))
         // Backpack in config → server value wins (supportsSignMessages=true so NOT
         // unsupported; forceSignThenRpc=false even though hardcoded says true)
+        assertFalse(WalletRegistry.messageSigningUnsupported("app.backpack.mobile.standalone"))
+        assertFalse(WalletRegistry.forceSignThenRpc("app.backpack.mobile.standalone"))
         assertFalse(WalletRegistry.messageSigningUnsupported("app.backpack.mobile"))
         assertFalse(WalletRegistry.forceSignThenRpc("app.backpack.mobile"))
     }

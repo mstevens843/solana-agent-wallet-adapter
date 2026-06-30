@@ -3234,6 +3234,21 @@ interface WalletPathSession {
   androidWalletType?: number;
 }
 
+interface AndroidNativeWalletTarget {
+  id: WalletProviderLogoId;
+  label: string;
+  packageName: string;
+  walletType: number;
+}
+
+const ANDROID_NATIVE_WALLET_TARGETS: readonly AndroidNativeWalletTarget[] = [
+  { id: 'seedVault', label: 'Seed Vault', packageName: 'com.solanamobile.seedvaultimpl', walletType: 50 },
+  { id: 'jupiter', label: 'Jupiter', packageName: 'ag.jup.jupiter.android', walletType: 40 },
+  { id: 'backpack', label: 'Backpack', packageName: 'app.backpack.mobile.standalone', walletType: 36 },
+  { id: 'phantom', label: 'Phantom', packageName: 'app.phantom', walletType: 20 },
+  { id: 'solflare', label: 'Solflare', packageName: 'com.solflare.mobile', walletType: 25 },
+];
+
 interface PersistedState {
   selectedWalletName?: string;
   selectedWalletLogoId?: WalletProviderLogoId;
@@ -19315,7 +19330,10 @@ function publicWalletActions(): string {
       </div>
     `;
   }
-  if (androidNative || iosNative) {
+  if (androidNative) {
+    return androidNativeWalletTargetButtons('public');
+  }
+  if (iosNative) {
     return `
       <div class="wallet-actions public-wallet-actions native-wallet-actions">
         <button data-start-action="connect" class="primary wallet-connect-cta" ${state.busy ? 'disabled' : ''}>
@@ -19332,6 +19350,33 @@ function publicWalletActions(): string {
       </button>
     </div>
   `;
+}
+
+function androidNativeWalletTargetButtons(surface: 'public' | 'box'): string {
+  const className = surface === 'public'
+    ? 'wallet-actions public-wallet-actions native-wallet-actions android-native-wallet-targets'
+    : 'bridge-actions android-native-wallet-targets';
+  return `
+    <div class="${className}">
+      ${ANDROID_NATIVE_WALLET_TARGETS.map((target) => `
+        <button
+          type="button"
+          class="wallet-connect-cta android-native-wallet-target"
+          data-android-wallet-package="${escapeHtml(target.packageName)}"
+          ${state.busy ? 'disabled' : ''}
+        >
+          ${brandLogo(target.id, 'android-native-wallet-logo')}
+          <span>${escapeHtml(target.label)}</span>
+        </button>
+      `).join('')}
+    </div>
+  `;
+}
+
+function androidNativeWalletTargetForPackage(packageName: string | undefined): AndroidNativeWalletTarget | undefined {
+  const normalized = packageName?.trim().toLowerCase();
+  if (!normalized) return undefined;
+  return ANDROID_NATIVE_WALLET_TARGETS.find((target) => target.packageName.toLowerCase() === normalized);
 }
 
 function walletButtonIcon(): string {
@@ -19408,9 +19453,10 @@ function mobileWalletBox(): string {
         <p>${escapeHtml(state.androidNativeStatus)}</p>
         <div class="capabilities compact-caps">
           <span>${escapeHtml(t('Android app'))}</span>
-          <span>${escapeHtml(t('Wallet picker'))}</span>
+          <span>${escapeHtml(t('Targeted MWA'))}</span>
           <span>${tf('{count} cached', { count: state.androidAuthCacheCount })}</span>
         </div>
+        ${androidNativeWalletTargetButtons('box')}
         <div class="bridge-actions ios-state-actions">
           <button id="androidReconnectCached" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Reconnect cached'))}</button>
           <button id="androidClearTransient" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Clear transient'))}</button>
@@ -38973,6 +39019,13 @@ function bind(): void {
   bindOnce(document.querySelector<HTMLButtonElement>('#androidClearTransient'), 'click', runClearAndroidTransient);
   bindOnce(document.querySelector<HTMLButtonElement>('#androidFullReset'), 'click', runClearAndroidFullReset);
   bindOnce(document.querySelector<HTMLButtonElement>('#androidClearAllAccounts'), 'click', runClearAndroidAllAccounts);
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-wallet-package]')) {
+    bindOnce(button, 'click', () => {
+      const target = androidNativeWalletTargetForPackage(button.dataset.androidWalletPackage);
+      if (!target) return;
+      void runConnect({ androidWalletTarget: target });
+    });
+  }
   bindOnce(document.querySelector<HTMLButtonElement>('#iosReconnectCached'), 'click', runReconnectIosCached);
   bindOnce(document.querySelector<HTMLButtonElement>('#iosClearTransient'), 'click', runClearIosTransient);
   bindOnce(document.querySelector<HTMLButtonElement>('#iosFullReset'), 'click', runClearIosFullReset);
@@ -42898,6 +42951,7 @@ async function runConnect(
   options: {
     onError?: (message: string, err: unknown) => void | Promise<void>;
     successToast?: boolean;
+    androidWalletTarget?: AndroidNativeWalletTarget;
   } = {},
 ): Promise<void> {
   const connectSurface = walletConnectSurface();
@@ -42905,7 +42959,7 @@ async function runConnect(
   trackWalletConnectClick(connectSurface, 'connect_button');
   await run('connect', async () => {
     if (state.androidNativeEnvironment.isAndroidNative) {
-      await connectAndroidNativeWallet(true);
+      await connectAndroidNativeWallet(true, options.androidWalletTarget);
       state.transactionStatus = `Android MWA wallet connected on ${state.cluster}.`;
       if (state.bridgeActive) {
         await connectBridgeHost();
@@ -63237,16 +63291,23 @@ function selectedWallet(): DiscoveredWallet {
   return wallet;
 }
 
-async function connectAndroidNativeWallet(forcePicker: boolean): Promise<void> {
+async function connectAndroidNativeWallet(
+  forcePicker: boolean,
+  targetWallet?: AndroidNativeWalletTarget,
+): Promise<void> {
   assertAndroidNativeRuntime();
   const backend = new AndroidNativeWalletBackend({
     cluster: androidNativeCluster(),
     rpcUrl: activeRpcUrl(),
+    ...(targetWallet ? {
+      walletPackage: targetWallet.packageName,
+      walletType: targetWallet.walletType,
+    } : {}),
   });
   walletBackend = backend;
   client = new SolanaSigningClient({ backend });
   const savedSession = androidWalletPathSessionForCurrentCluster();
-  const cachedAddress = forcePicker || !savedSession
+  const cachedAddress = forcePicker || targetWallet || !savedSession
     ? null
     : await reconnectAndroidNativeSavedSession(backend, savedSession);
   state.address = cachedAddress ?? await backend.connect();
@@ -63330,7 +63391,7 @@ function androidWalletPackageForSession(session: WalletPathSession): string | un
   const normalized = `${session.walletName} ${session.walletBrandId ?? ''}`.trim().toLowerCase();
   if (normalized.includes('phantom')) return 'app.phantom';
   if (normalized.includes('solflare')) return 'com.solflare.mobile';
-  if (normalized.includes('backpack')) return 'app.backpack.mobile';
+  if (normalized.includes('backpack')) return 'app.backpack.mobile.standalone';
   if (normalized.includes('jupiter') || normalized.includes('jup')) return 'ag.jup.jupiter.android';
   if (normalized.includes('seed') || normalized.includes('seedvault')) return 'com.solanamobile.seedvaultimpl';
   return undefined;
@@ -63356,24 +63417,18 @@ async function restoreAndroidNativeSession(): Promise<boolean> {
   const expectedAddress = savedSession?.address;
   const expectedWalletPackage = savedSession ? androidWalletPackageForSession(savedSession) : undefined;
   const expectedWalletType = savedSession ? androidWalletTypeForSession(savedSession) : undefined;
-  if (!savedSession || (!savedSession.androidAuthCacheKey && !expectedWalletPackage && typeof expectedWalletType !== 'number')) {
-    state.androidNativeStatus = expectedAddress
-      ? tf('No provider-scoped Android MWA authorization found for {wallet}. Tap Discover to reconnect that wallet.', { wallet: short(expectedAddress) })
-      : t('No cached Android MWA authorization found. Tap Discover to open the wallet picker.');
-    return false;
-  }
   const restored = await restoreLatestAndroidNativeWallet({
     cluster: androidNativeCluster(),
     rpcUrl: activeRpcUrl(),
-    address: savedSession.address,
-    ...(savedSession.androidAuthCacheKey ? { authCacheKey: savedSession.androidAuthCacheKey } : {}),
+    ...(savedSession ? { address: savedSession.address } : {}),
+    ...(savedSession?.androidAuthCacheKey ? { authCacheKey: savedSession.androidAuthCacheKey } : {}),
     ...(expectedWalletPackage ? { walletPackage: expectedWalletPackage } : {}),
     ...(typeof expectedWalletType === 'number' ? { walletType: expectedWalletType } : {}),
   });
   if (!restored) {
     state.androidNativeStatus = expectedAddress
-      ? tf('No cached Android MWA authorization found for {wallet}. Tap Discover to reconnect that wallet.', { wallet: short(expectedAddress) })
-      : t('No cached Android MWA authorization found. Tap Discover to open the wallet picker.');
+      ? tf('No cached Android MWA authorization found for {wallet}. Connect that wallet again.', { wallet: short(expectedAddress) })
+      : t('No cached Android MWA authorization found. Connect a wallet to authorize.');
     return false;
   }
   await applyAndroidNativeRestore(restored);

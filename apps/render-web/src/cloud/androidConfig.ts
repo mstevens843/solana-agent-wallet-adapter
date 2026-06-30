@@ -85,7 +85,7 @@ const WALLET_REGISTRY: readonly AndroidWalletEntry[] = [
   {
     id: 36,
     name: 'backpack',
-    packageNames: ['app.backpack.mobile'],
+    packageNames: ['app.backpack.mobile.standalone', 'app.backpack.mobile'],
     uriPatterns: ['backpack.app'],
     supportsSignMessages: true,
     supportsSiws: true,

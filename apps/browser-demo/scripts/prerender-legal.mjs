@@ -48,6 +48,15 @@ function replaceOnce(html, pattern, replacement, label) {
   return html.replace(pattern, replacement);
 }
 
+function replaceAppMain(html, body) {
+  const pattern = /<main id="app"([^>]*)>[\s\S]*?<\/main>/;
+  const match = html.match(pattern);
+  if (!match) {
+    throw new Error('prerender-legal: shell missing <main id="app"> placeholder');
+  }
+  return html.replace(pattern, `<main id="app"${match[1]}>${body}</main>`);
+}
+
 async function main() {
   const shellPath = join(distDir, 'index.html');
   let shell;
@@ -68,10 +77,7 @@ async function main() {
     html = replaceOnce(html, /<meta property="og:description" content="[^"]*"\s*\/?>/, `<meta property="og:description" content="${desc}" />`, 'meta og:description');
     html = replaceOnce(html, /<meta name="twitter:title" content="[^"]*"\s*\/?>/, `<meta name="twitter:title" content="${title}" />`, 'meta twitter:title');
     html = replaceOnce(html, /<meta name="twitter:description" content="[^"]*"\s*\/?>/, `<meta name="twitter:description" content="${desc}" />`, 'meta twitter:description');
-    if (!html.includes('<main id="app"></main>')) {
-      throw new Error('prerender-legal: shell missing <main id="app"></main> placeholder');
-    }
-    html = html.replace('<main id="app"></main>', `<main id="app">${body}</main>`);
+    html = replaceAppMain(html, body);
 
     const outDir = join(distDir, route.slice(1));
     await mkdir(outDir, { recursive: true });

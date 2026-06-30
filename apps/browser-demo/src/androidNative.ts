@@ -212,6 +212,8 @@ export async function restoreLatestAndroidNativeWallet(
       walletPackage: options.walletPackage,
       walletType: options.walletType,
     });
+  } else {
+    address = await backend.reconnectLatest();
   }
   if (!address) {
     return null;
@@ -234,12 +236,17 @@ export async function restoreLatestAndroidNativeWallet(
 export class AndroidNativeWalletBackend implements WalletBackend {
   private readonly cluster: Cluster;
   private rpcUrl?: string;
+  private readonly targetWalletPackage?: string;
+  private readonly targetWalletType?: number;
   private readonly approvals = new Map<SigningRequestId, ApprovalResource>();
   private activeStatus: AndroidMwaStatus | null = null;
 
   constructor(options: AndroidNativeWalletBackendOptions) {
     this.cluster = requireAndroidNativeCluster(options.cluster);
     this.rpcUrl = normalizeRpcUrl(options.rpcUrl);
+    const walletPackage = options.walletPackage?.trim();
+    this.targetWalletPackage = walletPackage ? walletPackage : undefined;
+    this.targetWalletType = typeof options.walletType === 'number' ? options.walletType : undefined;
   }
 
   setRpcUrl(rpcUrl: string | undefined): void {
@@ -270,6 +277,8 @@ export class AndroidNativeWalletBackend implements WalletBackend {
   async connect(): Promise<string> {
     const status = await androidNativeRequest<AndroidMwaStatus>('connect', {
       cluster: this.cluster,
+      ...(this.targetWalletPackage ? { walletPackage: this.targetWalletPackage } : {}),
+      ...(typeof this.targetWalletType === 'number' ? { walletType: this.targetWalletType } : {}),
       ...this.nativeRpcContext(),
     });
     this.applyStatus(status);

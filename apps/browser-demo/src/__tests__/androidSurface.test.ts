@@ -83,15 +83,43 @@ describe('AndroidNativeWalletBackend cached restore', () => {
     expect(calls).toEqual(['reconnectSession']);
   });
 
-  it('does not use native latest restore without a saved session identity', async () => {
+  it('restores native latest authorization when web session identity is missing after a hard kill', async () => {
     const calls: string[] = [];
     installAndroidBridge((method) => {
       calls.push(method);
+      if (method === 'reconnectLatest') {
+        return androidStatus({
+          connected: true,
+          address: 'Android33333333333333333333333333333333',
+          authCacheKey: 'mainnet-beta|pkg:app.phantom|Android33333333333333333333333333333333',
+          walletPackage: 'app.phantom',
+          walletType: 20,
+        });
+      }
+      throw new Error(`unexpected Android MWA method ${method}`);
+    });
+
+    await expect(restoreLatestAndroidNativeWallet({ cluster: 'mainnet-beta' })).resolves.toMatchObject({
+      address: 'Android33333333333333333333333333333333',
+      walletName: 'Phantom',
+      authCacheKey: 'mainnet-beta|pkg:app.phantom|Android33333333333333333333333333333333',
+      cacheCount: 1,
+    });
+    expect(calls).toEqual(['reconnectLatest']);
+  });
+
+  it('does not report native latest restore when explicit disconnect left only non-restorable cache', async () => {
+    const calls: string[] = [];
+    installAndroidBridge((method) => {
+      calls.push(method);
+      if (method === 'reconnectLatest') {
+        return androidStatus({ connected: false, cachedCount: 1 });
+      }
       throw new Error(`unexpected Android MWA method ${method}`);
     });
 
     await expect(restoreLatestAndroidNativeWallet({ cluster: 'mainnet-beta' })).resolves.toBeNull();
-    expect(calls).toEqual([]);
+    expect(calls).toEqual(['reconnectLatest']);
   });
 
   it('lazy getAddress opens a fresh connect instead of restoring arbitrary latest after a cold start', async () => {
@@ -111,6 +139,33 @@ describe('AndroidNativeWalletBackend cached restore', () => {
 
     await expect(backend.getAddress()).resolves.toBe('Android22222222222222222222222222222222');
     expect(calls).toEqual(['status', 'connect']);
+  });
+
+  it('passes the selected wallet package and type to fresh native connect', async () => {
+    const calls: Array<{ method: string; payload: Record<string, unknown> }> = [];
+    installAndroidBridge((method, payload) => {
+      calls.push({ method, payload });
+      if (method === 'connect') {
+        expect(payload.walletPackage).toBe('app.phantom');
+        expect(payload.walletType).toBe(20);
+        return androidStatus({
+          connected: true,
+          address: 'Android44444444444444444444444444444444',
+          walletPackage: 'app.phantom',
+          walletType: 20,
+        });
+      }
+      throw new Error(`unexpected Android MWA method ${method}`);
+    });
+
+    const backend = new AndroidNativeWalletBackend({
+      cluster: 'mainnet-beta',
+      walletPackage: 'app.phantom',
+      walletType: 20,
+    });
+
+    await expect(backend.connect()).resolves.toBe('Android44444444444444444444444444444444');
+    expect(calls.map((call) => call.method)).toEqual(['connect']);
   });
 
   it('does not report a disconnected native authorization as restored', async () => {
@@ -170,17 +225,21 @@ function androidStatus(input: {
   address?: string;
   authCacheKey?: string;
   cachedCount?: number;
+  walletPackage?: string;
+  walletType?: number;
 }): Record<string, unknown> {
   const address = input.address ?? '';
+  const walletPackage = input.walletPackage ?? 'app.phantom';
+  const walletType = input.walletType ?? 20;
   return {
     connected: input.connected,
     cachedCount: input.cachedCount ?? 1,
     ...(address && {
       address,
-      authCacheKey: input.authCacheKey ?? `mainnet-beta|pkg:app.phantom|${address}`,
+      authCacheKey: input.authCacheKey ?? `mainnet-beta|pkg:${walletPackage}|${address}`,
       cluster: 'mainnet-beta',
-      walletPackage: 'app.phantom',
-      walletType: 1,
+      walletPackage,
+      walletType,
       capabilities: {
         backend: 'android-native-mwa',
         cluster: ['mainnet-beta'],

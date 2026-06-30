@@ -27,7 +27,7 @@ class MemoProofRouterTest {
     )
 
     private val backpackRecord = seedVaultRecord.copy(
-        walletPackage = "app.backpack.mobile",
+        walletPackage = "app.backpack.mobile.standalone",
         walletType = WalletRegistry.BACKPACK,
     )
 
@@ -256,6 +256,7 @@ class MemoProofRouterTest {
             "com.solanamobile.seedvaultimpl",
             "com.solanamobile.wallet",
             "seedvault",
+            "app.backpack.mobile.standalone",
             "app.backpack.mobile",
             "ag.jup.jupiter.android",
             "com.example.unknown",

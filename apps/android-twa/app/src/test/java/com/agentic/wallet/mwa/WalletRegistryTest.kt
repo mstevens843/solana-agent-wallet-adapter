@@ -39,6 +39,7 @@ class WalletRegistryTest {
 
     @Test
     fun messageSigningUnsupported_signMessagesCapableWallets() {
+        assertFalse(WalletRegistry.messageSigningUnsupported("app.backpack.mobile.standalone"))
         assertFalse(WalletRegistry.messageSigningUnsupported("app.backpack.mobile"))
         assertFalse(WalletRegistry.messageSigningUnsupported("ag.jup.jupiter.android"))
         assertFalse(WalletRegistry.messageSigningUnsupported(""))
@@ -58,6 +59,7 @@ class WalletRegistryTest {
     @Test
     fun supportsSiws_includesEveryOtherWallet() {
         assertTrue(WalletRegistry.supportsSiws("app.phantom"))
+        assertTrue(WalletRegistry.supportsSiws("app.backpack.mobile.standalone"))
         assertTrue(WalletRegistry.supportsSiws("app.backpack.mobile"))
         assertTrue(WalletRegistry.supportsSiws("ag.jup.jupiter.android"))
         assertTrue(WalletRegistry.supportsSiws(""))
@@ -68,7 +70,7 @@ class WalletRegistryTest {
     fun inferPackage_mapsUriSchemesToCanonicalPackage() {
         assertEquals("app.phantom", WalletRegistry.inferPackage("https://phantom.app/ul/v1"))
         assertEquals("com.solflare.mobile", WalletRegistry.inferPackage("https://solflare.com"))
-        assertEquals("app.backpack.mobile", WalletRegistry.inferPackage("https://backpack.app"))
+        assertEquals("app.backpack.mobile.standalone", WalletRegistry.inferPackage("https://backpack.app"))
         assertEquals("ag.jup.jupiter.android", WalletRegistry.inferPackage("https://jup.ag/mwa"))
         assertEquals("com.solanamobile.seedvaultimpl", WalletRegistry.inferPackage("solanamobilewallet://v1"))
     }
@@ -111,6 +113,7 @@ class WalletRegistryTest {
     fun walletType_packageBased() {
         assertEquals(WalletRegistry.PHANTOM, WalletRegistry.walletType("app.phantom"))
         assertEquals(WalletRegistry.SOLFLARE, WalletRegistry.walletType("com.solflare.mobile"))
+        assertEquals(WalletRegistry.BACKPACK, WalletRegistry.walletType("app.backpack.mobile.standalone"))
         assertEquals(WalletRegistry.BACKPACK, WalletRegistry.walletType("app.backpack.mobile"))
         assertEquals(WalletRegistry.JUPITER, WalletRegistry.walletType("ag.jup.jupiter.android"))
         assertEquals(WalletRegistry.SEED_VAULT, WalletRegistry.walletType("com.solanamobile.seedvaultimpl"))
@@ -183,6 +186,7 @@ class WalletRegistryTest {
         assertFalse(WalletRegistry.forceSignThenRpc("app.phantom"))
         assertFalse(WalletRegistry.forceSignThenRpc("com.solflare.mobile"))
         // Backpack and Jupiter route through the resolved Helius RPC.
+        assertTrue(WalletRegistry.forceSignThenRpc("app.backpack.mobile.standalone"))
         assertTrue(WalletRegistry.forceSignThenRpc("app.backpack.mobile"))
         assertTrue(WalletRegistry.forceSignThenRpc("ag.jup.jupiter.android"))
     }
@@ -215,6 +219,7 @@ class WalletRegistryTest {
     fun reportSignMessageSupported_knownGoodWalletsReturnTrue() {
         // Backpack and Jupiter have working signMessages handlers; they should keep their
         // direct path (not be routed through memo-tx).
+        assertTrue(WalletRegistry.reportSignMessageSupported("app.backpack.mobile.standalone"))
         assertTrue(WalletRegistry.reportSignMessageSupported("app.backpack.mobile"))
         assertTrue(WalletRegistry.reportSignMessageSupported("ag.jup.jupiter.android"))
     }

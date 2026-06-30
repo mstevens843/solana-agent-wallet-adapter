@@ -39,6 +39,11 @@ if (command === 'assetlinks:verify') {
   process.exit(0);
 }
 
+if (command === 'assetlinks:check-live') {
+  await checkLiveAssetLinks(extraArgs);
+  process.exit(0);
+}
+
 const tasks = {
   build: ['assembleDebug'],
   debug: ['assembleDebug'],
@@ -56,7 +61,7 @@ const tasks = {
 
 if (!Object.hasOwn(tasks, command)) {
   console.error(`[android] Unknown command: ${command}`);
-  console.error('[android] Use one of: build, debug, release, install, test, instrumented-test, fingerprint, assetlinks, assetlinks:write, assetlinks:verify');
+  console.error('[android] Use one of: build, debug, release, install, test, instrumented-test, fingerprint, assetlinks, assetlinks:write, assetlinks:verify, assetlinks:check-live');
   process.exit(1);
 }
 
@@ -318,6 +323,110 @@ function verifyAssetLinks(args) {
   console.log(`[android] Verified ${file}`);
 }
 
+async function checkLiveAssetLinks(args) {
+  const options = parseOptions(args);
+  const appPackage = options.package ?? process.env.AGENTIC_ANDROID_PACKAGE_NAME ?? packageName;
+  const site = normalizeAssetLinksSite(
+    options.site ??
+      process.env.AGENTIC_ANDROID_ASSETLINKS_SITE ??
+      process.env.AGENTIC_ANDROID_LAUNCH_URL ??
+      'https://agentic-signer.com',
+  );
+  const expectedFingerprints = resolveAssetLinkFingerprints(options);
+  const url = `${site}/.well-known/assetlinks.json`;
+
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: { accept: 'application/json' },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[android] GET ${url} failed: ${message}`);
+    process.exit(1);
+  }
+  const contentType = response.headers.get('content-type') ?? '';
+  const raw = await response.text();
+
+  if (!response.ok) {
+    console.error(`[android] GET ${url} returned HTTP ${response.status}: ${raw.slice(0, 200)}`);
+    process.exit(1);
+  }
+  if (!contentType.toLowerCase().includes('application/json')) {
+    console.error(`[android] GET ${url} returned ${contentType || 'missing content-type'} instead of application/json.`);
+    process.exit(1);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[android] ${url} returned invalid JSON: ${message}`);
+    process.exit(1);
+  }
+
+  verifyAssetLinksPayload(parsed, {
+    appPackage,
+    expectedFingerprints,
+    allowPlaceholder: false,
+    label: url,
+  });
+
+  console.log(`[android] Verified live Digital Asset Links for ${appPackage} at ${url}`);
+}
+
+function verifyAssetLinksPayload(parsed, { appPackage, expectedFingerprints, allowPlaceholder, label }) {
+  if (!Array.isArray(parsed)) {
+    console.error(`[android] ${label} must be a JSON array.`);
+    process.exit(1);
+  }
+
+  const entry = parsed.find((candidate) => candidate?.target?.package_name === appPackage);
+  if (!entry) {
+    console.error(`[android] ${label} target package not found: ${appPackage}`);
+    process.exit(1);
+  }
+  if (!Array.isArray(entry.relation) || !entry.relation.includes('delegate_permission/common.handle_all_urls')) {
+    console.error(`[android] ${label} relation must include delegate_permission/common.handle_all_urls.`);
+    process.exit(1);
+  }
+  if (entry.target?.namespace !== 'android_app') {
+    console.error(`[android] ${label} target namespace must be android_app.`);
+    process.exit(1);
+  }
+
+  const fingerprints = entry.target?.sha256_cert_fingerprints;
+  if (!Array.isArray(fingerprints) || fingerprints.length === 0) {
+    console.error(`[android] ${label} target must include sha256_cert_fingerprints.`);
+    process.exit(1);
+  }
+  const normalizedFingerprints = fingerprints.map((value) => normalizeFingerprint(String(value)));
+  validateFingerprints(normalizedFingerprints, { allowPlaceholder });
+
+  for (const expected of expectedFingerprints) {
+    if (!normalizedFingerprints.includes(expected)) {
+      console.error(`[android] Expected fingerprint missing from ${label}: ${expected}`);
+      process.exit(1);
+    }
+  }
+}
+
+function normalizeAssetLinksSite(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    console.error(`[android] Invalid assetlinks site URL: ${value}`);
+    process.exit(1);
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    console.error(`[android] Assetlinks site must be an HTTP(S) URL: ${value}`);
+    process.exit(1);
+  }
+  return `${url.protocol}//${url.host}`;
+}
+
 function validateFingerprints(fingerprints, { allowPlaceholder }) {
   for (const fingerprint of fingerprints) {
     if (!/^[A-F0-9]{2}(:[A-F0-9]{2}){31}$/.test(fingerprint)) {
@@ -370,6 +479,14 @@ function parseOptions(args) {
     }
     if (arg === '--out') {
       options.out = args[++index];
+      continue;
+    }
+    if (arg.startsWith('--site=')) {
+      options.site = arg.slice('--site='.length);
+      continue;
+    }
+    if (arg === '--site') {
+      options.site = args[++index];
       continue;
     }
     if (arg.startsWith('--keystore=')) {

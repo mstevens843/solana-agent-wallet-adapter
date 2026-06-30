@@ -5,7 +5,8 @@
       "namespace": "android_app",
       "package_name": "com.agentic.wallet",
       "sha256_cert_fingerprints": [
-        "B6:E1:07:D1:AB:F2:84:B3:11:B8:48:0A:14:83:9E:0A:12:EA:58:ED:F6:D4:9A:EE:A3:3D:33:7B:B3:E9:30:97"
+        "B6:E1:07:D1:AB:F2:84:B3:11:B8:48:0A:14:83:9E:0A:12:EA:58:ED:F6:D4:9A:EE:A3:3D:33:7B:B3:E9:30:97",
+        "11:99:47:93:2D:24:79:E3:DD:AE:C3:E4:55:6B:37:56:61:47:0D:FD:24:65:68:F6:2E:66:D7:AE:28:97:CE:EE"
       ]
     }
   }

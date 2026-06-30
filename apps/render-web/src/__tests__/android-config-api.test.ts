@@ -144,7 +144,7 @@ describe('GET /api/android-config', () => {
     const expected = [
       { id: 20, name: 'phantom', packageNames: ['app.phantom'], supportsSignMessages: false, supportsSiws: true, forceSignThenRpc: false },
       { id: 25, name: 'solflare', packageNames: ['com.solflare.mobile'], supportsSignMessages: false, supportsSiws: false, forceSignThenRpc: false },
-      { id: 36, name: 'backpack', packageNames: ['app.backpack.mobile'], supportsSignMessages: true, supportsSiws: true, forceSignThenRpc: true },
+      { id: 36, name: 'backpack', packageNames: ['app.backpack.mobile.standalone', 'app.backpack.mobile'], supportsSignMessages: true, supportsSiws: true, forceSignThenRpc: true },
       { id: 40, name: 'jupiter', packageNames: ['ag.jup.jupiter.android'], supportsSignMessages: true, supportsSiws: true, forceSignThenRpc: true },
       { id: 50, name: 'seedvault', packageNames: ['com.solanamobile.seedvaultimpl'], supportsSignMessages: false, supportsSiws: false, forceSignThenRpc: false },
     ];

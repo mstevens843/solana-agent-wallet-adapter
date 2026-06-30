@@ -115,17 +115,24 @@ class MwaController(
         walletPackage: String = "",
         walletType: Int = WalletRegistry.UNKNOWN,
     ): AgentMwaAuthRecord? {
+        val resolvedWalletPackage = resolveTargetWalletPackage(walletPackage)
         AgentMwaLog.info(
             "MwaController",
             "reconnectForPubkey",
             "START",
             "attempting cached authorization restore for pubkey and provider",
-            mapOf("pubkey" to pubkeyBase58, "cluster" to cluster.id, "walletPackage" to walletPackage, "walletType" to walletType),
+            mapOf(
+                "pubkey" to pubkeyBase58,
+                "cluster" to cluster.id,
+                "walletPackage" to walletPackage,
+                "resolvedWalletPackage" to resolvedWalletPackage,
+                "walletType" to walletType,
+            ),
         )
         val record = cache.find(
             pubkeyBase58 = pubkeyBase58,
             cluster = cluster,
-            walletPackage = walletPackage,
+            walletPackage = resolvedWalletPackage,
             walletType = walletType,
         )
         if (record == null) {
@@ -134,7 +141,13 @@ class MwaController(
                 "reconnectForPubkey",
                 "RESULT_FAIL",
                 "provider-scoped cached authorization not found",
-                mapOf("pubkey" to pubkeyBase58, "cluster" to cluster.id, "walletPackage" to walletPackage, "walletType" to walletType),
+                mapOf(
+                    "pubkey" to pubkeyBase58,
+                    "cluster" to cluster.id,
+                    "walletPackage" to walletPackage,
+                    "resolvedWalletPackage" to resolvedWalletPackage,
+                    "walletType" to walletType,
+                ),
             )
             return null
         }
@@ -280,6 +293,7 @@ class MwaController(
         forceFresh: Boolean = true,
     ): AgentMwaAuthRecord = withKeepAlive("connect") {
         cache.clearBlacklist()
+        val resolvedTargetWalletPackage = resolveTargetWalletPackage(targetWalletPackage)
         // Parity with grant-godot PR #449 (clearState fix): expose FRESH vs CACHED in logs so
         // the rare "silent reuse" case (used auth token instead of opening OS picker) is observable.
         val cachedReference = if (forceFresh) null else activeRecord
@@ -292,6 +306,7 @@ class MwaController(
             mapOf(
                 "cluster" to cluster.id,
                 "targetWalletPackage" to targetWalletPackage,
+                "resolvedTargetWalletPackage" to resolvedTargetWalletPackage,
                 "forceFresh" to forceFresh,
                 "path" to path,
                 "hadActiveRecord" to (activeRecord != null),
@@ -301,7 +316,7 @@ class MwaController(
         val adapter = newAdapter(cluster, cachedReference)
         when (val result = adapter.connect(sender)) {
             is TransactionResult.Success -> {
-                val record = applyAuthorization(result.authResult, cluster, targetWalletPackage)
+                val record = applyAuthorization(result.authResult, cluster, resolvedTargetWalletPackage)
                 AgentMwaLog.info(
                     "MwaController",
                     "connect",
@@ -1361,6 +1376,32 @@ class MwaController(
         return inferred
     }
 
+    private fun resolveTargetWalletPackage(targetWalletPackage: String): String {
+        val requested = targetWalletPackage.trim()
+        if (requested.isBlank() || !WalletRegistry.isBackpackPackage(requested)) return requested
+        val installed = WalletRegistry.BACKPACK_PACKAGES.firstOrNull { packageInstalled(it) }
+        val resolved = installed ?: WalletRegistry.BACKPACK_PACKAGE
+        if (resolved != requested) {
+            AgentMwaLog.info(
+                "MwaController",
+                "resolveTargetWalletPackage",
+                "DONE",
+                "Backpack target package resolved from installed package family",
+                mapOf("requested" to requested, "resolved" to resolved, "installed" to (installed ?: "")),
+            )
+        }
+        return resolved
+    }
+
+    private fun packageInstalled(packageName: String): Boolean =
+        try {
+            @Suppress("DEPRECATION")
+            context.packageManager.getPackageInfo(packageName, 0)
+            true
+        } catch (_: Throwable) {
+            false
+        }
+
     private fun requireActive(method: String = "requireActive"): AgentMwaAuthRecord {
         val record = activeRecord
         if (record != null) return record
@@ -1975,10 +2016,22 @@ internal fun buildAppliedAuthorizationRecord(
     capabilitiesCsv: String,
     timestampUnixSeconds: Long = System.currentTimeMillis() / 1000L,
 ): AgentMwaAuthRecord {
-    val resolvedWalletUriBase = walletUriBase.ifBlank { existing?.walletUriBase.orEmpty() }
-    val resolvedWalletIcon = walletIcon.ifBlank { existing?.walletIcon.orEmpty() }
-    val resolvedTargetWalletPackage = targetWalletPackage.ifBlank { existing?.walletPackage.orEmpty() }
-    val authToken = incomingAuthToken.ifBlank { existing?.authToken.orEmpty() }
+    val incomingPackage = WalletRegistry.inferPackage(walletUriBase, targetWalletPackage, walletIcon)
+    val incomingWalletType = WalletRegistry.walletType(incomingPackage, walletUriBase, walletIcon)
+    val incomingProviderKey = authCacheProviderKey(targetWalletPackage, walletUriBase, walletIcon, incomingWalletType)
+    val unknownProviderKey = authCacheProviderKey("", "", "", WalletRegistry.UNKNOWN)
+    val existingForMerge = existing?.takeIf {
+        val existingProviderKey = authCacheProviderKey(it)
+        if (incomingProviderKey == unknownProviderKey) {
+            existingProviderKey == unknownProviderKey
+        } else {
+            existingProviderKey == incomingProviderKey
+        }
+    }
+    val resolvedWalletUriBase = walletUriBase.ifBlank { existingForMerge?.walletUriBase.orEmpty() }
+    val resolvedWalletIcon = walletIcon.ifBlank { existingForMerge?.walletIcon.orEmpty() }
+    val resolvedTargetWalletPackage = targetWalletPackage.ifBlank { existingForMerge?.walletPackage.orEmpty() }
+    val authToken = incomingAuthToken.ifBlank { existingForMerge?.authToken.orEmpty() }
     val walletPackage = WalletRegistry.inferPackage(
         resolvedWalletUriBase,
         resolvedTargetWalletPackage,
@@ -1992,11 +2045,11 @@ internal fun buildAppliedAuthorizationRecord(
         walletIcon = resolvedWalletIcon,
         walletPackage = walletPackage,
         walletType = WalletRegistry.walletType(walletPackage, resolvedWalletUriBase, resolvedWalletIcon),
-        accountLabel = accountLabel.ifBlank { existing?.accountLabel.orEmpty() },
+        accountLabel = accountLabel.ifBlank { existingForMerge?.accountLabel.orEmpty() },
         cluster = cluster,
         timestampUnixSeconds = timestampUnixSeconds,
         authenticated = true,
-        capabilitiesCsv = capabilitiesCsv.ifBlank { existing?.capabilitiesCsv.orEmpty() },
+        capabilitiesCsv = capabilitiesCsv.ifBlank { existingForMerge?.capabilitiesCsv.orEmpty() },
     )
 }
 

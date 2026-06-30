@@ -139,6 +139,22 @@ body::after {
   z-index: 1;
 }
 
+.agentic-launch-screen {
+  display: grid;
+  isolation: isolate;
+  min-height: 100dvh;
+  overflow: hidden;
+  place-items: center;
+  position: relative;
+}
+
+.agentic-launch-logo {
+  height: auto;
+  position: relative;
+  width: clamp(92px, 22vw, 148px);
+  z-index: 1;
+}
+
 h1,
 h2,
 h3,
@@ -7254,6 +7270,32 @@ code {
 
 .public-wallet-actions.native-wallet-actions {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.android-native-wallet-targets {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.android-native-wallet-target {
+  min-height: 42px;
+  padding-inline: 10px;
+}
+
+.android-native-wallet-logo {
+  border-radius: 6px;
+  flex: 0 0 auto;
+  height: 20px;
+  width: 20px;
+}
+
+@media (max-width: 720px) {
+  .android-native-wallet-targets {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .android-native-wallet-targets .android-native-wallet-target:first-child {
+    grid-column: 1 / -1;
+  }
 }
 
 .wallet-connect-cta {

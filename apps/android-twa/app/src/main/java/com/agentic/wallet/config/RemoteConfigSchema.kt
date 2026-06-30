@@ -167,7 +167,7 @@ object RemoteConfigDefaults {
         WalletEntry(
             id = 36,
             name = "backpack",
-            packageNames = listOf("app.backpack.mobile"),
+            packageNames = listOf("app.backpack.mobile.standalone", "app.backpack.mobile"),
             uriPatterns = listOf("backpack.app"),
             iconSha256First8 = null,
             supportsSignMessages = true,
