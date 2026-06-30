@@ -44,10 +44,23 @@ describe('native /app top navigation', () => {
     expect(mobileRouteApp).not.toContain('ios-native-shell .homepage-nav[data-layout="app-nav"]');
   });
 
+  it('does not add an iOS-only /app safe-area offset above the standard nav', () => {
+    expect(stylesSource).toContain('.shell.ios-native-shell {\n    --mobile-nav-safe-top: 0px;\n  }');
+    expect(stylesSource).not.toContain('--mobile-nav-safe-top: max(62px, env(safe-area-inset-top, 0px));');
+  });
+
   it('does not keep stale Back overlay CSS or chat height overrides', () => {
     expect(stylesSource).not.toContain('.native-app-back-control');
     expect(stylesSource).not.toContain('--app-native-top-clear');
     expect(stylesSource).not.toContain('overlay Back control');
     expect(stylesSource).not.toContain('.route-app.android-shell .chat-surface,\n  .route-app.ios-native-shell .chat-surface');
+  });
+
+  it('keeps the Chat morph fast path scoped to /app Chat updates', () => {
+    const canMorphActiveTab = sourceBetween('function canMorphActiveTab', '// Single, conditional autoscroll after a morph.');
+
+    expect(canMorphActiveTab).toContain("currentRoute() !== '/app'");
+    expect(canMorphActiveTab).toContain("state.activeTab !== 'chat'");
+    expect(canMorphActiveTab).toContain("document.getElementById('workspace')");
   });
 });

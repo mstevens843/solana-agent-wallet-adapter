@@ -412,6 +412,20 @@ class MainActivity : FragmentActivity() {
         super.onBackPressed()
     }
 
+    override fun onPause() {
+        if (::mwaController.isInitialized) {
+            mwaController.notifyActivityPaused()
+        }
+        super.onPause()
+    }
+
+    override fun onStop() {
+        if (::mwaController.isInitialized) {
+            mwaController.notifyActivityStopped()
+        }
+        super.onStop()
+    }
+
     override fun onResume() {
         super.onResume()
         // Recover from a transient remote failure: if we fell back to the bundled

@@ -35,6 +35,15 @@ export interface AndroidNativeRestoreResult {
   cacheCount: number;
 }
 
+export interface AndroidManualDisconnectRestoreBlock {
+  version: 1;
+  cluster: Cluster;
+  address: string;
+  walletName: string;
+  disconnectedAt: string;
+  webBuildCommit: string;
+}
+
 export interface AndroidNativeWalletBackendOptions {
   cluster: Cluster;
   rpcUrl?: string;
@@ -42,6 +51,13 @@ export interface AndroidNativeWalletBackendOptions {
   authCacheKey?: string;
   walletPackage?: string;
   walletType?: number;
+}
+
+export function shouldBlockAndroidNativeAutoRestoreAfterManualDisconnect(
+  block: AndroidManualDisconnectRestoreBlock | undefined,
+  cluster: Cluster,
+): boolean {
+  return block?.version === 1 && block.cluster === cluster;
 }
 
 interface AndroidNativeBridge {

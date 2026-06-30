@@ -36,6 +36,8 @@ import java.net.URL
 import java.security.MessageDigest
 import java.text.NumberFormat
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 class MwaController(
@@ -53,9 +55,39 @@ class MwaController(
     // serialized via the keep-alive service, so a single slot is sufficient.
     private data class InFlightOp(
         val method: String,
-        val cancelSignal: CompletableDeferred<Unit>,
+        val cancelSignal: CompletableDeferred<MwaOperationException>,
         val startedAt: Long,
-    )
+        val leftHostForeground: AtomicBoolean = AtomicBoolean(false),
+        val pausedAt: AtomicLong = AtomicLong(0L),
+        val stoppedAt: AtomicLong = AtomicLong(0L),
+        val resumedAt: AtomicLong = AtomicLong(0L),
+    ) {
+        fun markPaused(now: Long) {
+            leftHostForeground.set(true)
+            pausedAt.compareAndSet(0L, now)
+        }
+
+        fun markStopped(now: Long) {
+            leftHostForeground.set(true)
+            stoppedAt.compareAndSet(0L, now)
+        }
+
+        fun markResumed(now: Long) {
+            resumedAt.set(now)
+        }
+
+        fun lifecycleMetadata(now: Long = System.currentTimeMillis()): Map<String, Any?> =
+            mapOf(
+                "elapsedMs" to (now - startedAt),
+                "leftHostForeground" to leftHostForeground.get(),
+                "pauseElapsedMs" to elapsedSinceStart(pausedAt.get()),
+                "stopElapsedMs" to elapsedSinceStart(stoppedAt.get()),
+                "resumeElapsedMs" to elapsedSinceStart(resumedAt.get()),
+            )
+
+        private fun elapsedSinceStart(timestamp: Long): Any =
+            if (timestamp == 0L) "" else timestamp - startedAt
+    }
 
     private val inFlightOp = AtomicReference<InFlightOp?>(null)
     private val watchdogScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -66,7 +98,9 @@ class MwaController(
 
     fun authCacheKey(record: AgentMwaAuthRecord): String = cache.sessionKey(record)
 
-    fun reconnectLatest(cluster: AgentCluster = cache.latest()?.cluster ?: AgentCluster.Devnet): AgentMwaAuthRecord? {
+    fun reconnectLatest(cluster: AgentCluster = cache.latestRestorable()?.cluster ?: cache.latest()?.cluster ?: AgentCluster.Devnet): AgentMwaAuthRecord? {
+        val latest = cache.latest()
+        val latestRestorable = cache.latestRestorable()
         AgentMwaLog.info(
             "MwaController",
             "reconnectLatest",
@@ -77,7 +111,8 @@ class MwaController(
                 "cluster" to cluster.id,
                 "cachedCount" to cache.all().size,
                 "latestSessionKey" to cache.latestSessionKey(),
-                "latestPubkey" to cache.latest()?.publicKeyBase58.orEmpty(),
+                "latestPubkey" to latest?.publicKeyBase58.orEmpty(),
+                "latestRestorablePubkey" to latestRestorable?.publicKeyBase58.orEmpty(),
             ),
         )
         AgentMwaLog.info(
@@ -85,9 +120,14 @@ class MwaController(
             "reconnectLatest",
             "START",
             "attempting cached authorization restore",
-            mapOf("cluster" to cluster.id, "cachedCount" to cache.all().size, "latestSessionKey" to cache.latestSessionKey(), "latestPubkey" to cache.latest()?.publicKeyBase58.orEmpty()),
+            mapOf(
+                "cluster" to cluster.id,
+                "cachedCount" to cache.all().size,
+                "latestSessionKey" to cache.latestSessionKey(),
+                "latestPubkey" to latest?.publicKeyBase58.orEmpty(),
+                "latestRestorablePubkey" to latestRestorable?.publicKeyBase58.orEmpty(),
+            ),
         )
-        val latest = cache.latest()
         if (latest == null) {
             AgentMwaLog.warn(
                 "MwaController",
@@ -107,6 +147,37 @@ class MwaController(
                 "RESULT_FAIL",
                 "no cached authorization available",
                 mapOf("cluster" to cluster.id, "cachedCount" to cache.all().size),
+            )
+            return null
+        }
+        if (!latest.hasRestorableAuthorization()) {
+            AgentMwaLog.warn(
+                "MwaController",
+                "reconnectLatest",
+                "MWA_RESTORE_LATEST_SKIP_NON_RESTORABLE",
+                "latest cached authorization is not restorable",
+                authRecordMetadata(latest) + mapOf(
+                    "method" to "reconnectLatest",
+                    "cluster" to cluster.id,
+                    "cachedCount" to cache.all().size,
+                    "usable" to latest.hasUsableAuthorization(),
+                    "restorable" to latest.hasRestorableAuthorization(),
+                    "latestRestorablePubkey" to latestRestorable?.publicKeyBase58.orEmpty(),
+                ),
+            )
+            AgentMwaLog.warn(
+                "MwaController",
+                "reconnectLatest",
+                "RESULT_FAIL",
+                "latest cached authorization is not restorable",
+                mapOf(
+                    "cluster" to cluster.id,
+                    "cachedCount" to cache.all().size,
+                    "latestSessionKey" to authCacheKey(latest),
+                    "latestPubkey" to latest.publicKeyBase58,
+                    "authenticated" to latest.authenticated,
+                    "usableAuth" to latest.hasUsableAuthorization(),
+                ),
             )
             return null
         }
@@ -348,18 +419,58 @@ class MwaController(
 
     fun disconnect() {
         val record = activeRecord
+        val cachedBefore = cache.all().size
         AgentMwaLog.info(
             "MwaController",
             "disconnect",
             "START",
             "disconnect requested",
-            mapOf("hadActive" to (record != null), "pubkey" to record?.publicKeyBase58.orEmpty(), "walletPackage" to record?.walletPackage.orEmpty()),
+            mapOf(
+                "hadActive" to (record != null),
+                "pubkey" to record?.publicKeyBase58.orEmpty(),
+                "walletPackage" to record?.walletPackage.orEmpty(),
+                "cachedBefore" to cachedBefore,
+            ),
         )
         if (record != null) {
-            cache.set(record.copy(authenticated = false))
+            val sessionKey = authCacheKey(record)
+            AgentMwaLog.info(
+                "MwaController",
+                "disconnect",
+                "DISCONNECT_CACHE_CLEAR_START",
+                "clearing active cached authorization for manual disconnect",
+                authRecordMetadata(record) + mapOf(
+                    "sessionKey" to sessionKey,
+                    "cachedBefore" to cachedBefore,
+                    "blacklisted" to true,
+                ),
+            )
+            cache.clearRecord(record, blacklistForSession = true)
+            AgentMwaLog.info(
+                "MwaController",
+                "disconnect",
+                "DISCONNECT_CACHE_CLEAR_DONE",
+                "active cached authorization cleared for manual disconnect",
+                authRecordMetadata(record) + mapOf(
+                    "sessionKey" to sessionKey,
+                    "cachedBefore" to cachedBefore,
+                    "cachedAfter" to cache.all().size,
+                    "blacklisted" to true,
+                ),
+            )
         }
         activeRecord = null
-        AgentMwaLog.info("MwaController", "disconnect", "DONE", "local session disconnected; cached authorization marked inactive", mapOf("retainedPubkey" to record?.publicKeyBase58.orEmpty()))
+        AgentMwaLog.info(
+            "MwaController",
+            "disconnect",
+            "DONE",
+            "local session disconnected; active cached authorization cleared",
+            mapOf(
+                "clearedPubkey" to record?.publicKeyBase58.orEmpty(),
+                "cachedBefore" to cachedBefore,
+                "cachedAfter" to cache.all().size,
+            ),
+        )
     }
 
     fun clearTransientState(reason: String) {
@@ -1277,7 +1388,7 @@ class MwaController(
 
     private suspend fun <T> withKeepAlive(method: String, block: suspend () -> T): T {
         startKeepAlive(method)
-        val cancelSignal = CompletableDeferred<Unit>()
+        val cancelSignal = CompletableDeferred<MwaOperationException>()
         val op = InFlightOp(method, cancelSignal, System.currentTimeMillis())
         inFlightOp.set(op)
         return try {
@@ -1286,12 +1397,9 @@ class MwaController(
                 try {
                     select<T> {
                         blockJob.onAwait { it }
-                        cancelSignal.onAwait {
+                        cancelSignal.onAwait { err ->
                             blockJob.cancel()
-                            throw MwaOperationException(
-                                "USER_REJECTED",
-                                "Wallet picker dismissed without selection",
-                            )
+                            throw err
                         }
                     }
                 } catch (err: Throwable) {
@@ -1325,27 +1433,70 @@ class MwaController(
      * `adapter.connect()` / `adapter.transact()` simply never resumes, so the JS bridge
      * callback never fires and the UI's `state.busy` flag stays `true` forever.
      *
-     * Discrimination: when the user actually picks a wallet, the wallet app takes foreground
-     * and MainActivity moves out of `RESUMED` within sub-second timing. So we wait 700ms after
-     * onResume and only fire the cancel signal if MainActivity is still continuously RESUMED —
-     * meaning the user dismissed without picking anything. This avoids false-cancelling slow
-     * legitimate wallet flows.
+     * Discrimination: if MainActivity never left the foreground, the chooser was likely
+     * dismissed before any handoff. If MainActivity did leave the foreground, Android may have
+     * shown the resolver and/or a wallet activity, so give the clientlib a longer grace period
+     * to deliver a late result before surfacing a distinct handoff-without-result failure.
      */
+    fun notifyActivityPaused() {
+        val op = inFlightOp.get() ?: return
+        val now = System.currentTimeMillis()
+        op.markPaused(now)
+        AgentMwaLog.info(
+            "MwaController",
+            op.method,
+            "STEP_ACTIVITY_PAUSED",
+            "host activity paused while MWA call is pending",
+            op.lifecycleMetadata(now),
+        )
+    }
+
+    fun notifyActivityStopped() {
+        val op = inFlightOp.get() ?: return
+        val now = System.currentTimeMillis()
+        op.markStopped(now)
+        AgentMwaLog.info(
+            "MwaController",
+            op.method,
+            "STEP_ACTIVITY_STOPPED",
+            "host activity stopped while MWA call is pending",
+            op.lifecycleMetadata(now),
+        )
+    }
+
     fun notifyActivityResumed(activity: ComponentActivity) {
         val op = inFlightOp.get() ?: return
+        val now = System.currentTimeMillis()
+        op.markResumed(now)
+        val decision = mwaResumeWatchdogDecision(op.leftHostForeground.get())
+        AgentMwaLog.info(
+            "MwaController",
+            op.method,
+            "STEP_RESUME_WATCHDOG",
+            "host activity resumed while MWA call is pending",
+            op.lifecycleMetadata(now) + mapOf(
+                "watchdogDelayMs" to decision.delayMs,
+                "watchdogCode" to decision.code,
+            ),
+        )
         watchdogScope.launch {
-            delay(700)
+            delay(decision.delayMs)
             if (!activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return@launch
             val still = inFlightOp.get()
             if (still != null && still === op) {
+                val finalDecision = mwaResumeWatchdogDecision(still.leftHostForeground.get())
                 AgentMwaLog.warn(
                     "MwaController",
                     still.method,
-                    "FAIL_PICKER_DISMISSED",
-                    "activity resumed without MWA result and no wallet foregrounded; cancelling as USER_REJECTED",
-                    mapOf("elapsedMs" to (System.currentTimeMillis() - still.startedAt)),
+                    finalDecision.step,
+                    finalDecision.logMessage,
+                    still.lifecycleMetadata() + mapOf(
+                        "watchdogDelayMs" to finalDecision.delayMs,
+                        "code" to finalDecision.code,
+                        "message" to finalDecision.userMessage,
+                    ),
                 )
-                still.cancelSignal.complete(Unit)
+                still.cancelSignal.complete(MwaOperationException(finalDecision.code, finalDecision.userMessage))
             }
         }
     }
@@ -2196,6 +2347,36 @@ class MwaController(
         private const val RPC_RETRY_BASE_DELAY_MS = 350L
     }
 }
+
+internal data class MwaResumeWatchdogDecision(
+    val delayMs: Long,
+    val code: String,
+    val userMessage: String,
+    val step: String,
+    val logMessage: String,
+)
+
+internal fun mwaResumeWatchdogDecision(leftHostForeground: Boolean): MwaResumeWatchdogDecision =
+    if (leftHostForeground) {
+        MwaResumeWatchdogDecision(
+            delayMs = MWA_HANDOFF_RETURN_GRACE_MS,
+            code = "MWA_HANDOFF_RETURNED_WITHOUT_RESULT",
+            userMessage = "Wallet handoff returned without completing the MWA request.",
+            step = "FAIL_MWA_HANDOFF_RETURNED_WITHOUT_RESULT",
+            logMessage = "activity resumed after MWA handoff but no MWA result arrived",
+        )
+    } else {
+        MwaResumeWatchdogDecision(
+            delayMs = MWA_PICKER_DISMISS_GRACE_MS,
+            code = "USER_REJECTED",
+            userMessage = "Wallet picker dismissed without selection",
+            step = "FAIL_PICKER_DISMISSED",
+            logMessage = "activity resumed without MWA result and no wallet foregrounded; cancelling as USER_REJECTED",
+        )
+    }
+
+internal const val MWA_PICKER_DISMISS_GRACE_MS = 700L
+internal const val MWA_HANDOFF_RETURN_GRACE_MS = 2_500L
 
 internal fun buildAppliedAuthorizationRecord(
     publicKeyBase58: String,

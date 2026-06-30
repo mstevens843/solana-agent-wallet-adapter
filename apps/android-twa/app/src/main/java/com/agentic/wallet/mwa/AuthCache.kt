@@ -108,6 +108,20 @@ class AuthCache(context: Context) {
     }
 
     @Synchronized
+    fun latestRestorable(): AgentMwaAuthRecord? {
+        ensureLoaded()
+        latestSessionKey.takeIf { it.isNotBlank() && !blacklist.contains(it) }?.let { latest ->
+            records[latest]
+                ?.takeIf { it.hasRestorableAuthorization() }
+                ?.let { return it }
+        }
+        return records.values
+            .filterNot { blacklist.contains(sessionKey(it)) }
+            .filter { it.hasRestorableAuthorization() }
+            .maxByOrNull { it.timestampUnixSeconds }
+    }
+
+    @Synchronized
     fun all(): List<AgentMwaAuthRecord> {
         ensureLoaded()
         return records.values.toList()

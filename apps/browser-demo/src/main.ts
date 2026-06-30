@@ -316,6 +316,8 @@ import {
   resolveAndroidAppSurface,
   restoreLatestAndroidNativeWallet,
   setAndroidNativeCloudSessionToken,
+  shouldBlockAndroidNativeAutoRestoreAfterManualDisconnect,
+  type AndroidManualDisconnectRestoreBlock,
   type AndroidNativeEnvironment,
   type AndroidNativeRestoreResult,
 } from './androidNative.js';
@@ -3241,6 +3243,7 @@ interface PersistedState {
   selectedWalletLogoId?: WalletProviderLogoId;
   browserWalletSession?: BrowserWalletSession;
   walletPathSession?: WalletPathSession;
+  androidManualDisconnectRestoreBlock?: AndroidManualDisconnectRestoreBlock;
   selectedIosWalletId?: IosNativeWalletId;
   workflowModePreference?: WorkflowModePreference;
   preferencesView?: PreferencesView;
@@ -3479,6 +3482,7 @@ interface DemoState {
   walletHostOpening: { brandId: string; brandLabel: string; status: 'waiting' | 'error' } | null;
   browserWalletSession?: BrowserWalletSession;
   walletPathSession?: WalletPathSession;
+  androidManualDisconnectRestoreBlock?: AndroidManualDisconnectRestoreBlock;
   pendingCliSignRequest: SigningRequest | null;
   lastCliSignResult: { requestId: string; status: 'approved' | 'rejected' | 'failed'; signature?: string; error?: string } | null;
   androidNativeEnvironment: AndroidNativeEnvironment;
@@ -4660,6 +4664,7 @@ const state: DemoState = {
   walletHostOpening: null,
   browserWalletSession: persisted.browserWalletSession,
   walletPathSession: persisted.walletPathSession,
+  androidManualDisconnectRestoreBlock: persisted.androidManualDisconnectRestoreBlock,
   pendingCliSignRequest: null,
   lastCliSignResult: null,
   androidNativeEnvironment: initialAndroidNativeEnvironment,
@@ -10322,15 +10327,16 @@ function bindWalletSurfaceControls(): void {
 }
 
 // True when a render() can be served by the scoped Chat morph instead of a full rebuild:
-// we're on the Chat tab, its workspace DOM already exists (so every binder attached once on the
-// first full paint), and nothing OUTSIDE #workspace (a toast / a wallet overlay) changed since
-// the last paint.
+// we're still on /app's Chat tab, its workspace DOM already exists (so every binder attached
+// once on the first full paint), and nothing OUTSIDE #workspace (a toast / a wallet overlay)
+// changed since the last paint.
 function canMorphActiveTab(): boolean {
   if (!appRoot || typeof document === 'undefined') return false;
+  if (currentRoute() !== '/app' || state.activeTab !== 'chat') return false;
   const workspace = document.getElementById('workspace');
-  // The workspace only exists on /app; require its active panel (so this is an in-tab update, not a
-  // first paint / route change) and nothing OUTSIDE #workspace (a toast / a wallet overlay) to have
-  // changed since the last paint — those take the full render path.
+  // Require the existing active panel so this is a Chat in-tab update, not a first paint.
+  // Route changes and anything OUTSIDE #workspace (a toast / a wallet overlay) take the
+  // full render path.
   if (!workspace || !workspace.querySelector('[data-layout="active-panel"]')) return false;
   if (chatOutsideWorkspaceHtml() !== lastRenderedChatOutsideWorkspaceHtml) return false;
   // A pageShell modal (delete confirm, etc.) opening/closing must take the full render path so the
@@ -43177,6 +43183,9 @@ async function runDisconnect(): Promise<void> {
   await run('connect', async () => {
     const browserWallet = isBrowserWalletSurface();
     const disconnectedWalletToast = walletToastSnapshot();
+    const androidDisconnectSnapshot = state.androidNativeEnvironment.isAndroidNative
+      ? { address: state.address, walletName: state.selectedWalletName }
+      : null;
     notifyLocalWorkspaceBackupReminder('Disconnecting does not move local data to another browser.');
     if (state.bridgeActive) {
       await disconnectBridgeHost().catch(() => undefined);
@@ -43193,8 +43202,11 @@ async function runDisconnect(): Promise<void> {
     }
     await refreshAndroidNativeCacheState();
     if (state.androidNativeEnvironment.isAndroidNative) {
+      if (androidDisconnectSnapshot) {
+        setAndroidManualDisconnectRestoreBlock(androidDisconnectSnapshot);
+      }
       state.androidNativeStatus = state.androidAuthCacheCount > 0
-        ? 'Android MWA disconnected locally. Cached authorization marked inactive.'
+        ? 'Android MWA disconnected locally. Cached auto-restore disabled.'
         : 'Android MWA disconnected.';
     }
     await refreshIosNativeCacheState();
@@ -43240,7 +43252,9 @@ async function runClearAndroidFullReset(): Promise<void> {
     resetWalletConnection();
     await clearDeviceAgentForWalletBoundary();
     await refreshAndroidNativeCacheState();
+    clearAndroidManualDisconnectRestoreBlock('android-full-reset');
     state.androidNativeStatus = 'Android MWA authorization reset. Discover again to authorize.';
+    savePersistedState();
     pushToast('success', t('Android wallet reset'), t('Authorization cleared.'));
   });
 }
@@ -43255,7 +43269,9 @@ async function runClearAndroidAllAccounts(): Promise<void> {
     resetWalletConnection();
     await clearDeviceAgentForWalletBoundary();
     await refreshAndroidNativeCacheState();
+    clearAndroidManualDisconnectRestoreBlock('android-clear-all-accounts');
     state.androidNativeStatus = 'All Android MWA cached authorizations cleared.';
+    savePersistedState();
     pushToast('success', t('Android cache cleared'), t('All cached accounts removed.'));
   });
 }
@@ -63140,6 +63156,47 @@ function clearWalletPathSession(): void {
   state.walletPathSession = undefined;
 }
 
+function setAndroidManualDisconnectRestoreBlock(input: { address: string; walletName: string }): void {
+  if (!state.androidNativeEnvironment.isAndroidNative) return;
+  const address = input.address.trim();
+  if (!address) return;
+  state.androidManualDisconnectRestoreBlock = {
+    version: 1,
+    cluster: state.cluster,
+    address,
+    walletName: input.walletName.trim() || state.selectedWalletName || 'Android MWA',
+    disconnectedAt: new Date().toISOString(),
+    webBuildCommit: __AGENTIC_BROWSER_BUILD_COMMIT__ || 'unknown',
+  };
+  logAndroidNativeRestore('WEB_DISCONNECT_MANUAL_TOMBSTONE_SET', 'SUCCESS', {
+    route: typeof window !== 'undefined' ? window.location.pathname : '',
+    cluster: state.cluster,
+    address,
+    walletName: state.androidManualDisconnectRestoreBlock.walletName,
+    cacheCount: state.androidAuthCacheCount,
+    webBuildCommit: state.androidManualDisconnectRestoreBlock.webBuildCommit,
+  });
+}
+
+function clearAndroidManualDisconnectRestoreBlock(reason: string): void {
+  const block = state.androidManualDisconnectRestoreBlock;
+  if (!block) return;
+  state.androidManualDisconnectRestoreBlock = undefined;
+  logAndroidNativeRestore('WEB_DISCONNECT_MANUAL_TOMBSTONE_CLEAR', 'SUCCESS', {
+    reason,
+    cluster: block.cluster,
+    address: block.address,
+    walletName: block.walletName,
+    disconnectedAt: block.disconnectedAt,
+    webBuildCommit: __AGENTIC_BROWSER_BUILD_COMMIT__ || 'unknown',
+  });
+}
+
+function androidManualDisconnectRestoreBlockForCurrentCluster(): AndroidManualDisconnectRestoreBlock | undefined {
+  const block = state.androidManualDisconnectRestoreBlock;
+  return shouldBlockAndroidNativeAutoRestoreAfterManualDisconnect(block, state.cluster) ? block : undefined;
+}
+
 function clearPendingBrowserWalletChoice(options: { clearWallets?: boolean } = {}): void {
   if (state.address || !isBrowserWalletSurface()) return;
   state.selectedWalletName = '';
@@ -63320,6 +63377,7 @@ async function connectAndroidNativeWallet(forcePicker: boolean): Promise<void> {
     ...(androidWalletPackage ? { androidWalletPackage } : {}),
     ...(typeof androidWalletType === 'number' ? { androidWalletType } : {}),
   });
+  clearAndroidManualDisconnectRestoreBlock('android-connect-success');
   savePersistedState();
 }
 
@@ -63464,6 +63522,24 @@ async function restoreAndroidNativeSession(): Promise<boolean> {
       reason: 'localnet',
       route: typeof window !== 'undefined' ? window.location.pathname : '',
       cluster: state.cluster,
+    });
+    return false;
+  }
+  const manualDisconnectBlock = androidManualDisconnectRestoreBlockForCurrentCluster();
+  if (manualDisconnectBlock) {
+    state.androidNativeStatus = t('Android MWA disconnected. Connect a wallet to authorize.');
+    logAndroidNativeRestore('WEB_RESTORE_BLOCKED_MANUAL_DISCONNECT', 'FAIL', {
+      route: typeof window !== 'undefined' ? window.location.pathname : '',
+      cluster: state.cluster,
+      androidCluster: state.cluster,
+      savedSession: Boolean(savedSession),
+      hasAuthCacheKey: Boolean(savedSession?.androidAuthCacheKey),
+      address: manualDisconnectBlock.address,
+      walletName: manualDisconnectBlock.walletName,
+      disconnectedAt: manualDisconnectBlock.disconnectedAt,
+      cacheCount: state.androidAuthCacheCount,
+      bridgeAvailable: state.androidNativeEnvironment.bridgeAvailable,
+      webBuildCommit: __AGENTIC_BROWSER_BUILD_COMMIT__ || 'unknown',
     });
     return false;
   }
@@ -72173,6 +72249,23 @@ function isPersistedWalletPathSession(value: unknown): value is WalletPathSessio
   );
 }
 
+function isPersistedAndroidManualDisconnectRestoreBlock(value: unknown): value is AndroidManualDisconnectRestoreBlock {
+  if (!isJsonObject(value)) return false;
+  return (
+    value.version === 1 &&
+    typeof value.cluster === 'string' &&
+    isCluster(value.cluster) &&
+    typeof value.address === 'string' &&
+    value.address.trim().length > 0 &&
+    typeof value.walletName === 'string' &&
+    value.walletName.trim().length > 0 &&
+    typeof value.disconnectedAt === 'string' &&
+    value.disconnectedAt.trim().length > 0 &&
+    typeof value.webBuildCommit === 'string' &&
+    value.webBuildCommit.trim().length > 0
+  );
+}
+
 function isWalletPathKind(value: string): value is WalletPathKind {
   return (
     value === 'browser-extension' ||
@@ -72194,6 +72287,9 @@ function loadPersistedState(): PersistedState {
       ...(isWalletProviderLogoId(parsed.selectedWalletLogoId) && { selectedWalletLogoId: parsed.selectedWalletLogoId }),
       ...(isPersistedBrowserWalletSession(parsed.browserWalletSession) && { browserWalletSession: parsed.browserWalletSession }),
       ...(isPersistedWalletPathSession(parsed.walletPathSession) && { walletPathSession: parsed.walletPathSession }),
+      ...(isPersistedAndroidManualDisconnectRestoreBlock(parsed.androidManualDisconnectRestoreBlock) && {
+        androidManualDisconnectRestoreBlock: parsed.androidManualDisconnectRestoreBlock,
+      }),
       ...(typeof parsed.selectedIosWalletId === 'string' &&
         isPersistedIosWalletId(parsed.selectedIosWalletId) && { selectedIosWalletId: parsed.selectedIosWalletId }),
       ...(typeof parsed.workflowModePreference === 'string' &&
@@ -72233,6 +72329,7 @@ function savePersistedState(): void {
         selectedWalletLogoId: state.selectedWalletLogoId,
         browserWalletSession: state.browserWalletSession,
         walletPathSession: state.walletPathSession,
+        androidManualDisconnectRestoreBlock: state.androidManualDisconnectRestoreBlock,
         selectedIosWalletId: state.selectedIosWalletId,
         workflowModePreference: state.workflowModePreference,
         preferencesView: state.preferencesView,

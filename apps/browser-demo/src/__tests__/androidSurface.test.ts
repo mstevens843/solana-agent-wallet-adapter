@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   AndroidNativeWalletBackend,
+  shouldBlockAndroidNativeAutoRestoreAfterManualDisconnect,
   androidNativePostRestoreRoute,
   resolveAndroidAppSurface,
   restoreLatestAndroidNativeWallet,
+  type AndroidManualDisconnectRestoreBlock,
 } from '../androidNative.js';
 
 type AndroidCallbackBridge = {
@@ -378,6 +380,26 @@ describe('Android cached restore routing', () => {
     expect(androidNativePostRestoreRoute('/app')).toBeNull();
     expect(androidNativePostRestoreRoute('/docs')).toBeNull();
     expect(androidNativePostRestoreRoute(null)).toBeNull();
+  });
+});
+
+describe('Android manual disconnect restore block', () => {
+  const block: AndroidManualDisconnectRestoreBlock = {
+    version: 1,
+    cluster: 'mainnet-beta',
+    address: 'Android11111111111111111111111111111111',
+    walletName: 'Phantom',
+    disconnectedAt: '2026-06-30T08:51:28.910Z',
+    webBuildCommit: 'test-build',
+  };
+
+  it('blocks automatic restore on the same cluster after explicit disconnect', () => {
+    expect(shouldBlockAndroidNativeAutoRestoreAfterManualDisconnect(block, 'mainnet-beta')).toBe(true);
+  });
+
+  it('does not block other clusters or empty state', () => {
+    expect(shouldBlockAndroidNativeAutoRestoreAfterManualDisconnect(block, 'devnet')).toBe(false);
+    expect(shouldBlockAndroidNativeAutoRestoreAfterManualDisconnect(undefined, 'mainnet-beta')).toBe(false);
   });
 });
 

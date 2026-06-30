@@ -101,6 +101,25 @@ class AuthCacheSerializationTest {
     }
 
     @Test
+    fun authRecord_requiresAuthenticatedUsableTokenToBeRestorable() {
+        val publicKeyBytes = ByteArray(32) { 14 }
+        val base = AgentMwaAuthRecord(
+            publicKeyBase58 = Base58.encode(publicKeyBytes),
+            publicKeyBytes = publicKeyBytes,
+            authToken = "cached-auth-token",
+            walletPackage = "app.phantom",
+            cluster = AgentCluster.MainnetBeta,
+            timestampUnixSeconds = 1_716_000_000L,
+            authenticated = true,
+        )
+
+        assertTrue(base.hasRestorableAuthorization())
+        assertFalse(base.copy(authenticated = false).hasRestorableAuthorization())
+        assertFalse(base.copy(authToken = "").hasRestorableAuthorization())
+        assertFalse(base.copy(publicKeyBase58 = "").hasRestorableAuthorization())
+    }
+
+    @Test
     fun authCacheSessionKey_separatesProvidersWithTheSamePubkey() {
         val publicKeyBytes = ByteArray(32) { 13 }
         val publicKeyBase58 = Base58.encode(publicKeyBytes)

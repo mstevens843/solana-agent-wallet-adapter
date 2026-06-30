@@ -31856,10 +31856,6 @@ button.danger:hover:not(:disabled) {
 }
 
 @media (max-width: 899px) {
-  .route-app.ios-native-shell {
-    --mobile-nav-safe-top: max(62px, env(safe-area-inset-top, 0px));
-  }
-
   .route-app {
     --app-native-top-guard: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap));
   }
