@@ -108,6 +108,112 @@ describe('AndroidNativeWalletBackend cached restore', () => {
     expect(calls).toEqual(['reconnectLatest']);
   });
 
+  it('falls back from a stale exact session key to provider-scoped native restore', async () => {
+    const calls: string[] = [];
+    installAndroidBridge((method, payload) => {
+      calls.push(method);
+      if (method === 'reconnectSession') {
+        expect(payload.authCacheKey).toBe('mainnet-beta|pkg:app.phantom|Stale111111111111111111111111111111111');
+        return androidStatus({ connected: false, cachedCount: 2 });
+      }
+      if (method === 'reconnectForPubkey') {
+        expect(payload.pubkey).toBe('Android11111111111111111111111111111111');
+        expect(payload.walletPackage).toBe('app.phantom');
+        expect(payload.walletType).toBe(20);
+        return androidStatus({
+          connected: true,
+          address: 'Android11111111111111111111111111111111',
+          authCacheKey: 'mainnet-beta|pkg:app.phantom|Android11111111111111111111111111111111',
+          walletPackage: 'app.phantom',
+          walletType: 20,
+          cachedCount: 2,
+        });
+      }
+      throw new Error(`unexpected Android MWA method ${method}`);
+    });
+
+    await expect(restoreLatestAndroidNativeWallet({
+      cluster: 'mainnet-beta',
+      address: 'Android11111111111111111111111111111111',
+      authCacheKey: 'mainnet-beta|pkg:app.phantom|Stale111111111111111111111111111111111',
+      walletPackage: 'app.phantom',
+      walletType: 20,
+    })).resolves.toMatchObject({
+      address: 'Android11111111111111111111111111111111',
+      walletName: 'Phantom',
+      authCacheKey: 'mainnet-beta|pkg:app.phantom|Android11111111111111111111111111111111',
+      cacheCount: 2,
+    });
+    expect(calls).toEqual(['reconnectSession', 'reconnectForPubkey']);
+  });
+
+  it('falls back from provider-scoped miss to the latest native authorization', async () => {
+    const calls: string[] = [];
+    installAndroidBridge((method, payload) => {
+      calls.push(method);
+      if (method === 'reconnectForPubkey') {
+        expect(payload.pubkey).toBe('Android11111111111111111111111111111111');
+        expect(payload.walletPackage).toBe('app.phantom');
+        return androidStatus({ connected: false, cachedCount: 2 });
+      }
+      if (method === 'reconnectLatest') {
+        return androidStatus({
+          connected: true,
+          address: 'Android11111111111111111111111111111111',
+          authCacheKey: 'mainnet-beta|pkg:app.phantom|Android11111111111111111111111111111111',
+          walletPackage: 'app.phantom',
+          walletType: 20,
+          cachedCount: 2,
+        });
+      }
+      throw new Error(`unexpected Android MWA method ${method}`);
+    });
+
+    await expect(restoreLatestAndroidNativeWallet({
+      cluster: 'mainnet-beta',
+      address: 'Android11111111111111111111111111111111',
+      walletPackage: 'app.phantom',
+    })).resolves.toMatchObject({
+      address: 'Android11111111111111111111111111111111',
+      authCacheKey: 'mainnet-beta|pkg:app.phantom|Android11111111111111111111111111111111',
+      cacheCount: 2,
+    });
+    expect(calls).toEqual(['reconnectForPubkey', 'reconnectLatest']);
+  });
+
+  it('lets native latest cache repair stale live-origin web session identity', async () => {
+    const calls: string[] = [];
+    installAndroidBridge((method) => {
+      calls.push(method);
+      if (method === 'reconnectSession') {
+        return androidStatus({ connected: false, cachedCount: 2 });
+      }
+      if (method === 'reconnectLatest') {
+        return androidStatus({
+          connected: true,
+          address: 'Android99999999999999999999999999999999',
+          authCacheKey: 'mainnet-beta|pkg:ag.jup.jupiter.android|Android99999999999999999999999999999999',
+          walletPackage: 'ag.jup.jupiter.android',
+          walletType: 40,
+          cachedCount: 2,
+        });
+      }
+      throw new Error(`unexpected Android MWA method ${method}`);
+    });
+
+    await expect(restoreLatestAndroidNativeWallet({
+      cluster: 'mainnet-beta',
+      address: 'Stale111111111111111111111111111111111',
+      authCacheKey: 'mainnet-beta|pkg:app.phantom|Stale111111111111111111111111111111111',
+    })).resolves.toMatchObject({
+      address: 'Android99999999999999999999999999999999',
+      walletName: 'Jupiter',
+      authCacheKey: 'mainnet-beta|pkg:ag.jup.jupiter.android|Android99999999999999999999999999999999',
+      cacheCount: 2,
+    });
+    expect(calls).toEqual(['reconnectSession', 'reconnectLatest']);
+  });
+
   it('does not report native latest restore when explicit disconnect left only non-restorable cache', async () => {
     const calls: string[] = [];
     installAndroidBridge((method) => {
@@ -169,8 +275,13 @@ describe('AndroidNativeWalletBackend cached restore', () => {
   });
 
   it('does not report a disconnected native authorization as restored', async () => {
+    const calls: string[] = [];
     installAndroidBridge((method) => {
+      calls.push(method);
       if (method === 'reconnectSession') {
+        return androidStatus({ connected: false, cachedCount: 1 });
+      }
+      if (method === 'reconnectLatest') {
         return androidStatus({ connected: false, cachedCount: 1 });
       }
       throw new Error(`unexpected Android MWA method ${method}`);
@@ -181,6 +292,7 @@ describe('AndroidNativeWalletBackend cached restore', () => {
       address: 'Android11111111111111111111111111111111',
       authCacheKey: 'mainnet-beta|pkg:app.phantom|Android11111111111111111111111111111111',
     })).resolves.toBeNull();
+    expect(calls).toEqual(['reconnectSession', 'reconnectLatest']);
   });
 });
 

@@ -204,37 +204,98 @@ export async function restoreLatestAndroidNativeWallet(
   const backend = new AndroidNativeWalletBackend(options);
   const expectedAddress = options.address?.trim();
   const expectedAuthCacheKey = options.authCacheKey?.trim();
-  const method = expectedAuthCacheKey
-    ? 'reconnectSession'
-    : expectedAddress && (options.walletPackage?.trim() || typeof options.walletType === 'number')
-      ? 'reconnectForPubkey'
-      : 'reconnectLatest';
-  logAndroidNative('WEB_RESTORE_NATIVE_CALL', 'START', {
-    method,
-    cluster: options.cluster,
-    hasAuthCacheKey: Boolean(expectedAuthCacheKey),
-    expectedAddress: expectedAddress ?? '',
-    walletPackage: options.walletPackage ?? '',
-    walletType: typeof options.walletType === 'number' ? options.walletType : '',
-  });
-  let address: string | null = null;
+  const expectedWalletPackage = options.walletPackage?.trim();
+  const expectedWalletType = typeof options.walletType === 'number' ? options.walletType : undefined;
+  const attempts: AndroidNativeRestoreAttempt[] = [];
+
   if (expectedAuthCacheKey) {
-    address = await backend.reconnectSession(expectedAuthCacheKey, expectedAddress);
-  } else if (expectedAddress && (options.walletPackage?.trim() || typeof options.walletType === 'number')) {
-    address = await backend.reconnectForPubkey(expectedAddress, {
-      walletPackage: options.walletPackage,
-      walletType: options.walletType,
+    attempts.push({
+      method: 'reconnectSession',
+      reason: 'web_session_key',
+      expectedAddress,
+      run: () => backend.reconnectSession(expectedAuthCacheKey, expectedAddress),
     });
-  } else {
-    address = await backend.reconnectLatest();
   }
-  if (!address) {
+  if (expectedAddress && (expectedWalletPackage || typeof expectedWalletType === 'number')) {
+    attempts.push({
+      method: 'reconnectForPubkey',
+      reason: 'web_session_provider',
+      expectedAddress,
+      run: () => backend.reconnectForPubkey(expectedAddress, {
+        walletPackage: expectedWalletPackage,
+        walletType: expectedWalletType,
+      }),
+    });
+  }
+  attempts.push({
+    method: 'reconnectLatest',
+    reason: attempts.length > 0 ? 'native_latest_fallback' : 'native_latest',
+    expectedAddress,
+    run: () => backend.reconnectLatest(),
+  });
+
+  let restoredAddress: string | null = null;
+  let restoredMethod: AndroidNativeRestoreMethod = 'reconnectLatest';
+  for (const [index, attempt] of attempts.entries()) {
+    logAndroidNative('WEB_RESTORE_NATIVE_CALL', 'START', {
+      method: attempt.method,
+      reason: attempt.reason,
+      attempt: index + 1,
+      attempts: attempts.length,
+      fallback: index > 0,
+      cluster: options.cluster,
+      hasAuthCacheKey: Boolean(expectedAuthCacheKey),
+      expectedAddress: expectedAddress ?? '',
+      walletPackage: expectedWalletPackage ?? '',
+      walletType: typeof expectedWalletType === 'number' ? expectedWalletType : '',
+    });
+    const address = await attempt.run();
+    restoredMethod = attempt.method;
+    if (!address) {
+      logAndroidNative('WEB_RESTORE_RESULT', 'FAIL', {
+        method: attempt.method,
+        reason: 'no_address',
+        cluster: options.cluster,
+        ok: false,
+        cacheCount: backend.cacheCount(),
+        willFallback: index < attempts.length - 1,
+      }, 'warn');
+      continue;
+    }
+    if (attempt.method !== 'reconnectLatest' && attempt.expectedAddress && address !== attempt.expectedAddress) {
+      logAndroidNative('WEB_RESTORE_RESULT', 'FAIL', {
+        method: attempt.method,
+        reason: 'expected_address_mismatch',
+        cluster: options.cluster,
+        ok: false,
+        address,
+        expectedAddress: attempt.expectedAddress,
+        cacheCount: backend.cacheCount(),
+        willFallback: index < attempts.length - 1,
+      }, 'warn');
+      continue;
+    }
+    if (attempt.method === 'reconnectLatest' && attempt.expectedAddress && address !== attempt.expectedAddress) {
+      logAndroidNative('WEB_RESTORE_NATIVE_CACHE_WINS', 'SUCCESS', {
+        method: attempt.method,
+        reason: 'web_session_address_stale',
+        cluster: options.cluster,
+        address,
+        expectedAddress: attempt.expectedAddress,
+        cacheCount: backend.cacheCount(),
+      });
+    }
+    restoredAddress = address;
+    break;
+  }
+
+  if (!restoredAddress) {
     logAndroidNative('WEB_RESTORE_RESULT', 'FAIL', {
-      method,
+      method: restoredMethod,
       cluster: options.cluster,
       ok: false,
       cacheCount: backend.cacheCount(),
-      reason: 'no_address',
+      reason: 'no_restorable_authorization',
     }, 'warn');
     return null;
   }
@@ -242,10 +303,10 @@ export async function restoreLatestAndroidNativeWallet(
   const walletPackage = backend.walletPackage();
   const walletType = backend.walletType();
   logAndroidNative('WEB_RESTORE_RESULT', 'SUCCESS', {
-    method,
+    method: restoredMethod,
     cluster: options.cluster,
     ok: true,
-    address,
+    address: restoredAddress,
     authCacheKey: authCacheKey ?? '',
     walletPackage: walletPackage ?? '',
     walletType: typeof walletType === 'number' ? walletType : '',
@@ -253,7 +314,7 @@ export async function restoreLatestAndroidNativeWallet(
   });
   return {
     backend,
-    address,
+    address: restoredAddress,
     walletName: backend.walletName(),
     walletLogoId: backend.walletLogoId(),
     ...(authCacheKey ? { authCacheKey } : {}),
@@ -261,6 +322,15 @@ export async function restoreLatestAndroidNativeWallet(
     ...(typeof walletType === 'number' ? { walletType } : {}),
     cacheCount: backend.cacheCount(),
   };
+}
+
+type AndroidNativeRestoreMethod = 'reconnectSession' | 'reconnectForPubkey' | 'reconnectLatest';
+
+interface AndroidNativeRestoreAttempt {
+  method: AndroidNativeRestoreMethod;
+  reason: 'web_session_key' | 'web_session_provider' | 'native_latest_fallback' | 'native_latest';
+  expectedAddress?: string;
+  run: () => Promise<string | null>;
 }
 
 export class AndroidNativeWalletBackend implements WalletBackend {

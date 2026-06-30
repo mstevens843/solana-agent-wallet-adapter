@@ -5177,11 +5177,17 @@ async function startApp(): Promise<void> {
     startRelayPresenceWatch();
     window.addEventListener('popstate', () => render());
     window.addEventListener('keydown', handleGlobalKeydown);
-    installNativeLiveUpdateWatcher();
+    if (!IS_ANDROID_APP) {
+      installNativeLiveUpdateWatcher();
+    }
     installWebViewControlDelegates(disclosureOpenState);
     installPayOutApprovalCreatedListener();
-    if (await runNativeLiveUpdateCheck('startup') === 'reloading') return;
+    if (!IS_ANDROID_APP && await runNativeLiveUpdateCheck('startup') === 'reloading') return;
     await bootstrap();
+    if (IS_ANDROID_APP) {
+      installNativeLiveUpdateWatcher();
+      void runNativeLiveUpdateCheck('startup-after-android-restore');
+    }
   } catch (err) {
     renderStartupFailure(err);
   }
