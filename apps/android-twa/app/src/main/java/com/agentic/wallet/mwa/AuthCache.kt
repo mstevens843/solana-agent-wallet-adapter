@@ -141,6 +141,17 @@ class AuthCache(context: Context) {
         val sessionKey = sessionKey(record)
         records[sessionKey] = record
         latestSessionKey = sessionKey
+        AgentMwaLog.info(
+            "AuthCache",
+            "set",
+            "AUTHCACHE_RECORD_STORE",
+            "authorization record stored in memory before encrypted save",
+            authCacheRecordMetadata(record) + mapOf(
+                "sessionKey" to sessionKey,
+                "providerKey" to authCacheProviderKey(record),
+                "count" to records.size,
+            ),
+        )
         // Cocos parity (Bug U3 prevention): log authTokenLen so empty/short tokens are visible.
         AgentMwaLog.info(
             "AuthCache",
@@ -246,6 +257,18 @@ class AuthCache(context: Context) {
         if (loaded) return
         loaded = true
         if (encryptedCacheFile.exists()) {
+            AgentMwaLog.info(
+                "AuthCache",
+                "load",
+                "AUTHCACHE_LOAD_START",
+                "loading encrypted authorization cache",
+                mapOf(
+                    "source" to "encrypted",
+                    "exists" to true,
+                    "path" to encryptedCacheFile.absolutePath,
+                    "bytes" to encryptedCacheFile.length(),
+                ),
+            )
             try {
                 val plaintext = encryptor.decrypt(encryptedCacheFile.readText(Charsets.UTF_8))
                 loadFromPlaintext(plaintext, "encrypted")
@@ -259,11 +282,35 @@ class AuthCache(context: Context) {
                 )
                 records.clear()
                 latestSessionKey = ""
-                encryptedCacheFile.delete()
+                val deleted = encryptedCacheFile.delete()
+                AgentMwaLog.warn(
+                    "AuthCache",
+                    "load",
+                    "AUTHCACHE_LOAD_FAIL_ENCRYPTED_DELETE",
+                    "encrypted authorization cache could not be read and was removed",
+                    mapOf(
+                        "class" to err.javaClass.simpleName,
+                        "message" to err.message,
+                        "path" to encryptedCacheFile.absolutePath,
+                        "deleted" to deleted,
+                    ),
+                )
             }
             return
         }
         if (legacyCacheFile.exists()) {
+            AgentMwaLog.info(
+                "AuthCache",
+                "load",
+                "AUTHCACHE_LOAD_START",
+                "loading legacy authorization cache",
+                mapOf(
+                    "source" to "legacy",
+                    "exists" to true,
+                    "path" to legacyCacheFile.absolutePath,
+                    "bytes" to legacyCacheFile.length(),
+                ),
+            )
             try {
                 loadFromPlaintext(legacyCacheFile.readText(Charsets.UTF_8), "legacy")
                 save()
@@ -277,6 +324,18 @@ class AuthCache(context: Context) {
             }
             return
         }
+        AgentMwaLog.info(
+            "AuthCache",
+            "load",
+            "AUTHCACHE_LOAD_START",
+            "authorization cache files are missing",
+            mapOf(
+                "source" to "none",
+                "exists" to false,
+                "encryptedPath" to encryptedCacheFile.absolutePath,
+                "legacyPath" to legacyCacheFile.absolutePath,
+            ),
+        )
         AgentMwaLog.info("AuthCache", "load", "SKIP", "cache file missing", mapOf("path" to encryptedCacheFile.absolutePath))
     }
 
@@ -305,6 +364,13 @@ class AuthCache(context: Context) {
             if (latestSessionKey.isBlank()) {
                 latestSessionKey = latestFromLegacyPubkey.ifBlank { latestAvailableSessionKey() }
             }
+            AgentMwaLog.info(
+                "AuthCache",
+                "load",
+                "AUTHCACHE_LOAD_OK",
+                "authorization cache loaded",
+                authCacheSummaryMetadata(source),
+            )
             AgentMwaLog.info("AuthCache", "load", "DONE", "cache loaded", mapOf("count" to records.size, "latestSessionKey" to latestSessionKey, "source" to source))
         } catch (err: Exception) {
             AgentMwaLog.warn("AuthCache", "load", "FAIL", "cache parse failed", mapOf("class" to err.javaClass.simpleName, "message" to err.message))
@@ -325,13 +391,43 @@ class AuthCache(context: Context) {
                 objectRecords.put(sessionKey, authRecordToJson(record))
             }
             root.put("records", objectRecords)
+            AgentMwaLog.info(
+                "AuthCache",
+                "save",
+                "AUTHCACHE_SAVE_START",
+                "saving encrypted authorization cache",
+                authCacheSummaryMetadata("encrypted") + mapOf("path" to encryptedCacheFile.absolutePath),
+            )
             val encrypted = encryptor.encrypt("${root.toString(2)}\n")
             encryptedCacheFile.writeText("${encrypted.toString(2)}\n", Charsets.UTF_8)
             if (legacyCacheFile.exists() && !legacyCacheFile.delete()) {
                 AgentMwaLog.warn("AuthCache", "save", "LEGACY_RETAINED", "legacy plaintext cache could not be deleted")
             }
+            AgentMwaLog.info(
+                "AuthCache",
+                "save",
+                "AUTHCACHE_SAVE_OK",
+                "encrypted authorization cache saved",
+                authCacheSummaryMetadata("encrypted") + mapOf(
+                    "path" to encryptedCacheFile.absolutePath,
+                    "bytes" to encryptedCacheFile.length(),
+                ),
+            )
             AgentMwaLog.info("AuthCache", "save", "DONE", "encrypted cache saved", mapOf("count" to records.size, "latestSessionKey" to latestSessionKey))
         } catch (err: Exception) {
+            AgentMwaLog.warn(
+                "AuthCache",
+                "save",
+                "AUTHCACHE_SAVE_FAIL",
+                "encrypted authorization cache save failed",
+                mapOf(
+                    "class" to err.javaClass.simpleName,
+                    "message" to err.message,
+                    "path" to encryptedCacheFile.absolutePath,
+                    "count" to records.size,
+                    "latestSessionKey" to latestSessionKey,
+                ),
+            )
             AgentMwaLog.warn("AuthCache", "save", "FAIL", "cache save failed", mapOf("class" to err.javaClass.simpleName, "message" to err.message))
         }
     }
@@ -339,6 +435,41 @@ class AuthCache(context: Context) {
     private fun recordFromJson(json: JSONObject): AgentMwaAuthRecord {
         return authRecordFromJson(json)
     }
+
+    private fun latestRecordWithoutLoading(): AgentMwaAuthRecord? =
+        latestSessionKey.takeIf { it.isNotBlank() }?.let { records[it] }
+            ?: records.values.maxByOrNull { it.timestampUnixSeconds }
+
+    private fun authCacheSummaryMetadata(source: String): Map<String, Any?> {
+        val latest = latestRecordWithoutLoading()
+        return mapOf(
+            "source" to source,
+            "count" to records.size,
+            "latestSessionKey" to latestSessionKey,
+            "latestPubkey" to latest?.publicKeyBase58.orEmpty(),
+            "latestAuthLen" to (latest?.authToken?.length ?: 0),
+            "latestAuthenticated" to (latest?.authenticated ?: false),
+            "latestUsable" to (latest?.hasUsableAuthorization() ?: false),
+            "latestRestorable" to (latest?.hasRestorableAuthorization() ?: false),
+            "latestWalletPackage" to latest?.walletPackage.orEmpty(),
+            "latestWalletType" to (latest?.walletType ?: WalletRegistry.UNKNOWN),
+            "latestCluster" to latest?.cluster?.id.orEmpty(),
+        )
+    }
+
+    private fun authCacheRecordMetadata(record: AgentMwaAuthRecord): Map<String, Any?> =
+        mapOf(
+            "pubkey" to record.publicKeyBase58,
+            "authLen" to record.authToken.length,
+            "authenticated" to record.authenticated,
+            "usable" to record.hasUsableAuthorization(),
+            "restorable" to record.hasRestorableAuthorization(),
+            "walletPackage" to record.walletPackage,
+            "walletType" to record.walletType,
+            "walletUriBase" to record.walletUriBase,
+            "cluster" to record.cluster.id,
+            "timestampUnixSeconds" to record.timestampUnixSeconds,
+        )
 }
 
 private const val AUTH_CACHE_PROVIDER_UNKNOWN = "provider:unknown"

@@ -5851,6 +5851,14 @@ async function bootstrap(): Promise<void> {
       return false;
     });
     if (restored) await afterWalletConnected();
+    if (restored) {
+      logAndroidNativeRestore('WEB_RESTORE_AFTER_WALLET_CONNECTED', 'SUCCESS', {
+        route: typeof window !== 'undefined' ? window.location.pathname : '',
+        address: state.address,
+        selectedWalletName: state.selectedWalletName,
+        cacheCount: state.androidAuthCacheCount,
+      });
+    }
   }
   state.tauriNativeEnvironment = detectTauriNativeEnvironment();
   if (state.tauriNativeEnvironment.isTauriNative) {
@@ -63380,15 +63388,49 @@ function androidWalletTypeForSession(session: WalletPathSession): number | undef
   return undefined;
 }
 
-async function restoreAndroidNativeSession(): Promise<boolean> {
-  if (state.cluster === 'localnet') {
-    state.androidNativeStatus = t('Android native MWA supports mainnet-beta, devnet, and testnet. Select devnet for local testing.');
-    return false;
+function logAndroidNativeRestore(
+  event: string,
+  phase: 'START' | 'SUCCESS' | 'FAIL',
+  fields: Record<string, unknown>,
+): void {
+  try {
+    const details = Object.entries(fields)
+      .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+      .join(' ');
+    const line = `[AgentAndroidNative] ${event} | ${phase}${details ? ` ${details}` : ''}`;
+    if (phase === 'FAIL') console.warn(line);
+    else console.info(line);
+  } catch (err) {
+    console.warn(`[AgentAndroidNative] ${event} | FAIL logError=${JSON.stringify(err instanceof Error ? err.message : String(err))}`);
   }
+}
+
+async function restoreAndroidNativeSession(): Promise<boolean> {
   const savedSession = androidWalletPathSessionForCurrentCluster();
   const expectedAddress = savedSession?.address;
   const expectedWalletPackage = savedSession ? androidWalletPackageForSession(savedSession) : undefined;
   const expectedWalletType = savedSession ? androidWalletTypeForSession(savedSession) : undefined;
+  logAndroidNativeRestore('WEB_RESTORE_START', 'START', {
+    route: typeof window !== 'undefined' ? window.location.pathname : '',
+    cluster: state.cluster,
+    androidCluster: state.cluster === 'localnet' ? '' : state.cluster,
+    savedSession: Boolean(savedSession),
+    hasAuthCacheKey: Boolean(savedSession?.androidAuthCacheKey),
+    address: expectedAddress ?? '',
+    walletPackage: expectedWalletPackage ?? '',
+    walletType: typeof expectedWalletType === 'number' ? expectedWalletType : '',
+    cacheCount: state.androidAuthCacheCount,
+    bridgeAvailable: state.androidNativeEnvironment.bridgeAvailable,
+  });
+  if (state.cluster === 'localnet') {
+    state.androidNativeStatus = t('Android native MWA supports mainnet-beta, devnet, and testnet. Select devnet for local testing.');
+    logAndroidNativeRestore('WEB_RESTORE_NOOP', 'FAIL', {
+      reason: 'localnet',
+      route: typeof window !== 'undefined' ? window.location.pathname : '',
+      cluster: state.cluster,
+    });
+    return false;
+  }
   const restored = await restoreLatestAndroidNativeWallet({
     cluster: androidNativeCluster(),
     rpcUrl: activeRpcUrl(),
@@ -63401,8 +63443,25 @@ async function restoreAndroidNativeSession(): Promise<boolean> {
     state.androidNativeStatus = expectedAddress
       ? tf('No cached Android MWA authorization found for {wallet}. Connect that wallet again.', { wallet: short(expectedAddress) })
       : t('No cached Android MWA authorization found. Connect a wallet to authorize.');
+    logAndroidNativeRestore('WEB_RESTORE_NOOP', 'FAIL', {
+      reason: 'no_cached_authorization',
+      route: typeof window !== 'undefined' ? window.location.pathname : '',
+      expectedAddress: expectedAddress ?? '',
+      hasAuthCacheKey: Boolean(savedSession?.androidAuthCacheKey),
+      walletPackage: expectedWalletPackage ?? '',
+      walletType: typeof expectedWalletType === 'number' ? expectedWalletType : '',
+      cacheCount: state.androidAuthCacheCount,
+    });
     return false;
   }
+  logAndroidNativeRestore('WEB_RESTORE_RESULT', 'SUCCESS', {
+    route: typeof window !== 'undefined' ? window.location.pathname : '',
+    address: restored.address,
+    authCacheKey: restored.authCacheKey ?? '',
+    walletPackage: restored.walletPackage ?? '',
+    walletType: typeof restored.walletType === 'number' ? restored.walletType : '',
+    cacheCount: restored.cacheCount,
+  });
   await applyAndroidNativeRestore(restored);
   return true;
 }

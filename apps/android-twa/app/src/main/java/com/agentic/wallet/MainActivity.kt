@@ -2179,6 +2179,21 @@ class MainActivity : FragmentActivity() {
                     val token = activity.mwaController.getAuthToken()
                     val record = activity.mwaController.activeAuthorization()
                         ?: activity.mwaController.cachedAuthorizations().maxByOrNull { it.timestampUnixSeconds }
+                    AgentMwaLog.info(
+                        "MainActivity",
+                        "getAuthToken",
+                        "TOKEN_EXPORT",
+                        "auth token exported through JS bridge",
+                        mapOf(
+                            "authLen" to token.length,
+                            "publicKey" to record?.publicKeyBase58.orEmpty(),
+                            "authCacheKey" to record?.let { activity.mwaController.authCacheKey(it) }.orEmpty(),
+                            "walletPackage" to record?.walletPackage.orEmpty(),
+                            "walletType" to (record?.walletType ?: WalletRegistry.UNKNOWN),
+                            "cluster" to record?.cluster?.id.orEmpty(),
+                            "hadRecord" to (record != null),
+                        ),
+                    )
                     JSONObject()
                         .put("authToken", token)
                         .put("authTokenLen", token.length)
@@ -2198,7 +2213,34 @@ class MainActivity : FragmentActivity() {
                     val walletPackage = payload.optString("walletPackage", "")
                     val clusterId = payload.optString("cluster", "")
                     val cluster = if (clusterId.isBlank()) AgentCluster.MainnetBeta else AgentCluster.requireSupported(clusterId)
+                    AgentMwaLog.info(
+                        "MainActivity",
+                        "setAuthToken",
+                        "TOKEN_IMPORT",
+                        "auth token import received through JS bridge",
+                        mapOf(
+                            "authLen" to token.length,
+                            "publicKey" to publicKey,
+                            "walletPackage" to walletPackage,
+                            "cluster" to cluster.id,
+                        ),
+                    )
                     val record = activity.mwaController.setAuthToken(token, publicKey, walletPackage, cluster)
+                    AgentMwaLog.info(
+                        "MainActivity",
+                        "setAuthToken",
+                        "TOKEN_IMPORT_RESULT",
+                        "auth token import bridge result prepared",
+                        mapOf(
+                            "ok" to (record != null),
+                            "authLen" to token.length,
+                            "publicKey" to record?.publicKeyBase58.orEmpty(),
+                            "authCacheKey" to record?.let { activity.mwaController.authCacheKey(it) }.orEmpty(),
+                            "walletPackage" to record?.walletPackage.orEmpty(),
+                            "walletType" to (record?.walletType ?: WalletRegistry.UNKNOWN),
+                            "cluster" to record?.cluster?.id.orEmpty(),
+                        ),
+                    )
                     statusJson(record)
                 }
                 "disconnect" -> {

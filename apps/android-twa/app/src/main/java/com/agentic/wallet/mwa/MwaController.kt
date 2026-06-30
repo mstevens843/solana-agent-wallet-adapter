@@ -70,6 +70,19 @@ class MwaController(
         AgentMwaLog.info(
             "MwaController",
             "reconnectLatest",
+            "MWA_RESTORE_REQUEST",
+            "restore requested using latest cached authorization",
+            mapOf(
+                "method" to "reconnectLatest",
+                "cluster" to cluster.id,
+                "cachedCount" to cache.all().size,
+                "latestSessionKey" to cache.latestSessionKey(),
+                "latestPubkey" to cache.latest()?.publicKeyBase58.orEmpty(),
+            ),
+        )
+        AgentMwaLog.info(
+            "MwaController",
+            "reconnectLatest",
             "START",
             "attempting cached authorization restore",
             mapOf("cluster" to cluster.id, "cachedCount" to cache.all().size, "latestSessionKey" to cache.latestSessionKey(), "latestPubkey" to cache.latest()?.publicKeyBase58.orEmpty()),
@@ -79,12 +92,31 @@ class MwaController(
             AgentMwaLog.warn(
                 "MwaController",
                 "reconnectLatest",
+                "MWA_RESTORE_RECORD_MISS",
+                "no cached authorization available for latest restore",
+                mapOf(
+                    "method" to "reconnectLatest",
+                    "reason" to "empty_cache",
+                    "cluster" to cluster.id,
+                    "cachedCount" to cache.all().size,
+                ),
+            )
+            AgentMwaLog.warn(
+                "MwaController",
+                "reconnectLatest",
                 "RESULT_FAIL",
                 "no cached authorization available",
                 mapOf("cluster" to cluster.id, "cachedCount" to cache.all().size),
             )
             return null
         }
+        AgentMwaLog.info(
+            "MwaController",
+            "reconnectLatest",
+            "MWA_RESTORE_RECORD_HIT",
+            "latest cached authorization found",
+            authRecordMetadata(latest) + mapOf("method" to "reconnectLatest"),
+        )
         return restoreCachedRecord("reconnectLatest", latest, cluster)
     }
 
@@ -93,19 +125,58 @@ class MwaController(
         AgentMwaLog.info(
             "MwaController",
             "reconnectSession",
+            "MWA_RESTORE_REQUEST",
+            "restore requested using exact cached authorization key",
+            mapOf(
+                "method" to "reconnectSession",
+                "cluster" to cluster.id,
+                "expectedKey" to key,
+                "cachedCount" to cache.all().size,
+            ),
+        )
+        AgentMwaLog.info(
+            "MwaController",
+            "reconnectSession",
             "START",
             "attempting exact cached authorization restore",
             mapOf("cluster" to cluster.id, "sessionKey" to key, "cachedCount" to cache.all().size),
         )
         if (key.isBlank()) {
+            AgentMwaLog.warn(
+                "MwaController",
+                "reconnectSession",
+                "MWA_RESTORE_RECORD_MISS",
+                "exact cached authorization key is blank",
+                mapOf("method" to "reconnectSession", "reason" to "blank_key", "cluster" to cluster.id),
+            )
             AgentMwaLog.warn("MwaController", "reconnectSession", "RESULT_FAIL", "session key is blank", mapOf("cluster" to cluster.id))
             return null
         }
         val record = cache.getBySessionKey(key)
         if (record == null) {
+            AgentMwaLog.warn(
+                "MwaController",
+                "reconnectSession",
+                "MWA_RESTORE_RECORD_MISS",
+                "exact cached authorization not found",
+                mapOf(
+                    "method" to "reconnectSession",
+                    "reason" to "exact_key_miss",
+                    "expectedKey" to key,
+                    "cluster" to cluster.id,
+                    "cachedCount" to cache.all().size,
+                ),
+            )
             AgentMwaLog.warn("MwaController", "reconnectSession", "RESULT_FAIL", "cached authorization not found", mapOf("sessionKey" to key, "cluster" to cluster.id))
             return null
         }
+        AgentMwaLog.info(
+            "MwaController",
+            "reconnectSession",
+            "MWA_RESTORE_RECORD_HIT",
+            "exact cached authorization found",
+            authRecordMetadata(record) + mapOf("method" to "reconnectSession", "expectedKey" to key),
+        )
         return restoreCachedRecord("reconnectSession", record, cluster)
     }
 
@@ -116,6 +187,21 @@ class MwaController(
         walletType: Int = WalletRegistry.UNKNOWN,
     ): AgentMwaAuthRecord? {
         val resolvedWalletPackage = resolveTargetWalletPackage(walletPackage)
+        AgentMwaLog.info(
+            "MwaController",
+            "reconnectForPubkey",
+            "MWA_RESTORE_REQUEST",
+            "restore requested using pubkey and provider",
+            mapOf(
+                "method" to "reconnectForPubkey",
+                "cluster" to cluster.id,
+                "expectedPubkey" to pubkeyBase58,
+                "walletPackage" to walletPackage,
+                "resolvedWalletPackage" to resolvedWalletPackage,
+                "walletType" to walletType,
+                "cachedCount" to cache.all().size,
+            ),
+        )
         AgentMwaLog.info(
             "MwaController",
             "reconnectForPubkey",
@@ -139,6 +225,22 @@ class MwaController(
             AgentMwaLog.warn(
                 "MwaController",
                 "reconnectForPubkey",
+                "MWA_RESTORE_RECORD_MISS",
+                "provider-scoped cached authorization not found",
+                mapOf(
+                    "method" to "reconnectForPubkey",
+                    "reason" to "pubkey_provider_miss",
+                    "expectedPubkey" to pubkeyBase58,
+                    "cluster" to cluster.id,
+                    "walletPackage" to walletPackage,
+                    "resolvedWalletPackage" to resolvedWalletPackage,
+                    "walletType" to walletType,
+                    "cachedCount" to cache.all().size,
+                ),
+            )
+            AgentMwaLog.warn(
+                "MwaController",
+                "reconnectForPubkey",
                 "RESULT_FAIL",
                 "provider-scoped cached authorization not found",
                 mapOf(
@@ -151,11 +253,33 @@ class MwaController(
             )
             return null
         }
+        AgentMwaLog.info(
+            "MwaController",
+            "reconnectForPubkey",
+            "MWA_RESTORE_RECORD_HIT",
+            "provider-scoped cached authorization found",
+            authRecordMetadata(record) + mapOf(
+                "method" to "reconnectForPubkey",
+                "expectedPubkey" to pubkeyBase58,
+                "resolvedWalletPackage" to resolvedWalletPackage,
+            ),
+        )
         return restoreCachedRecord("reconnectForPubkey", record, cluster)
     }
 
     private fun restoreCachedRecord(method: String, record: AgentMwaAuthRecord, cluster: AgentCluster): AgentMwaAuthRecord? {
         if (record.cluster != cluster) {
+            AgentMwaLog.warn(
+                "MwaController",
+                method,
+                "MWA_RESTORE_REJECT_CLUSTER",
+                "cached authorization cluster does not match requested cluster",
+                authRecordMetadata(record) + mapOf(
+                    "method" to method,
+                    "recordCluster" to record.cluster.id,
+                    "requestedCluster" to cluster.id,
+                ),
+            )
             AgentMwaLog.warn(
                 "MwaController",
                 method,
@@ -171,6 +295,17 @@ class MwaController(
             return null
         }
         if (!record.hasRestorableAuthorization()) {
+            AgentMwaLog.warn(
+                "MwaController",
+                method,
+                "MWA_RESTORE_REJECT_NOT_RESTORABLE",
+                "cached authorization is not restorable",
+                authRecordMetadata(record) + mapOf(
+                    "method" to method,
+                    "usable" to record.hasUsableAuthorization(),
+                    "restorable" to record.hasRestorableAuthorization(),
+                ),
+            )
             AgentMwaLog.warn(
                 "MwaController",
                 method,
@@ -200,6 +335,13 @@ class MwaController(
             "SUCCESS",
             "cached authorization restored",
             authRecordMetadata(activeRecord),
+        )
+        AgentMwaLog.info(
+            "MwaController",
+            method,
+            "MWA_RESTORE_SUCCESS",
+            "cached authorization restored",
+            authRecordMetadata(activeRecord) + mapOf("method" to method),
         )
         return activeRecord
     }
@@ -416,9 +558,25 @@ class MwaController(
      * Parity with grant-godot PR #449 getAuthToken and Unity PR AuthToken getter —
      * lets the web side surface the token in dev tabs or hand it off across boundaries.
      */
-    fun getAuthToken(): String = activeRecord?.authToken
-        ?: cache.latest()?.authToken
-        ?: ""
+    fun getAuthToken(): String {
+        val active = activeRecord
+        val cached = if (active == null) cache.latest() else null
+        val record = active ?: cached
+        val source = when {
+            active != null -> "active"
+            cached != null -> "cache"
+            else -> "none"
+        }
+        val token = record?.authToken.orEmpty()
+        AgentMwaLog.info(
+            "MwaController",
+            "getAuthToken",
+            "TOKEN_EXPORT",
+            "auth token exported to bridge",
+            authRecordMetadata(record) + mapOf("source" to source, "authLen" to token.length),
+        )
+        return token
+    }
 
     /**
      * Restores an MWA auth record (pubkey + token + walletPackage + cluster) into the
@@ -434,13 +592,32 @@ class MwaController(
         walletPackage: String = "",
         cluster: AgentCluster = AgentCluster.MainnetBeta,
     ): AgentMwaAuthRecord? {
+        AgentMwaLog.info(
+            "MwaController",
+            "setAuthToken",
+            "TOKEN_IMPORT",
+            "auth token import requested from bridge",
+            mapOf(
+                "authLen" to token.length,
+                "publicKey" to publicKeyBase58,
+                "walletPackage" to walletPackage,
+                "cluster" to cluster.id,
+            ),
+        )
         if (publicKeyBase58.isBlank()) {
             AgentMwaLog.warn(
                 "MwaController",
                 "setAuthToken",
                 "FAIL_INVALID",
                 "publicKeyBase58 is required",
-                mapOf("tokenLen" to token.length),
+                mapOf("authLen" to token.length),
+            )
+            AgentMwaLog.warn(
+                "MwaController",
+                "setAuthToken",
+                "TOKEN_IMPORT",
+                "auth token import failed",
+                mapOf("reason" to "missing_pubkey", "authLen" to token.length),
             )
             return null
         }
@@ -462,6 +639,13 @@ class MwaController(
                 "FAIL_INVALID_PUBKEY",
                 "publicKeyBase58 could not be decoded",
                 mapOf("publicKey" to publicKeyBase58),
+            )
+            AgentMwaLog.warn(
+                "MwaController",
+                "setAuthToken",
+                "TOKEN_IMPORT",
+                "auth token import failed",
+                mapOf("reason" to "invalid_pubkey", "authLen" to token.length, "publicKey" to publicKeyBase58),
             )
             return null
         }
@@ -486,7 +670,14 @@ class MwaController(
             "setAuthToken",
             "DONE",
             "auth token injected from external cache",
-            authRecordMetadata(record) + mapOf("tokenLen" to token.length, "cleared" to token.isBlank()),
+            authRecordMetadata(record) + mapOf("authLen" to token.length, "cleared" to token.isBlank()),
+        )
+        AgentMwaLog.info(
+            "MwaController",
+            "setAuthToken",
+            "TOKEN_IMPORT",
+            "auth token import completed",
+            authRecordMetadata(record) + mapOf("authLen" to token.length, "cleared" to token.isBlank()),
         )
         return record
     }

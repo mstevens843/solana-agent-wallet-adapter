@@ -204,6 +204,19 @@ export async function restoreLatestAndroidNativeWallet(
   const backend = new AndroidNativeWalletBackend(options);
   const expectedAddress = options.address?.trim();
   const expectedAuthCacheKey = options.authCacheKey?.trim();
+  const method = expectedAuthCacheKey
+    ? 'reconnectSession'
+    : expectedAddress && (options.walletPackage?.trim() || typeof options.walletType === 'number')
+      ? 'reconnectForPubkey'
+      : 'reconnectLatest';
+  logAndroidNative('WEB_RESTORE_NATIVE_CALL', 'START', {
+    method,
+    cluster: options.cluster,
+    hasAuthCacheKey: Boolean(expectedAuthCacheKey),
+    expectedAddress: expectedAddress ?? '',
+    walletPackage: options.walletPackage ?? '',
+    walletType: typeof options.walletType === 'number' ? options.walletType : '',
+  });
   let address: string | null = null;
   if (expectedAuthCacheKey) {
     address = await backend.reconnectSession(expectedAuthCacheKey, expectedAddress);
@@ -216,11 +229,28 @@ export async function restoreLatestAndroidNativeWallet(
     address = await backend.reconnectLatest();
   }
   if (!address) {
+    logAndroidNative('WEB_RESTORE_RESULT', 'FAIL', {
+      method,
+      cluster: options.cluster,
+      ok: false,
+      cacheCount: backend.cacheCount(),
+      reason: 'no_address',
+    }, 'warn');
     return null;
   }
   const authCacheKey = backend.authCacheKey();
   const walletPackage = backend.walletPackage();
   const walletType = backend.walletType();
+  logAndroidNative('WEB_RESTORE_RESULT', 'SUCCESS', {
+    method,
+    cluster: options.cluster,
+    ok: true,
+    address,
+    authCacheKey: authCacheKey ?? '',
+    walletPackage: walletPackage ?? '',
+    walletType: typeof walletType === 'number' ? walletType : '',
+    cacheCount: backend.cacheCount(),
+  });
   return {
     backend,
     address,
@@ -289,11 +319,23 @@ export class AndroidNativeWalletBackend implements WalletBackend {
   }
 
   async reconnectLatest(): Promise<string | null> {
+    logAndroidNative('WEB_RESTORE_NATIVE_CALL', 'START', {
+      method: 'reconnectLatest',
+      cluster: this.cluster,
+    });
     const status = await androidNativeRequest<AndroidMwaStatus>('reconnectLatest', {
       cluster: this.cluster,
       ...this.nativeRpcContext(),
     });
     this.applyStatus(status);
+    logAndroidNative('WEB_RESTORE_RESULT', status.address ? 'SUCCESS' : 'FAIL', {
+      method: 'reconnectLatest',
+      cluster: this.cluster,
+      ok: Boolean(status.address),
+      address: status.address ?? '',
+      authCacheKey: status.authCacheKey ?? '',
+      cacheCount: status.cachedCount,
+    }, status.address ? 'info' : 'warn');
     return status.address ?? null;
   }
 
@@ -301,6 +343,12 @@ export class AndroidNativeWalletBackend implements WalletBackend {
     const key = authCacheKey.trim();
     if (!key) return null;
     const address = expectedAddress?.trim();
+    logAndroidNative('WEB_RESTORE_NATIVE_CALL', 'START', {
+      method: 'reconnectSession',
+      cluster: this.cluster,
+      hasAuthCacheKey: true,
+      expectedAddress: address ?? '',
+    });
     const status = await androidNativeRequest<AndroidMwaStatus>('reconnectSession', {
       cluster: this.cluster,
       authCacheKey: key,
@@ -309,6 +357,15 @@ export class AndroidNativeWalletBackend implements WalletBackend {
       ...this.nativeRpcContext(),
     });
     this.applyStatus(status);
+    logAndroidNative('WEB_RESTORE_RESULT', status.address ? 'SUCCESS' : 'FAIL', {
+      method: 'reconnectSession',
+      cluster: this.cluster,
+      ok: Boolean(status.address),
+      address: status.address ?? '',
+      expectedAddress: address ?? '',
+      authCacheKey: status.authCacheKey ?? '',
+      cacheCount: status.cachedCount,
+    }, status.address ? 'info' : 'warn');
     if (address && status.address && status.address !== address) {
       throw new ProtocolError(
         'unauthorized',
@@ -324,6 +381,13 @@ export class AndroidNativeWalletBackend implements WalletBackend {
   ): Promise<string | null> {
     const pubkey = pubkeyBase58.trim();
     if (!pubkey) return null;
+    logAndroidNative('WEB_RESTORE_NATIVE_CALL', 'START', {
+      method: 'reconnectForPubkey',
+      cluster: this.cluster,
+      expectedAddress: pubkey,
+      walletPackage: options.walletPackage ?? '',
+      walletType: typeof options.walletType === 'number' ? options.walletType : '',
+    });
     const status = await androidNativeRequest<AndroidMwaStatus>('reconnectForPubkey', {
       cluster: this.cluster,
       pubkey,
@@ -334,6 +398,17 @@ export class AndroidNativeWalletBackend implements WalletBackend {
       ...this.nativeRpcContext(),
     });
     this.applyStatus(status);
+    logAndroidNative('WEB_RESTORE_RESULT', status.address ? 'SUCCESS' : 'FAIL', {
+      method: 'reconnectForPubkey',
+      cluster: this.cluster,
+      ok: Boolean(status.address),
+      address: status.address ?? '',
+      expectedAddress: pubkey,
+      walletPackage: options.walletPackage ?? '',
+      walletType: typeof options.walletType === 'number' ? options.walletType : '',
+      authCacheKey: status.authCacheKey ?? '',
+      cacheCount: status.cachedCount,
+    }, status.address ? 'info' : 'warn');
     return status.address ?? null;
   }
 
