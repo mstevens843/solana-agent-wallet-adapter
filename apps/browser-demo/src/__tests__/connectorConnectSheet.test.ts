@@ -133,21 +133,29 @@ describe('connector connect native sheet', () => {
     expect(stylesSource).toContain('white-space: nowrap;');
   });
 
-  it('shows provider-branded native wallet connected toasts', () => {
+  it('shows provider-branded native wallet connection toasts', () => {
     const toastModelBlock = sourceBetween('interface Toast {', 'const LOCAL_WORKSPACE_BOUNDARY_TOAST_KEY');
-    const helperBlock = sourceBetween('function walletConnectedToastTitle', 'async function runDiscover');
+    const helperBlock = sourceBetween('function walletConnectionToastTitle', 'async function runDiscover');
     const toastStackBlock = sourceBetween('function toastStack()', 'function pushToast(');
     const connectBlock = sourceBetween('async function runConnect(', 'async function runDisconnect()');
+    const disconnectBlock = sourceBetween('async function runDisconnect()', 'async function runReconnectAndroidCached()');
 
     expect(toastModelBlock).toContain('logoId?: WalletProviderLogoId;');
     expect(helperBlock).toContain("const walletLabel = /\\bwallet$/iu.test(name) ? name : `${name} wallet`;");
     expect(helperBlock).toContain("tf('{name} connected', { name: walletLabel })");
+    expect(helperBlock).toContain("tf('{name} disconnected', { name: walletLabel })");
+    expect(helperBlock).toContain('function walletToastSnapshot()');
     expect(helperBlock).toContain('pushNativeWalletConnectedToast');
-    expect(helperBlock).toContain('logoId ? { logoId } : {}');
+    expect(helperBlock).toContain('pushNativeWalletDisconnectedToast');
+    expect(helperBlock).toContain('wallet.logoId ? { logoId: wallet.logoId } : {}');
     expect(toastStackBlock).toContain('toastIconContent(toast)');
     expect(stylesSource).toContain('.toast-wallet-logo');
 
     expect(connectBlock).toContain('pushNativeWalletConnectedToast();');
+    expect(disconnectBlock.indexOf('const disconnectedWalletToast = walletToastSnapshot();')).toBeLessThan(disconnectBlock.indexOf('resetWalletConnection();'));
+    expect(disconnectBlock).toContain('pushNativeWalletDisconnectedToast(disconnectedWalletToast);');
+    expect(disconnectBlock).not.toContain("t('Local signing session cleared.')");
+    expect(disconnectBlock).not.toContain("t('Local signing and cloud workspace sessions cleared.')");
     expect(mainSource).not.toContain("pushToast('success', t('iOS wallet connected'), short(state.address))");
   });
 

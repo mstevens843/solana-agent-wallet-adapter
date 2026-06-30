@@ -42812,22 +42812,58 @@ function focusLayoutTarget(layoutName: string): void {
   });
 }
 
-function walletConnectedToastTitle(walletName: string): string {
+interface WalletToastSnapshot {
+  walletName: string;
+  address: string;
+  logoId?: WalletProviderLogoId;
+}
+
+function walletConnectionToastTitle(walletName: string, status: 'connected' | 'disconnected'): string {
   const name = walletName.trim();
   const walletLabel = /\bwallet$/iu.test(name) ? name : `${name} wallet`;
-  return name && name !== 'Mobile Wallet Adapter'
+  if (!name || name === 'Mobile Wallet Adapter') {
+    return status === 'connected' ? t('Wallet connected') : t('Wallet disconnected');
+  }
+  return status === 'connected'
     ? tf('{name} connected', { name: walletLabel })
-    : t('Wallet connected');
+    : tf('{name} disconnected', { name: walletLabel });
+}
+
+function walletConnectedToastTitle(walletName: string): string {
+  return walletConnectionToastTitle(walletName, 'connected');
+}
+
+function walletDisconnectedToastTitle(walletName: string): string {
+  return walletConnectionToastTitle(walletName, 'disconnected');
+}
+
+function walletToastSnapshot(): WalletToastSnapshot {
+  const walletName = state.selectedWalletName?.trim() ?? '';
+  const address = state.address.trim();
+  const logoId = state.selectedWalletLogoId ?? walletProviderLogoIdForName(walletName);
+  return {
+    walletName,
+    address,
+    ...(logoId ? { logoId } : {}),
+  };
 }
 
 function pushNativeWalletConnectedToast(): void {
-  const walletName = state.selectedWalletName?.trim() ?? '';
-  const logoId = state.selectedWalletLogoId ?? walletProviderLogoIdForName(walletName);
+  const wallet = walletToastSnapshot();
   pushToast(
     'success',
-    walletConnectedToastTitle(walletName),
-    short(state.address),
-    logoId ? { logoId } : {},
+    walletConnectedToastTitle(wallet.walletName),
+    wallet.address ? short(wallet.address) : '',
+    wallet.logoId ? { logoId: wallet.logoId } : {},
+  );
+}
+
+function pushNativeWalletDisconnectedToast(wallet: WalletToastSnapshot): void {
+  pushToast(
+    'success',
+    walletDisconnectedToastTitle(wallet.walletName),
+    wallet.address ? short(wallet.address) : '',
+    wallet.logoId ? { logoId: wallet.logoId } : {},
   );
 }
 
@@ -43123,6 +43159,7 @@ async function runConnect(
 async function runDisconnect(): Promise<void> {
   await run('connect', async () => {
     const browserWallet = isBrowserWalletSurface();
+    const disconnectedWalletToast = walletToastSnapshot();
     notifyLocalWorkspaceBackupReminder('Disconnecting does not move local data to another browser.');
     if (state.bridgeActive) {
       await disconnectBridgeHost().catch(() => undefined);
@@ -43130,7 +43167,7 @@ async function runDisconnect(): Promise<void> {
     await disconnectWalletBackend().catch(() => undefined);
     resetWalletConnection();
     await clearDeviceAgentForWalletBoundary();
-    const cloudSignedOut = await signOutCloudSessionForWalletBoundary('wallet-disconnected');
+    await signOutCloudSessionForWalletBoundary('wallet-disconnected');
     reconcileAiModeForSurface();
     if (browserWallet) {
       state.selectedWalletName = '';
@@ -43145,11 +43182,7 @@ async function runDisconnect(): Promise<void> {
     }
     await refreshIosNativeCacheState();
     savePersistedState();
-    pushToast(
-      'success',
-      t('Wallet disconnected'),
-      cloudSignedOut ? t('Local signing and cloud workspace sessions cleared.') : t('Local signing session cleared.'),
-    );
+    pushNativeWalletDisconnectedToast(disconnectedWalletToast);
   });
 }
 
