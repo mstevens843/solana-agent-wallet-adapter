@@ -6,21 +6,23 @@ import org.junit.Test
 class MwaWatchdogTest {
     @Test
     fun resumeWatchdog_withoutForegroundExitClassifiesPickerDismissal() {
-        val decision = mwaResumeWatchdogDecision(leftHostForeground = false)
+        val decision = mwaResumeWatchdogDecision(walletForegrounded = false)
 
         assertEquals(MWA_PICKER_DISMISS_GRACE_MS, decision.delayMs)
         assertEquals("USER_REJECTED", decision.code)
+        assertEquals("STEP_PICKER_DISMISS_WATCHDOG", decision.waitStep)
         assertEquals("FAIL_PICKER_DISMISSED", decision.step)
         assertEquals("Wallet picker dismissed without selection", decision.userMessage)
     }
 
     @Test
-    fun resumeWatchdog_afterForegroundExitClassifiesHandoffReturnWithoutResult() {
-        val decision = mwaResumeWatchdogDecision(leftHostForeground = true)
+    fun resumeWatchdog_afterWalletForegroundWaitsForWalletResult() {
+        val decision = mwaResumeWatchdogDecision(walletForegrounded = true)
 
         assertEquals(MWA_HANDOFF_RETURN_GRACE_MS, decision.delayMs)
         assertEquals("MWA_HANDOFF_RETURNED_WITHOUT_RESULT", decision.code)
-        assertEquals("FAIL_MWA_HANDOFF_RETURNED_WITHOUT_RESULT", decision.step)
+        assertEquals("STEP_HANDOFF_GRACE_WAIT", decision.waitStep)
+        assertEquals("FAIL_MWA_HANDOFF_TIMEOUT", decision.step)
         assertEquals("Wallet handoff returned without completing the MWA request.", decision.userMessage)
     }
 }

@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.content.pm.Signature
+import android.content.pm.verify.domain.DomainVerificationManager
+import android.content.pm.verify.domain.DomainVerificationUserState
 import android.net.Uri
 import android.os.Build
 import kotlinx.coroutines.Dispatchers
@@ -30,6 +32,7 @@ object MwaIdentityPreflight {
         val origin = identityOrigin(identity.uri)
         val appPackage = context.packageName
         val appFingerprints = appSigningFingerprints(context, appPackage)
+        val appLinksState = appLinksVerificationState(context, appPackage, origin)
         val baseMetadata = mapOf(
             "requestId" to requestId,
             "cluster" to cluster.id,
@@ -43,7 +46,8 @@ object MwaIdentityPreflight {
             "resolvedTargetWalletPackage" to resolvedTargetWalletPackage,
             "appSigningSha256" to appFingerprints.joinToString(";"),
             "appSigningSha256Count" to appFingerprints.size,
-        ) + installedPackageMetadata(context, "targetWallet", resolvedTargetWalletPackage) +
+        ) + appLinksState.toLogMetadata() +
+            installedPackageMetadata(context, "targetWallet", resolvedTargetWalletPackage) +
             backpackFamilyMetadata(context)
 
         AgentMwaLog.info(
@@ -63,6 +67,15 @@ object MwaIdentityPreflight {
                 baseMetadata,
             )
             return@withContext
+        }
+        if (appLinksState.shouldWarn) {
+            AgentMwaLog.warn(
+                "MwaIdentityPreflight",
+                "logBeforeConnect",
+                "WARN_APP_LINKS_STATE",
+                "Android App Links state may prevent wallets from verifying the identity URI host",
+                baseMetadata,
+            )
         }
         if (appFingerprints.isEmpty()) {
             AgentMwaLog.warn(
@@ -226,6 +239,47 @@ object MwaIdentityPreflight {
         return "$scheme://$host${if (uri.port > 0) ":${uri.port}" else ""}"
     }
 
+    private fun appLinksVerificationState(
+        context: Context,
+        packageName: String,
+        origin: String?,
+    ): AppLinksVerificationState {
+        val host = origin
+            ?.let { runCatching { Uri.parse(it).host?.lowercase() }.getOrNull() }
+            .orEmpty()
+        if (host.isBlank()) {
+            return AppLinksVerificationState.unsupported(host = host, error = "missing_identity_host")
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            return AppLinksVerificationState.unsupported(host = host, error = "sdk_below_31")
+        }
+        return try {
+            val manager = context.getSystemService(DomainVerificationManager::class.java)
+                ?: return AppLinksVerificationState.unsupported(host = host, error = "manager_unavailable")
+            val state = manager.getDomainVerificationUserState(packageName)
+                ?: return AppLinksVerificationState.unsupported(host = host, error = "state_unavailable")
+            val hostToState = state.hostToStateMap.orEmpty()
+                .mapKeys { it.key.lowercase() }
+                .toSortedMap()
+            val hostState = hostToState[host]
+            AppLinksVerificationState(
+                supported = true,
+                host = host,
+                linkHandlingAllowed = state.isLinkHandlingAllowed,
+                hostState = hostState,
+                verifiedHosts = hostsForState(hostToState, DomainVerificationUserState.DOMAIN_STATE_VERIFIED),
+                selectedHosts = hostsForState(hostToState, DomainVerificationUserState.DOMAIN_STATE_SELECTED),
+                noneHosts = hostsForState(hostToState, DomainVerificationUserState.DOMAIN_STATE_NONE),
+                error = "",
+            )
+        } catch (err: Throwable) {
+            AppLinksVerificationState.unsupported(host = host, error = err.javaClass.simpleName)
+        }
+    }
+
+    private fun hostsForState(hostToState: Map<String, Int>, state: Int): List<String> =
+        hostToState.filterValues { it == state }.keys.toList()
+
     @Suppress("DEPRECATION")
     private fun appSigningFingerprints(context: Context, packageName: String): List<String> {
         val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -280,6 +334,15 @@ object MwaIdentityPreflight {
     private fun containsRelation(array: JSONArray?): Boolean =
         stringArray(array).contains("delegate_permission/common.handle_all_urls")
 
+    fun appLinksStateName(state: Int?): String =
+        when (state) {
+            null -> "MISSING"
+            DomainVerificationUserState.DOMAIN_STATE_NONE -> "NONE"
+            DomainVerificationUserState.DOMAIN_STATE_SELECTED -> "SELECTED"
+            DomainVerificationUserState.DOMAIN_STATE_VERIFIED -> "VERIFIED"
+            else -> "UNKNOWN_$state"
+        }
+
     private fun stringArray(array: JSONArray?): List<String> {
         if (array == null) return emptyList()
         return (0 until array.length()).mapNotNull { index ->
@@ -317,4 +380,47 @@ data class AssetLinksInspection(
             "assetlinksMatchedSha256" to matchedFingerprints.joinToString(";"),
             "assetlinksError" to error,
         )
+}
+
+data class AppLinksVerificationState(
+    val supported: Boolean,
+    val host: String,
+    val linkHandlingAllowed: Boolean?,
+    val hostState: Int?,
+    val verifiedHosts: List<String>,
+    val selectedHosts: List<String>,
+    val noneHosts: List<String>,
+    val error: String,
+) {
+    val shouldWarn: Boolean
+        get() = supported &&
+            (linkHandlingAllowed == false ||
+                MwaIdentityPreflight.appLinksStateName(hostState) !in setOf("VERIFIED", "SELECTED"))
+
+    fun toLogMetadata(): Map<String, Any?> =
+        mapOf(
+            "appLinksSupported" to supported,
+            "appLinksHost" to host,
+            "appLinksHandlingAllowed" to linkHandlingAllowed,
+            "appLinksHostState" to MwaIdentityPreflight.appLinksStateName(hostState),
+            "appLinksHostStateRaw" to hostState,
+            "appLinksVerifiedHosts" to verifiedHosts.joinToString(";"),
+            "appLinksSelectedHosts" to selectedHosts.joinToString(";"),
+            "appLinksNoneHosts" to noneHosts.joinToString(";"),
+            "appLinksError" to error,
+        )
+
+    companion object {
+        fun unsupported(host: String, error: String): AppLinksVerificationState =
+            AppLinksVerificationState(
+                supported = false,
+                host = host,
+                linkHandlingAllowed = null,
+                hostState = null,
+                verifiedHosts = emptyList(),
+                selectedHosts = emptyList(),
+                noneHosts = emptyList(),
+                error = error,
+            )
+    }
 }

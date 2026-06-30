@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   AndroidNativeWalletBackend,
+  androidNativeRequest,
   shouldBlockAndroidNativeAutoRestoreAfterManualDisconnect,
   androidNativePostRestoreRoute,
   resolveAndroidAppSurface,
@@ -400,6 +401,66 @@ describe('Android manual disconnect restore block', () => {
   it('does not block other clusters or empty state', () => {
     expect(shouldBlockAndroidNativeAutoRestoreAfterManualDisconnect(block, 'devnet')).toBe(false);
     expect(shouldBlockAndroidNativeAutoRestoreAfterManualDisconnect(undefined, 'mainnet-beta')).toBe(false);
+  });
+});
+
+describe('androidNativeRequest pending wallet handoff', () => {
+  afterEach(() => {
+    clearAndroidTestWindow();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('does not reject a pending wallet request on the old picker grace window', async () => {
+    vi.useFakeTimers();
+    const testWindow = installAndroidTestWindow();
+    let capturedRequestId = '';
+    vi.stubGlobal('AgenticAndroid', {
+      mwaRequest: vi.fn((requestId: string) => {
+        capturedRequestId = requestId;
+      }),
+    });
+
+    let settled = false;
+    const request = androidNativeRequest('connect', { cluster: 'mainnet-beta' })
+      .finally(() => {
+        settled = true;
+      });
+
+    await vi.advanceTimersByTimeAsync(5_500);
+    expect(settled).toBe(false);
+
+    testWindow.__agenticAndroidMwaBridge?.resolve(
+      capturedRequestId,
+      androidStatus({
+        connected: true,
+        address: 'AndroidBackpack1111111111111111111111111',
+        walletPackage: 'app.backpack.mobile.standalone',
+      }),
+    );
+
+    await expect(request).resolves.toMatchObject({
+      connected: true,
+      walletPackage: 'app.backpack.mobile.standalone',
+    });
+  });
+
+  it('keeps the 120s Android native hard timeout', async () => {
+    vi.useFakeTimers();
+    installAndroidTestWindow();
+    vi.stubGlobal('AgenticAndroid', {
+      mwaRequest: vi.fn(),
+    });
+
+    const request = androidNativeRequest('connect', { cluster: 'mainnet-beta' });
+    const timeoutError = request.catch((err: unknown) => err);
+
+    await vi.advanceTimersByTimeAsync(119_999);
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(timeoutError).resolves.toMatchObject({
+      code: 'expired',
+    });
   });
 });
 

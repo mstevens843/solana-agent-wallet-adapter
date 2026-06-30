@@ -1338,6 +1338,28 @@ describe('render web hosted BYOK API', () => {
     });
   });
 
+  it('serves Android assetlinks without immutable long-term caching', async () => {
+    await withServer(async (port) => {
+      const response = await getText(port, '/.well-known/assetlinks.json');
+      const body = JSON.parse(response.body) as Array<{ target?: { package_name?: string } }>;
+
+      expect(response.status).toBe(200);
+      expect(String(response.headers['content-type'])).toContain('application/json');
+      expect(response.headers['cache-control']).toBe('public, max-age=60, must-revalidate');
+      expect(body[0]?.target?.package_name).toBe('com.agentic.wallet');
+      expect(response.body).not.toContain('<div id="app"></div>');
+    }, {
+      assetlinksJson: [{
+        relation: ['delegate_permission/common.handle_all_urls'],
+        target: {
+          namespace: 'android_app',
+          package_name: 'com.agentic.wallet',
+          sha256_cert_fingerprints: ['11:99:47:93:2D:24:79:E3:DD:AE:C3:E4:55:6B:37:56:61:47:0D:FD:24:65:68:F6:2E:66:D7:AE:28:97:CE:EE'],
+        },
+      }],
+    });
+  });
+
   it('serves the production iOS Apple App Site Association file without env overrides', async () => {
     await withServer(async (port) => {
       const response = await getText(port, '/.well-known/apple-app-site-association');
@@ -1714,12 +1736,17 @@ async function withServer(
     appBuildMetadata?: Record<string, unknown>;
     statelessConnectorPreparer?: import('../cloud/prepareConnectorTransaction.js').StatelessConnectorTransactionPreparer;
     walletAddress?: string;
+    assetlinksJson?: unknown;
   } = {},
 ): Promise<void> {
   const staticDir = await mkdtemp(join(tmpdir(), 'agentic-render-web-'));
   await writeFile(join(staticDir, 'index.html'), '<!doctype html><div id="app"></div>');
   if (options.appBuildMetadata) {
     await writeFile(join(staticDir, 'agentic-build.json'), JSON.stringify(options.appBuildMetadata));
+  }
+  if (options.assetlinksJson) {
+    await mkdir(join(staticDir, '.well-known'));
+    await writeFile(join(staticDir, '.well-known', 'assetlinks.json'), JSON.stringify(options.assetlinksJson));
   }
   await mkdir(join(staticDir, 'app'));
   await writeFile(join(staticDir, 'app', 'index.html'), '<!doctype html><div id="app"></div>');

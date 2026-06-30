@@ -9,4 +9,8 @@
     <style name="AppTheme.Launch" parent="AppTheme">
         <item name="android:windowBackground">@drawable/agentic_launch_screen</item>
     </style>
+
+    <style name="AppTheme.AppLinkVerification" parent="android:style/Theme.NoDisplay">
+        <item name="android:windowDisablePreview">true</item>
+    </style>
 </resources>

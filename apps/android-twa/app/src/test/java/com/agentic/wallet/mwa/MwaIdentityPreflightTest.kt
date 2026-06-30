@@ -1,5 +1,6 @@
 package com.agentic.wallet.mwa
 
+import android.content.pm.verify.domain.DomainVerificationUserState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -93,6 +94,15 @@ class MwaIdentityPreflightTest {
         assertFalse(result.packageEntryFound)
         assertFalse(result.fingerprintMatch)
         assertEquals("JSONException", result.error)
+    }
+
+    @Test
+    fun appLinksStateName_labelsKnownDomainVerificationStates() {
+        assertEquals("MISSING", MwaIdentityPreflight.appLinksStateName(null))
+        assertEquals("NONE", MwaIdentityPreflight.appLinksStateName(DomainVerificationUserState.DOMAIN_STATE_NONE))
+        assertEquals("SELECTED", MwaIdentityPreflight.appLinksStateName(DomainVerificationUserState.DOMAIN_STATE_SELECTED))
+        assertEquals("VERIFIED", MwaIdentityPreflight.appLinksStateName(DomainVerificationUserState.DOMAIN_STATE_VERIFIED))
+        assertEquals("UNKNOWN_1024", MwaIdentityPreflight.appLinksStateName(1024))
     }
 
     private fun assetLinksJson(packageName: String, fingerprint: String): String =

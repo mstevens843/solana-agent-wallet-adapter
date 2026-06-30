@@ -109,6 +109,10 @@ services:
       # while the implementation is staged. Empty/0/false shows it.
       - key: HIDE_RESEARCH_TABS
         value: "true"
+      # HIDE_DECISION_CHECK: true/1 hides the Chat tab's one-shot Decision Planner
+      # while the implementation is staged. Empty/0/false shows it.
+      - key: HIDE_DECISION_CHECK
+        value: "true"
       # CHAT_AGENT: true/1 → the Chat tab uses the NEW agentic chat loop (device chat
       # agent); empty/0/false → it uses the on-device PLANNER (safe interim). Baked at
       # build, so flipping it is a Render redeploy (no native build) and reaches every

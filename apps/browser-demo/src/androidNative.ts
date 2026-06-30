@@ -79,7 +79,6 @@ interface PendingNativeRequest {
   reject(err: Error): void;
   timer: number;
   startedAt: number;
-  graceTimer?: number;
 }
 
 interface NativeMwaError {
@@ -124,18 +123,6 @@ export interface AndroidNativeSignInResult {
 }
 
 const ANDROID_NATIVE_TIMEOUT_MS = 120_000;
-// Defense-in-depth grace timers for the OS-chooser-dismissal bug. If the user dismisses the
-// Android system "Open with Wallet" chooser by tapping outside, the native MWA library
-// suspends indefinitely and never invokes the bridge callback. The native lifecycle watchdog
-// in MwaController catches this primarily; this JS layer is the safety net.
-//
-// - PICKER_GRACE_MIN_AGE_MS: don't arm the grace timer until the request has been pending
-//   for at least this long. Prevents false positives if a focus/visibility event fires
-//   before the chooser visually presents.
-// - PICKER_GRACE_REJECT_MS: after focus/visibility says we're back on the page, wait this
-//   long for a legitimate result. If still pending, force-reject as user_rejected.
-const ANDROID_PICKER_GRACE_MIN_AGE_MS = 400;
-const ANDROID_PICKER_GRACE_REJECT_MS = 1_500;
 const CLOUD_SESSION_TOKEN_KEY = 'cloudSessionToken';
 const pendingNativeRequests = new Map<string, PendingNativeRequest>();
 let nextRequestNonce = 1;
@@ -863,7 +850,6 @@ export function androidNativeRequest<T>(method: string, payload?: unknown): Prom
   const requestId = `android-mwa-${Date.now()}-${nextRequestNonce++}`;
   return new Promise<T>((resolve, reject) => {
     const timer = window.setTimeout(() => {
-      clearAndroidPickerGraceTimer(requestId);
       pendingNativeRequests.delete(requestId);
       logAndroidNative('request', 'FAIL', { method, requestId, reason: 'timeout' }, 'warn');
       reject(new ProtocolError('expired', `Android native MWA request ${requestId} timed out.`));
@@ -887,7 +873,6 @@ export function androidNativeRequest<T>(method: string, payload?: unknown): Prom
       injectedBridge.mwaRequest(requestId, method, payloadJson);
     } catch (err) {
       window.clearTimeout(timer);
-      clearAndroidPickerGraceTimer(requestId);
       pendingNativeRequests.delete(requestId);
       logAndroidNative(
         'request',
@@ -915,7 +900,6 @@ function installAndroidNativeCallbackBridge(): void {
       const pending = pendingNativeRequests.get(requestId);
       if (!pending) return;
       window.clearTimeout(pending.timer);
-      clearAndroidPickerGraceTimer(requestId);
       pendingNativeRequests.delete(requestId);
       logAndroidNative('request', 'SUCCESS', {
         method: pending.method,
@@ -928,7 +912,6 @@ function installAndroidNativeCallbackBridge(): void {
       const pending = pendingNativeRequests.get(requestId);
       if (!pending) return;
       window.clearTimeout(pending.timer);
-      clearAndroidPickerGraceTimer(requestId);
       pendingNativeRequests.delete(requestId);
       logAndroidNative('request', 'FAIL', {
         method: pending.method,
@@ -940,82 +923,6 @@ function installAndroidNativeCallbackBridge(): void {
       pending.reject(protocolErrorFromNative(error));
     },
   };
-  installAndroidPickerGraceWatchers();
-}
-
-function clearAndroidPickerGraceTimer(requestId: string): void {
-  const pending = pendingNativeRequests.get(requestId);
-  if (pending?.graceTimer !== undefined) {
-    window.clearTimeout(pending.graceTimer);
-    pending.graceTimer = undefined;
-  }
-}
-
-function clearAllAndroidPickerGraceTimers(): void {
-  for (const pending of pendingNativeRequests.values()) {
-    if (pending.graceTimer !== undefined) {
-      window.clearTimeout(pending.graceTimer);
-      pending.graceTimer = undefined;
-    }
-  }
-}
-
-function armAndroidPickerGraceTimers(): void {
-  const now = Date.now();
-  for (const [requestId, pending] of pendingNativeRequests.entries()) {
-    if (pending.graceTimer !== undefined) continue;
-    if (now - pending.startedAt < ANDROID_PICKER_GRACE_MIN_AGE_MS) continue;
-    pending.graceTimer = window.setTimeout(() => {
-      // Re-check pending — the legitimate resolve/reject may have arrived between scheduling
-      // and firing. If still pending, the user dismissed the chooser without selection.
-      const still = pendingNativeRequests.get(requestId);
-      if (!still) return;
-      window.clearTimeout(still.timer);
-      still.graceTimer = undefined;
-      pendingNativeRequests.delete(requestId);
-      logAndroidNative(
-        'request',
-        'FAIL',
-        {
-          method: still.method,
-          requestId,
-          reason: 'picker_dismissed',
-          elapsedMs: Date.now() - still.startedAt,
-        },
-        'warn',
-      );
-      still.reject(
-        new ProtocolError('user_rejected', 'Wallet picker dismissed without selection.'),
-      );
-    }, ANDROID_PICKER_GRACE_REJECT_MS);
-  }
-}
-
-let androidPickerGraceWatchersInstalled = false;
-
-function installAndroidPickerGraceWatchers(): void {
-  if (androidPickerGraceWatchersInstalled) return;
-  if (typeof window === 'undefined' || typeof document === 'undefined') return;
-  androidPickerGraceWatchersInstalled = true;
-  // When the page regains focus while a request is in flight, arm a grace timer per request.
-  // When focus moves AWAY (wallet app took foreground), clear all grace timers — a legitimate
-  // wallet flow is in progress and we must not false-cancel it. Only continuous focus on the
-  // WebView for ANDROID_PICKER_GRACE_REJECT_MS after the chooser was open indicates the user
-  // dismissed without picking a wallet.
-  const onFocusOrVisible = () => {
-    if (document.visibilityState !== 'visible') return;
-    if (pendingNativeRequests.size === 0) return;
-    armAndroidPickerGraceTimers();
-  };
-  const onBlurOrHidden = () => {
-    clearAllAndroidPickerGraceTimers();
-  };
-  window.addEventListener('focus', onFocusOrVisible);
-  window.addEventListener('blur', onBlurOrHidden);
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') onFocusOrVisible();
-    else onBlurOrHidden();
-  });
 }
 
 function androidNativeBridge(): AndroidNativeBridge | undefined {

@@ -86,6 +86,22 @@
             android:theme="@style/AppTheme" />
 
         <activity
+            android:name=".AppLinkVerificationActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:theme="@style/AppTheme.AppLinkVerification">
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="${agenticHost}"
+                    android:scheme="${agenticScheme}" />
+            </intent-filter>
+        </activity>
+
+        <activity
             android:name=".WebLaunchActivity"
             android:enabled="${agenticWebFallbackEnabled}"
             android:exported="true"

@@ -84,6 +84,9 @@ const hideChatTab = process.env.HIDE_CHAT_TAB ?? '';
 // HIDE_RESEARCH_TABS: when true/1, hides the Chat tab's read-only Research surface.
 // Empty/0/false keeps it visible. Baked at build so Render can stage the feature.
 const hideResearchTabs = process.env.HIDE_RESEARCH_TABS ?? '';
+// HIDE_DECISION_CHECK: when true/1, hides the Chat tab's one-shot Decision Planner
+// entry point while the implementation is staged. Empty/0/false keeps it visible.
+const hideDecisionCheck = process.env.HIDE_DECISION_CHECK ?? '';
 // CHAT_AGENT: when true/1, the Chat tab uses the new agentic chat loop; when
 // empty/0/false it uses the on-device planner. Baked at build so a Render redeploy
 // flips it for every surface's live bundle (no native build needed).
@@ -170,6 +173,7 @@ export default defineConfig({
     'import.meta.env.VITE_AGENTIC_BROWSER_DEVICE_AGENT': JSON.stringify(browserDeviceAgent),
     'import.meta.env.VITE_HIDE_CHAT_TAB': JSON.stringify(hideChatTab),
     'import.meta.env.VITE_HIDE_RESEARCH_TABS': JSON.stringify(hideResearchTabs),
+    'import.meta.env.VITE_HIDE_DECISION_CHECK': JSON.stringify(hideDecisionCheck),
     'import.meta.env.VITE_CHAT_AGENT': JSON.stringify(chatAgent),
     'import.meta.env.VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST': JSON.stringify(deviceAgentWalletAllowlist),
     'import.meta.env.VITE_AGENTIC_CLOUD_API_BASE_URL': JSON.stringify(cloudApiBaseUrl),

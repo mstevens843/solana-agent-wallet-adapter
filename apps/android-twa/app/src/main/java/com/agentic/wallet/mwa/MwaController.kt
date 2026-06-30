@@ -76,10 +76,13 @@ class MwaController(
             resumedAt.set(now)
         }
 
+        fun walletForegrounded(): Boolean = stoppedAt.get() != 0L
+
         fun lifecycleMetadata(now: Long = System.currentTimeMillis()): Map<String, Any?> =
             mapOf(
                 "elapsedMs" to (now - startedAt),
                 "leftHostForeground" to leftHostForeground.get(),
+                "walletForegrounded" to walletForegrounded(),
                 "pauseElapsedMs" to elapsedSinceStart(pausedAt.get()),
                 "stopElapsedMs" to elapsedSinceStart(stoppedAt.get()),
                 "resumeElapsedMs" to elapsedSinceStart(resumedAt.get()),
@@ -1433,10 +1436,9 @@ class MwaController(
      * `adapter.connect()` / `adapter.transact()` simply never resumes, so the JS bridge
      * callback never fires and the UI's `state.busy` flag stays `true` forever.
      *
-     * Discrimination: if MainActivity never left the foreground, the chooser was likely
-     * dismissed before any handoff. If MainActivity did leave the foreground, Android may have
-     * shown the resolver and/or a wallet activity, so give the clientlib a longer grace period
-     * to deliver a late result before surfacing a distinct handoff-without-result failure.
+     * Discrimination: if MainActivity never reached STOPPED, the chooser was likely dismissed
+     * before a wallet activity took foreground. Once STOPPED fires, a real wallet handoff is in
+     * progress, so keep waiting for the MWA clientlib to deliver a delayed wallet result.
      */
     fun notifyActivityPaused() {
         val op = inFlightOp.get() ?: return
@@ -1468,11 +1470,11 @@ class MwaController(
         val op = inFlightOp.get() ?: return
         val now = System.currentTimeMillis()
         op.markResumed(now)
-        val decision = mwaResumeWatchdogDecision(op.leftHostForeground.get())
+        val decision = mwaResumeWatchdogDecision(op.walletForegrounded())
         AgentMwaLog.info(
             "MwaController",
             op.method,
-            "STEP_RESUME_WATCHDOG",
+            decision.waitStep,
             "host activity resumed while MWA call is pending",
             op.lifecycleMetadata(now) + mapOf(
                 "watchdogDelayMs" to decision.delayMs,
@@ -1484,7 +1486,7 @@ class MwaController(
             if (!activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return@launch
             val still = inFlightOp.get()
             if (still != null && still === op) {
-                val finalDecision = mwaResumeWatchdogDecision(still.leftHostForeground.get())
+                val finalDecision = mwaResumeWatchdogDecision(still.walletForegrounded())
                 AgentMwaLog.warn(
                     "MwaController",
                     still.method,
@@ -2352,31 +2354,34 @@ internal data class MwaResumeWatchdogDecision(
     val delayMs: Long,
     val code: String,
     val userMessage: String,
+    val waitStep: String,
     val step: String,
     val logMessage: String,
 )
 
-internal fun mwaResumeWatchdogDecision(leftHostForeground: Boolean): MwaResumeWatchdogDecision =
-    if (leftHostForeground) {
+internal fun mwaResumeWatchdogDecision(walletForegrounded: Boolean): MwaResumeWatchdogDecision =
+    if (walletForegrounded) {
         MwaResumeWatchdogDecision(
             delayMs = MWA_HANDOFF_RETURN_GRACE_MS,
             code = "MWA_HANDOFF_RETURNED_WITHOUT_RESULT",
             userMessage = "Wallet handoff returned without completing the MWA request.",
-            step = "FAIL_MWA_HANDOFF_RETURNED_WITHOUT_RESULT",
-            logMessage = "activity resumed after MWA handoff but no MWA result arrived",
+            waitStep = "STEP_HANDOFF_GRACE_WAIT",
+            step = "FAIL_MWA_HANDOFF_TIMEOUT",
+            logMessage = "wallet handoff timed out after returning to host without result",
         )
     } else {
         MwaResumeWatchdogDecision(
             delayMs = MWA_PICKER_DISMISS_GRACE_MS,
             code = "USER_REJECTED",
             userMessage = "Wallet picker dismissed without selection",
+            waitStep = "STEP_PICKER_DISMISS_WATCHDOG",
             step = "FAIL_PICKER_DISMISSED",
             logMessage = "activity resumed without MWA result and no wallet foregrounded; cancelling as USER_REJECTED",
         )
     }
 
 internal const val MWA_PICKER_DISMISS_GRACE_MS = 700L
-internal const val MWA_HANDOFF_RETURN_GRACE_MS = 2_500L
+internal const val MWA_HANDOFF_RETURN_GRACE_MS = 120_000L
 
 internal fun buildAppliedAuthorizationRecord(
     publicKeyBase58: String,

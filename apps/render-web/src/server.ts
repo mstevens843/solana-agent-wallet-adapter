@@ -165,15 +165,19 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse, staticDir:
   const payload = await readFile(file);
   res.statusCode = 200;
   res.setHeader('content-type', contentType(file));
-  res.setHeader(
-    'cache-control',
-    extname(file) === '.html' ? 'no-store, must-revalidate' : 'public, max-age=31536000, immutable',
-  );
+  res.setHeader('cache-control', staticCacheControl(file, pathname));
   if (req.method === 'HEAD') {
     res.end();
     return;
   }
   res.end(payload);
+}
+
+function staticCacheControl(file: string, pathname: string): string {
+  if (pathname === '/.well-known/assetlinks.json') {
+    return 'public, max-age=60, must-revalidate';
+  }
+  return extname(file) === '.html' ? 'no-store, must-revalidate' : 'public, max-age=31536000, immutable';
 }
 
 function safeStaticTarget(staticDir: string, pathname: string): string {

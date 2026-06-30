@@ -542,6 +542,14 @@ import {
 } from './chatReadiness.js';
 import { chatStaticReplyForPrompt } from './chatStaticReplies.js';
 import {
+  CHAT_DECISION_CHECK_TEMPLATE_ID,
+  CHAT_DECISION_SUGGESTED_PROMPTS,
+  buildChatDecisionCheckPlan,
+  chatDecisionStatusClass,
+  chatDecisionStatusLabel,
+  type ChatDecisionStatus,
+} from './chatDecisionCheck.js';
+import {
   browserWalletPickerOptions,
   browserWalletRestoreName,
   createBrowserWalletSession,
@@ -1772,6 +1780,9 @@ const HIDE_CHAT_TAB_RAW = String(
 const HIDE_RESEARCH_TABS = /^(true|1)$/i.test(
   String((import.meta as ImportMeta & { env?: { VITE_HIDE_RESEARCH_TABS?: string } }).env?.VITE_HIDE_RESEARCH_TABS ?? '').trim(),
 );
+const HIDE_DECISION_CHECK = /^(true|1)$/i.test(
+  String((import.meta as ImportMeta & { env?: { VITE_HIDE_DECISION_CHECK?: string } }).env?.VITE_HIDE_DECISION_CHECK ?? '').trim(),
+);
 // CHAT_AGENT (build-time, Render-flippable): true/1 → the Chat tab's ON-DEVICE paths
 // (Device Agent + browser Session) use the new agentic chat loop; empty/0/false →
 // they use the on-device planner (safe interim). Lets us ship the binary now with the
@@ -1793,6 +1804,12 @@ function chatTabHidden(): boolean {
 }
 function researchTabsVisible(): boolean {
   return !HIDE_RESEARCH_TABS;
+}
+function decisionCheckVisible(): boolean {
+  return !HIDE_DECISION_CHECK;
+}
+function chatDecisionCheckModeActive(): boolean {
+  return decisionCheckVisible() && state.chatDecisionCheckActive;
 }
 function chatTabAiConnected(): boolean {
   if (!CHAT_AI_CONNECTION_GATE_ENABLED) return true;
@@ -2807,6 +2824,11 @@ interface ChatResearchCard {
   items?: ChatResearchListItem[];
 }
 
+interface ChatDecisionCheckCard {
+  prompt: string;
+  review: AgentPlanReviewState;
+}
+
 interface ChatResearchChart {
   kind: 'sparkline' | 'bars';
   label?: string;
@@ -2837,6 +2859,9 @@ interface ChatMessage {
   // Client-only deterministic Research card: compact read-only facts generated from
   // existing chat read tools. Never creates a PreparedAction or approval receipt.
   researchCard?: ChatResearchCard;
+  // One-shot decision planner card from Chat. It runs the same review engine as
+  // New Request/Repeat, but never creates a durable request or wallet action.
+  decisionCheckCard?: ChatDecisionCheckCard;
   // Token usage for this answer (summed across the loop's turns) + web sources the
   // model cited (Anthropic native web_search). Rendered as a subtle footer.
   usage?: ChatUsage;
@@ -3575,6 +3600,7 @@ interface DemoState {
   chatResearchTab: ChatResearchTab;
   chatResearchDraft: ChatResearchDraft | null;
   chatResearchConfirm: ChatResearchConfirmState | null;
+  chatDecisionCheckActive: boolean;
   chatHistoryOpen: boolean;
   // The history session whose × is armed for delete (ephemeral). '' = none armed; set to a
   // session id to show the inline Cancel/Delete confirm in that row. Cleared on menu close.
@@ -4759,6 +4785,7 @@ const state: DemoState = {
   chatResearchTab: 'token',
   chatResearchDraft: null,
   chatResearchConfirm: null,
+  chatDecisionCheckActive: false,
   chatHistoryOpen: false,
   chatDeleteConfirmId: '',
   chatPendingOpen: false,
@@ -10431,7 +10458,7 @@ function renderWorkspace(): void {
   if (onChatTab) {
     const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
     if (input && input !== activeEl) {
-      input.value = chatDraft;
+      input.value = chatActiveDraft();
       chatAutoGrow(input);
     }
   }
@@ -21911,10 +21938,15 @@ function chatPanel(): string {
   // real title shown in the header.
   const loadErrored = Boolean(session?.cloudLoadError);
   const loadingStub = Boolean(session && chatSessionIsCloudStub(session)) && !loadErrored;
-  const transcript = hasMessages
-    ? messages.map((m) => chatMessageHtml(m, displaySessionId)).join('')
-    : loadErrored ? chatLoadErrorState(session!)
-      : loadingStub ? chatLoadingState() : chatEmptyState();
+  const transcript = loadErrored
+    ? chatLoadErrorState(session!)
+    : loadingStub
+      ? chatLoadingState()
+      : chatDecisionCheckModeActive()
+        ? chatDecisionEmptyState()
+        : hasMessages
+          ? messages.map((m) => chatMessageHtml(m, displaySessionId)).join('')
+          : chatEmptyState();
   return `
     <section class="chat-surface" data-layout="chat">
       ${chatHeaderHtml(session)}
@@ -21947,6 +21979,7 @@ function chatHeaderHtml(session: ChatSession | null): string {
       <span class="chat-title">${escapeHtml(activeTitle)}</span>
       <div class="chat-header-actions">
         ${!chatUsesSheet() ? chatResearchButtonHtml('web') : ''}
+        ${!chatUsesSheet() && decisionCheckVisible() ? chatDecisionButtonHtml('web') : ''}
         ${!chatUsesSheet() && pendingCount > 0 ? `
           <div class="chat-pending chat-pending--web${state.chatPendingOpen ? ' open' : ''}" data-chat-pending>
             <button type="button" class="chat-pending-pill" data-chat-pending-toggle aria-haspopup="listbox" aria-expanded="${state.chatPendingOpen ? 'true' : 'false'}">${escapeHtml(t('Pending Approvals'))} <span class="chat-pending-count">${pendingCount}</span></button>
@@ -21984,17 +22017,22 @@ function chatHeaderHtml(session: ChatSession | null): string {
 }
 
 function chatMobileToolStripHtml(session: ChatSession | null): string {
-  if (!chatUsesSheet() || !researchTabsVisible()) return '';
+  if (!chatUsesSheet()) return '';
+  const researchButton = chatResearchButtonHtml('mobile');
+  const decisionButton = decisionCheckVisible() ? chatDecisionButtonHtml('mobile') : '';
   const pendingCount = chatSessionPendingApprovals(session).length;
   const pending = pendingCount > 0 ? `
     <div class="chat-pending chat-pending--mobile chat-pending--top${state.chatPendingOpen ? ' open' : ''}" data-chat-pending>
       <button type="button" class="chat-pending-pill chat-pending-pill--sm" data-chat-pending-toggle aria-haspopup="listbox" aria-expanded="${state.chatPendingOpen ? 'true' : 'false'}"><span class="chat-pending-label">${escapeHtml(t('Pending'))}</span> <span class="chat-pending-count">${pendingCount}</span></button>
       ${state.chatPendingOpen ? chatPendingPanelHtml(session, 'mobile') : ''}
     </div>` : '';
+  if (!researchButton && !pending && !decisionButton) return '';
+  const decisionOnly = !researchButton && decisionButton ? ' chat-mobile-tool-strip--decision-only' : '';
+  const end = decisionButton || pending ? `<div class="chat-mobile-tool-strip-end">${decisionButton}${pending}</div>` : '';
   return `
-    <div class="chat-mobile-tool-strip">
-      ${chatResearchButtonHtml('mobile')}
-      ${pending ? `<div class="chat-mobile-tool-strip-end">${pending}</div>` : ''}
+    <div class="chat-mobile-tool-strip${decisionOnly}">
+      ${researchButton}
+      ${end}
     </div>`;
 }
 
@@ -22006,6 +22044,21 @@ function chatEmptyState(): string {
       <p>${escapeHtml(t('Ask about your wallet, tokens, prices, or risk. When you are ready, ask it to prepare a swap or a payment, then approve and sign here.'))}</p>
       <div class="chat-suggest-grid">
         ${CHAT_SUGGESTED_PROMPTS.map((prompt) => `
+          <button type="button" class="chat-suggest" data-chat-suggest="${escapeHtml(prompt)}">${escapeHtml(t(prompt))}</button>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function chatDecisionEmptyState(): string {
+  return `
+    <div class="chat-empty chat-empty--decision">
+      <div class="chat-empty-mark" aria-hidden="true"></div>
+      <h3>${escapeHtml(t('Agent Decision Planner'))}</h3>
+      <p>${escapeHtml(t('Write a prompt with conditions. The agent researches it and returns an exact APPROVE, DENY, or NEEDS INPUT result.'))}</p>
+      <div class="chat-suggest-grid">
+        ${CHAT_DECISION_SUGGESTED_PROMPTS.map((prompt) => `
           <button type="button" class="chat-suggest" data-chat-suggest="${escapeHtml(prompt)}">${escapeHtml(t(prompt))}</button>
         `).join('')}
       </div>
@@ -22104,6 +22157,7 @@ function chatMessageHtml(msg: ChatMessage, sessionId: string): string {
         ${msg.receiveCard ? `<div class="chat-card">${chatReceiveCardHtml(msg.receiveCard.address)}</div>` : ''}
         ${msg.recurringCardId ? chatRecurringCardLookupHtml(msg.recurringCardId) : ''}
         ${msg.researchCard ? `<div class="chat-card">${chatResearchCardHtml(msg.researchCard)}</div>` : ''}
+        ${msg.decisionCheckCard ? `<div class="chat-card">${chatDecisionCheckCardHtml(msg.decisionCheckCard)}</div>` : ''}
         ${chatMessageFooterHtml(msg)}
         ${chatAssistantActionsHtml(msg, sessionId, isStreaming, isError)}
       </div>
@@ -22202,6 +22256,165 @@ function chatInlineActionHtml(msg: ChatMessage, sessionId: string): string {
     `;
   }
   return '';
+}
+
+function chatDecisionCheckCardHtml(card: ChatDecisionCheckCard): string {
+  const review = card.review;
+  const statusClass = chatDecisionStatusClass(review.status as ChatDecisionStatus);
+  const statusLabel = chatDecisionStatusLabel(review.status as ChatDecisionStatus);
+  const checked = review.checkedAt ? formatDateTime(review.checkedAt) : '';
+  const summary = agentReviewDisplaySummary(review) || agentReviewCompactDecisionText(review, 'Agent decision check completed.');
+  const reason = agentReviewDisplayReason(review);
+  const sections = agentEvidenceSections(review, { actionType: 'manual_review' })
+    .filter((section) => !section.advanced)
+    .slice(0, 4);
+  const reasonRows = chatDecisionReasonRows(review, sections, summary, reason);
+  const evidenceHtml = chatDecisionEvidenceDetailsHtml(sections);
+  const questionsHtml = review.questions?.length ? `
+    <div class="chat-decision-questions">
+      <strong>${escapeHtml(t('Needs input'))}</strong>
+      <ul>${review.questions.slice(0, 3).map((question) => `<li>${escapeHtml(question.prompt)}</li>`).join('')}</ul>
+    </div>` : '';
+  return `
+    <article class="chat-decision-card ${escapeHtml(statusClass)}">
+      <header class="chat-decision-card-head">
+        <div>
+          <span>${escapeHtml(t('Agent Decision Planner'))}</span>
+          <strong class="chat-decision-verdict-pill">${escapeHtml(statusLabel)}</strong>
+        </div>
+        ${checked ? `<em>${escapeHtml(checked)}</em>` : ''}
+      </header>
+      <blockquote class="chat-decision-prompt">
+        <span>${escapeHtml(t('Prompt'))}</span>
+        <p>${escapeHtml(card.prompt)}</p>
+      </blockquote>
+      <p class="chat-decision-summary">${escapeHtml(summary)}</p>
+      ${questionsHtml}
+      <section class="chat-decision-reasons" aria-label="${escapeHtml(t('Pass/fail reasons'))}">
+        <h4>${escapeHtml(t('Pass/fail reasons'))}</h4>
+        <ul>
+          ${reasonRows.map(chatDecisionReasonRowHtml).join('')}
+        </ul>
+      </section>
+      ${evidenceHtml}
+    </article>`;
+}
+
+type ChatDecisionReasonTone = 'pass' | 'fail' | 'warn' | 'info';
+
+function chatDecisionEvidenceToneForStatus(status: AgentPlanReviewStatus): AgentEvidenceTone {
+  if (status === 'approved') return 'good';
+  if (status === 'denied' || status === 'error') return 'fail';
+  if (status === 'needs_input' || status === 'wallet_required' || status === 'checking') return 'warn';
+  return 'neutral';
+}
+
+function chatDecisionReasonTone(tone: AgentEvidenceTone): ChatDecisionReasonTone {
+  if (tone === 'good') return 'pass';
+  if (tone === 'fail') return 'fail';
+  if (tone === 'warn') return 'warn';
+  return 'info';
+}
+
+function chatDecisionReasonChipLabel(tone: ChatDecisionReasonTone): string {
+  switch (tone) {
+    case 'pass':
+      return 'PASS';
+    case 'fail':
+      return 'FAIL';
+    case 'warn':
+      return 'WARN';
+    case 'info':
+    default:
+      return 'INFO';
+  }
+}
+
+function chatDecisionReasonRows(
+  review: AgentPlanReviewState,
+  sections: AgentEvidenceDisplaySection[],
+  summary: string,
+  reason: string,
+): AgentEvidenceDisplayRow[] {
+  const rows: AgentEvidenceDisplayRow[] = [];
+  const seen = new Set<string>();
+  const add = (row: AgentEvidenceDisplayRow): void => {
+    const label = compactSentence(row.label, 72);
+    const value = compactSentence(row.value, 180);
+    if (!label || !value) return;
+    const key = `${label.toLowerCase()}\n${value.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    rows.push({ label, value, tone: row.tone });
+  };
+
+  if (reason && reason !== summary) {
+    add({
+      label: t('Decision reason'),
+      value: reason,
+      tone: chatDecisionEvidenceToneForStatus(review.status),
+    });
+  }
+
+  const evidenceRows = sections
+    .filter((section) => section.id !== 'sources')
+    .flatMap((section) => section.rows)
+    .filter((row) => row.label && row.value);
+  const emphasizedRows = evidenceRows.filter((row) => row.tone !== 'neutral');
+  const neutralRows = evidenceRows.filter((row) => row.tone === 'neutral');
+  for (const row of [...emphasizedRows, ...neutralRows]) {
+    add(row);
+    if (rows.length >= 5) break;
+  }
+
+  if (!rows.length) {
+    add({
+      label: t('Decision result'),
+      value: summary || reason || t('The agent returned a decision for this prompt.'),
+      tone: chatDecisionEvidenceToneForStatus(review.status),
+    });
+  }
+
+  return rows.slice(0, 5);
+}
+
+function chatDecisionReasonRowHtml(row: AgentEvidenceDisplayRow): string {
+  const tone = chatDecisionReasonTone(row.tone);
+  return `
+    <li class="chat-decision-reason-row ${escapeHtml(tone)}">
+      <span class="chat-decision-reason-chip">${escapeHtml(chatDecisionReasonChipLabel(tone))}</span>
+      <span class="chat-decision-reason-copy">
+        <strong>${escapeHtml(row.label)}</strong>
+        <span>${agentEvidenceValueHtml(row)}</span>
+      </span>
+    </li>`;
+}
+
+function chatDecisionEvidenceDetailsHtml(sections: AgentEvidenceDisplaySection[]): string {
+  const rowCount = sections.reduce((sum, section) => sum + section.rows.length, 0);
+  if (!rowCount) return '';
+  return `
+    <details class="chat-decision-evidence-details">
+      <summary>
+        <span>${escapeHtml(t('Evidence checked'))}</span>
+        <em>${escapeHtml(tf('{count} rows', { count: rowCount }))}</em>
+      </summary>
+      <div class="chat-decision-evidence">
+        ${sections.map((section) => `
+          <section class="chat-decision-section ${escapeHtml(section.id)}">
+            <h4>${escapeHtml(section.label)}</h4>
+            <dl>
+              ${section.rows.slice(0, 5).map((row) => `
+                <div class="${escapeHtml(row.tone)}">
+                  <dt>${escapeHtml(row.label)}</dt>
+                  <dd>${agentEvidenceValueHtml(row)}</dd>
+                </div>
+              `).join('')}
+            </dl>
+          </section>
+        `).join('')}
+      </div>
+    </details>`;
 }
 
 function chatResearchToneClass(tone: ChatResearchTone | undefined): string {
@@ -24048,11 +24261,28 @@ function chatResearchButtonHtml(surface: 'web' | 'mobile'): string {
     </div>`;
 }
 
+function chatDecisionButtonHtml(surface: 'web' | 'mobile'): string {
+  if (!decisionCheckVisible()) return '';
+  const active = chatDecisionCheckModeActive();
+  const label = surface === 'mobile' ? t('Decision') : t('Decision Check');
+  const title = t('Agent Decision Planner');
+  return `
+    <div class="chat-decision-trigger-wrap chat-decision-trigger-wrap--${surface}${active ? ' active' : ''}" data-chat-decision-check>
+      <button type="button" class="chat-decision-trigger" data-chat-decision-toggle aria-pressed="${active ? 'true' : 'false'}" aria-label="${escapeHtml(title)}" title="${escapeHtml(title)}">
+        <span class="chat-decision-trigger-icon" aria-hidden="true">✓</span>
+        <span>${escapeHtml(label)}</span>
+      </button>
+    </div>`;
+}
+
 function chatComposerHtml(): string {
+  const sendBlocked = chatDecisionCheckPending || chatSubmitPending;
   const sendButton = chatStreamActive()
     ? `<button type="button" class="chat-send chat-stop" data-chat-stop aria-label="${escapeHtml(t('Stop'))}" title="${escapeHtml(t('Stop'))}">■</button>`
-    : `<button type="submit" class="chat-send" data-chat-send aria-label="${escapeHtml(t('Send'))}">↑</button>`;
-  const textarea = `<textarea class="chat-input" data-chat-input rows="1" placeholder="${escapeHtml(t('Message your agent…'))}" aria-label="${escapeHtml(t('Message your agent'))}"></textarea>`;
+    : `<button type="submit" class="chat-send" data-chat-send aria-label="${escapeHtml(t('Send'))}"${sendBlocked ? ' disabled aria-disabled="true"' : ''}>↑</button>`;
+  const inputPlaceholder = chatDecisionCheckModeActive() ? t('Write a decision prompt…') : t('Message your agent…');
+  const inputLabel = chatDecisionCheckModeActive() ? t('Decision prompt') : t('Message your agent');
+  const textarea = `<textarea class="chat-input" data-chat-input rows="1" placeholder="${escapeHtml(inputPlaceholder)}" aria-label="${escapeHtml(inputLabel)}"></textarea>`;
   const walletActionsBtn = `<button type="button" class="chat-plus-btn" data-chat-plus-toggle aria-haspopup="menu" aria-expanded="${state.chatComposerOpen ? 'true' : 'false'}" aria-label="${escapeHtml(t('Wallet Actions'))}"><span class="chat-plus-icon" aria-hidden="true">+</span><span class="chat-plus-label">${escapeHtml(t('Wallet Actions'))}</span></button>`;
   // Receive is an accessory action (instant, no form), so it rides in the menu header next to
   // the "Wallet Actions" label rather than as an action card. Always shown — clicking it without
@@ -24147,6 +24377,8 @@ let chatStreamMsgId: string | null = null;
 let chatStreamSessionId: string | null = null;
 let chatSubmitPending = false;
 let chatDraft = '';
+let chatDecisionCheckPending = false;
+let chatDecisionDraft = '';
 // The exact draft last produced by the chip builder. If the user edits the
 // textarea so it diverges from this, the chips are stale and get cleared.
 let chatBuilderCompiledDraft = '';
@@ -24203,6 +24435,22 @@ const CHAT_PROPOSAL_KINDS = new Set<PreparedActionKind>(['transfer_sol', 'transf
 
 function chatStreamActive(): boolean {
   return chatStreamAbort !== null;
+}
+
+function chatActiveDraft(): string {
+  return chatDecisionCheckModeActive() ? chatDecisionDraft : chatDraft;
+}
+
+function setChatActiveDraft(value: string): void {
+  if (chatDecisionCheckModeActive()) {
+    chatDecisionDraft = value;
+  } else {
+    chatDraft = value;
+  }
+}
+
+function chatSubmitDraft(): string {
+  return chatActiveDraft();
 }
 
 // Debounced mid-stream checkpoint: persist the partial answer (~every 250ms) so a
@@ -24278,7 +24526,7 @@ function bindChatStreamLifecycle(): void {
 }
 
 function chatSubmitBlocked(): boolean {
-  return chatSubmitPending || chatStreamActive();
+  return chatSubmitPending || chatDecisionCheckPending || chatStreamActive();
 }
 
 function chatApiKeyConfigured(): boolean {
@@ -25581,8 +25829,13 @@ function chatAutoGrow(input: HTMLTextAreaElement): void {
 // reads the still-populated live textarea back into chatDraft and then
 // restoreChatComposerAfterRender() refills the box. Clearing the live element
 // here makes that capture read empty, so the textbox actually clears on send.
-function clearChatComposerDraft(): void {
-  chatDraft = '';
+function clearChatComposerDraft(scope: 'active' | 'all' = 'active'): void {
+  if (scope === 'all') {
+    chatDraft = '';
+    chatDecisionDraft = '';
+  } else {
+    setChatActiveDraft('');
+  }
   resetChatActionBuilder();
   const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
   if (input) {
@@ -25865,6 +26118,12 @@ async function submitChatMessage(text: string): Promise<void> {
   chatForceFocus = !isMobileAppViewport();
 
   try {
+    if (chatDecisionCheckModeActive()) {
+      chatSubmitPending = false;
+      await submitChatDecisionCheck(content);
+      return;
+    }
+
     // NL shortcut: a bare "sign"/"approve" approves the most recent pending card
     // (opens the wallet) instead of messaging the agent. The wallet still prompts.
     const signMatch = /^(?:sign|approve|confirm)(?:\s+it)?(?:\s+(\d+))?\.?$/i.exec(content);
@@ -27816,6 +28075,121 @@ async function runChatResearchAction(actionId: ChatResearchActionId, rawTarget: 
   if (state.activeTab === 'chat') render();
 }
 
+function chatDecisionResultText(review: AgentPlanReviewState): string {
+  const label = chatDecisionStatusLabel(review.status as ChatDecisionStatus);
+  const detail = agentReviewDisplaySummary(review) || agentReviewDisplayReason(review);
+  return detail ? `${label}: ${compactSentence(detail, 220)}` : `${label}.`;
+}
+
+async function submitChatDecisionCheck(content: string): Promise<void> {
+  const now = new Date().toISOString();
+  const session = ensureActiveChatSession();
+  appendChatMessage(session.id, { id: newId('chat-msg'), role: 'user', content, createdAt: now, status: 'done' });
+  chatDecisionDraft = '';
+  state.chatDecisionCheckActive = false;
+  state.chatResearchOpen = false;
+  state.chatResearchDraft = null;
+  state.chatResearchConfirm = null;
+  state.chatComposerOpen = false;
+  chatActionPopoverOpen = false;
+  closeChatActionSheet();
+  chatDecisionCheckPending = true;
+  chatScrollPinned = true;
+  chatForceScrollBottom = true;
+
+  const assistantId = newId('chat-msg');
+  const assistant: ChatMessage = {
+    id: assistantId,
+    role: 'assistant',
+    content: t('Checking this against your conditions...'),
+    createdAt: new Date().toISOString(),
+    status: 'streaming',
+  };
+  appendChatMessage(session.id, assistant);
+  render();
+
+  if (!canRunAgentReview()) {
+    const reason = agentReviewUnavailableReason();
+    assistant.status = 'error';
+    assistant.content = '';
+    assistant.error = reason;
+    chatDecisionCheckPending = false;
+    chatForceScrollBottom = true;
+    saveChatHistoryState();
+    void syncChatSessionToCloud(session.id);
+    if (state.activeTab === 'chat') render();
+    return;
+  }
+
+  const toastId = pushToast('pending', t('Asking agent'), t('Running decision check.'));
+  const plan = buildChatDecisionCheckPlan(content);
+  const record: GeneratedPlanRecord = {
+    id: `chat-decision-${assistantId}`,
+    plan,
+    createdAt: now,
+    updatedAt: now,
+    source: plan.source,
+    templateId: CHAT_DECISION_CHECK_TEMPLATE_ID,
+    templateTitle: plan.templateTitle,
+    prompt: content,
+    walletAddress: state.address,
+    cluster: state.cluster,
+    status: 'draft',
+    workflowSource: activeWorkflowMode() === 'local-bridge' ? 'local-bridge' : activeWorkflowMode() === 'agentic-cloud' ? 'cloud' : 'browser',
+    metadata: toJsonObject({
+      chatDecisionCheck: true,
+      chatSessionId: session.id,
+      chatMessageId: assistantId,
+    }),
+  };
+
+  try {
+    await run('ai', async () => {
+      const reviewPlan = planWithRuntimeTokenLabels(record.plan);
+      const instruction = [
+        agentReviewInstruction(record, reviewPlan),
+        'Chat decision planner mode: treat the user prompt as a one-shot pass/fail policy. Use current research for any condition that is not fully answered by deterministic wallet, token, provider, or connector facts. Return exactly one final result: APPROVE, DENY, or NEEDS INPUT, with reasons tied to the user-supplied conditions.',
+      ].join('\n\n');
+      const appliedPolicyIds = enabledUserAgentPolicies().map((policy) => policy.id);
+      const deterministicFacts = await gatherAgentReviewFacts(record, { instruction });
+      const orchestration = await runAgentReviewWithEvidence(record, reviewPlan, deterministicFacts);
+      const result = normalizeAgentReviewResultForFacts(orchestration.rawResult, reviewPlan, deterministicFacts, { instruction });
+      const review = agentReviewStateFromResult(result, undefined, reviewPlan, appliedPolicyIds, orchestration);
+      review.facts = mergeReviewFacts(deterministicFacts, result.evidence);
+      assistant.status = 'done';
+      assistant.content = chatDecisionResultText(review);
+      assistant.decisionCheckCard = { prompt: content, review };
+      assistant.toolEvidence = [{
+        tool: 'agent_decision_planner',
+        resultSummary: assistant.content.slice(0, MAX_CHAT_TOOL_RESULT_CHARS),
+        at: new Date().toISOString(),
+      }];
+      replaceToast(
+        toastId,
+        review.status === 'approved' ? 'success' : review.status === 'denied' || review.status === 'error' ? 'error' : 'info',
+        review.status === 'approved' ? t('Decision approved') : review.status === 'denied' ? t('Decision denied') : t('Decision check complete'),
+        review.reason,
+      );
+    }, {
+      onError: (message, err) => {
+        const toastMessage = applyAiErrorDiagnostics(err, message);
+        assistant.status = 'error';
+        assistant.content = '';
+        assistant.error = friendlyChatError(toastMessage);
+        replaceToast(toastId, 'error', t('Decision check failed'), assistant.error);
+      },
+    });
+  } finally {
+    chatDecisionCheckPending = false;
+    session.updatedAt = new Date().toISOString();
+    chatScrollPinned = true;
+    chatForceScrollBottom = true;
+    saveChatHistoryState();
+    void syncChatSessionToCloud(session.id);
+    if (state.activeTab === 'chat') render();
+  }
+}
+
 async function tryDeterministicResearchAction(content: string): Promise<boolean> {
   if (!researchTabsVisible()) return false;
   const parsed = parseChatResearchAction(content);
@@ -27965,7 +28339,7 @@ function captureChatComposerSnapshot(): void {
     // Don't re-capture the live value mid-submit: submitChatMessage clears the draft
     // and the box, but a render racing that clear could otherwise restore the
     // just-sent text. Focus/selection/scroll are still captured.
-    if (!chatSubmitPending) chatDraft = input.value;
+    if (!chatSubmitPending && !chatDecisionCheckPending) setChatActiveDraft(input.value);
     chatComposerWasFocused = document.activeElement === input;
     chatComposerSelStart = input.selectionStart ?? input.value.length;
     chatComposerSelEnd = input.selectionEnd ?? input.value.length;
@@ -27978,8 +28352,9 @@ function restoreChatComposerAfterRender(): void {
   if (state.activeTab !== 'chat') return;
   const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
   if (input) {
-    if (chatDraft) {
-      input.value = chatDraft;
+    const draft = chatActiveDraft();
+    if (draft) {
+      input.value = draft;
       chatAutoGrow(input);
     }
     if (chatComposerWasFocused || chatForceFocus) {
@@ -28343,17 +28718,17 @@ function bindChat(): void {
   if (composer) {
     bindOnce(composer, 'submit', (event) => {
       event.preventDefault();
-      void submitChatMessage(chatDraft);
+      void submitChatMessage(chatSubmitDraft());
     });
   }
   if (input) {
     bindOnce(input, 'input', () => {
-      chatDraft = input.value;
+      setChatActiveDraft(input.value);
       chatAutoGrow(input);
       // If the user hand-edits the textarea so it diverges from what the builder
       // compiled, the builder is stale — step aside (freestyle). Fires once.
       // resetChatActionBuilder also closes the desktop popover (clears its open flag).
-      if (state.chatActionBuilder && chatDraft !== chatBuilderCompiledDraft) {
+      if (!chatDecisionCheckModeActive() && state.chatActionBuilder && chatDraft !== chatBuilderCompiledDraft) {
         resetChatActionBuilder();
         render();
       }
@@ -28364,7 +28739,7 @@ function bindChat(): void {
       if (event.isComposing || event.keyCode === 229) return;
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
-        void submitChatMessage(chatDraft);
+        void submitChatMessage(chatSubmitDraft());
       }
     });
     // Track IME composition so render() can defer a full innerHTML rebuild that
@@ -28372,7 +28747,7 @@ function bindChat(): void {
     const endComposition = (): void => {
       if (!chatComposing) return;
       chatComposing = false;
-      chatDraft = input.value;
+      setChatActiveDraft(input.value);
       if (chatRenderDeferredDuringComposition) {
         chatRenderDeferredDuringComposition = false;
         render();
@@ -28391,6 +28766,7 @@ function bindChat(): void {
       // (native) or the consolidated popover (desktop).
       state.chatComposerOpen = !state.chatComposerOpen;
       if (state.chatComposerOpen) {
+        state.chatDecisionCheckActive = false;
         state.chatResearchOpen = false;
         state.chatResearchDraft = null;
         state.chatResearchConfirm = null;
@@ -28835,6 +29211,7 @@ function bindChat(): void {
       event.stopPropagation();
       if (!researchTabsVisible()) return;
       if (chatUsesSheet()) {
+        state.chatDecisionCheckActive = false;
         state.chatResearchOpen = false;
         state.chatResearchDraft = null;
         state.chatResearchConfirm = null;
@@ -28843,6 +29220,7 @@ function bindChat(): void {
       }
       state.chatResearchOpen = !state.chatResearchOpen;
       if (state.chatResearchOpen) {
+        state.chatDecisionCheckActive = false;
         state.chatHistoryOpen = false;
         state.chatPendingOpen = false;
         state.chatPendingSelectedId = null;
@@ -28853,6 +29231,36 @@ function bindChat(): void {
         state.chatResearchConfirm = null;
       }
       render();
+    });
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-decision-toggle]')) {
+    bindOnce(button, 'click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!decisionCheckVisible()) {
+        state.chatDecisionCheckActive = false;
+        return;
+      }
+      if (chatSubmitBlocked()) return;
+      state.chatDecisionCheckActive = !state.chatDecisionCheckActive;
+      if (chatDecisionCheckModeActive()) {
+        state.chatResearchOpen = false;
+        state.chatResearchDraft = null;
+        state.chatResearchConfirm = null;
+        if (state.activeMobileRailSheet === 'chat-research') state.activeMobileRailSheet = null;
+        state.chatHistoryOpen = false;
+        state.chatDeleteConfirmId = '';
+        state.chatPendingOpen = false;
+        state.chatPendingSelectedId = null;
+        state.chatComposerOpen = false;
+        chatActionPopoverOpen = false;
+        state.chatActionPicker = null;
+        closeChatActionSheet();
+        closeChatConnectorSurface(true);
+        closeChatRecurringSurface(true);
+      }
+      render();
+      document.querySelector<HTMLTextAreaElement>('[data-chat-input]')?.focus({ preventScroll: true });
     });
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-research-tab]')) {
@@ -28965,6 +29373,7 @@ function bindChat(): void {
     state.chatPendingOpen = !state.chatPendingOpen;
     if (state.chatPendingOpen) {
       state.chatHistoryOpen = false; // don't stack on the other header/composer menus
+      state.chatDecisionCheckActive = false;
       state.chatResearchOpen = false;
       state.chatResearchDraft = null;
       state.chatResearchConfirm = null;
@@ -29033,6 +29442,7 @@ function bindChat(): void {
     state.chatHistoryOpen = opening;
     state.chatDeleteConfirmId = ''; // never reopen the menu with a stale delete armed
     if (opening) {
+      state.chatDecisionCheckActive = false;
       state.chatResearchOpen = false;
       state.chatResearchDraft = null;
       state.chatResearchConfirm = null;
@@ -29070,7 +29480,8 @@ function bindChat(): void {
       if (!id || state.chat.activeSessionId === id) { render(); return; }
       if (chatStreamActive()) cancelChatStream();
       state.chat.activeSessionId = id;
-      clearChatComposerDraft();
+      state.chatDecisionCheckActive = false;
+      clearChatComposerDraft('all');
       saveChatHistoryState();
       render();
       // Lazily fetch + decompress this session's messages from cloud the first
@@ -29139,10 +29550,11 @@ function bindChat(): void {
     state.chatResearchOpen = false;
     state.chatResearchDraft = null;
     state.chatResearchConfirm = null;
+    state.chatDecisionCheckActive = false;
     // Reuse the active session if it's still empty — don't stack blank "New chat" rows.
     const active = activeChatSession();
     if (active && !chatSessionHasContent(active)) {
-      clearChatComposerDraft();
+      clearChatComposerDraft('all');
       render();
       return;
     }
@@ -29153,13 +29565,14 @@ function bindChat(): void {
       render();
       return;
     }
-    clearChatComposerDraft();
+    clearChatComposerDraft('all');
     createChatSession();
     render();
   });
   bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-clear]'), 'click', () => {
     if (chatStreamActive()) cancelChatStream();
-    clearChatComposerDraft();
+    state.chatDecisionCheckActive = false;
+    clearChatComposerDraft('all');
     state.chatHistoryOpen = false;
     clearAllChatSessions();
     render();
@@ -63796,7 +64209,8 @@ function resetWalletConnection(): void {
   cancelChatStream();
   state.chat = loadChatHistoryState('');
   state.chatInitialized = false;
-  clearChatComposerDraft();
+  state.chatDecisionCheckActive = false;
+  clearChatComposerDraft('all');
   state.capabilities = null;
   state.walletBalance = emptyWalletBalanceViewState();
   clearWalletPathSession();
@@ -73878,6 +74292,17 @@ function normalizeChatResearchCard(input: unknown): ChatResearchCard | undefined
   };
 }
 
+function normalizeChatDecisionCheckCard(input: unknown): ChatDecisionCheckCard | undefined {
+  const card = asRecord(input);
+  if (!card || typeof card.prompt !== 'string') return undefined;
+  const review = parseAgentPlanReviewState(card.review);
+  if (!review) return undefined;
+  return {
+    prompt: card.prompt.slice(0, CHAT_MAX_INPUT_CHARS),
+    review,
+  };
+}
+
 function normalizeChatMessage(raw: unknown): ChatMessage | null {
   if (!raw || typeof raw !== 'object') return null;
   const input = raw as Record<string, unknown>;
@@ -73928,6 +74353,12 @@ function normalizeChatMessage(raw: unknown): ChatMessage | null {
   } else {
     delete (message as { researchCard?: unknown }).researchCard;
   }
+  const decisionCheckCard = normalizeChatDecisionCheckCard(input.decisionCheckCard);
+  if (decisionCheckCard) {
+    message.decisionCheckCard = decisionCheckCard;
+  } else {
+    delete (message as { decisionCheckCard?: unknown }).decisionCheckCard;
+  }
   if (typeof input.error === 'string') message.error = input.error;
   return message;
 }
@@ -73958,7 +74389,7 @@ function normalizeChatSession(raw: unknown, walletAddress: string): ChatSession 
       .filter((m): m is ChatMessage => Boolean(m))
       // Drop empty assistant placeholders (e.g. tab closed mid-stream) so reloads
       // don't show a blank bubble; keep anything carrying a proposal or a card.
-      .filter((m) => !(m.role === 'assistant' && !m.content.trim() && !m.proposal && !m.preparedActionId && !m.researchCard && m.status !== 'error'))
+      .filter((m) => !(m.role === 'assistant' && !m.content.trim() && !m.proposal && !m.preparedActionId && !m.researchCard && !m.decisionCheckCard && m.status !== 'error'))
     : [];
   // Cap per-session messages but always keep any message anchored to a promoted
   // action. Count REAL messages only — a prior synthetic trim marker is stripped
@@ -74948,6 +75379,12 @@ function parseAgentPlanReviewState(value: unknown): AgentPlanReviewState | undef
   const checks = parseAgentReviewChecks(value.checks);
   const conversation = parseAgentAskConversation(value.conversation);
   const localized = normalizeAgentReviewLocalizedCopy(value.localized);
+  const evidenceRequirements = parseAgentEvidenceRequirements(value.evidenceRequirements);
+  const evidenceFacts = parseAgentEvidenceFacts(value.evidenceFacts);
+  const evidenceGate = parseAgentEvidenceGateResult(value.evidenceGate);
+  const decisionContract = parseAgentDecisionContract(value.decisionContract);
+  const auditReceipt = parseAgentDecisionAuditReceipt(value.auditReceipt);
+  const decisionViolations = parseAgentReviewStringArray(value.decisionViolations, 12);
   const appliedUserPolicyIds = Array.isArray(value.appliedUserPolicyIds)
     ? value.appliedUserPolicyIds.filter((entry): entry is string => typeof entry === 'string')
     : undefined;
@@ -74974,8 +75411,225 @@ function parseAgentPlanReviewState(value: unknown): AgentPlanReviewState | undef
     ...(history && { history }),
     ...(facts && { facts }),
     ...(conversation && { conversation }),
+    ...(evidenceRequirements && { evidenceRequirements }),
+    ...(evidenceFacts && { evidenceFacts }),
+    ...(evidenceGate && { evidenceGate }),
+    ...(decisionContract && { decisionContract }),
+    ...(auditReceipt && { auditReceipt }),
+    ...(decisionViolations && { decisionViolations }),
     ...(typeof value.reviewedPlanFingerprint === 'string' && { reviewedPlanFingerprint: value.reviewedPlanFingerprint }),
     ...(appliedUserPolicyIds && appliedUserPolicyIds.length ? { appliedUserPolicyIds } : {}),
+  };
+}
+
+function parseAgentReviewStringArray(value: unknown, limit = 24): string[] | undefined {
+  const entries = parseAgentReviewStringArrayValue(value, limit);
+  return entries && entries.length ? entries : undefined;
+}
+
+function parseAgentReviewStringArrayValue(value: unknown, limit = 24): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value
+    .filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim()))
+    .map((entry) => entry.trim())
+    .slice(0, limit);
+}
+
+function parseAgentEvidenceRequirements(value: unknown): AgentEvidenceRequirement[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const requirements: AgentEvidenceRequirement[] = [];
+  for (const entry of value) {
+    if (!isJsonObject(entry)) continue;
+    const status = entry.status === 'optional' ? 'optional' : entry.status === 'required' ? 'required' : undefined;
+    if (
+      typeof entry.id !== 'string' ||
+      typeof entry.routeId !== 'string' ||
+      typeof entry.need !== 'string' ||
+      typeof entry.provider !== 'string' ||
+      typeof entry.endpoint !== 'string' ||
+      !status ||
+      typeof entry.ttlMs !== 'number' ||
+      !Number.isFinite(entry.ttlMs) ||
+      typeof entry.blocking !== 'boolean' ||
+      typeof entry.reason !== 'string'
+    ) {
+      continue;
+    }
+    requirements.push({
+      id: entry.id,
+      routeId: entry.routeId,
+      need: entry.need as AgentEvidenceRequirement['need'],
+      provider: entry.provider as AgentEvidenceRequirement['provider'],
+      endpoint: entry.endpoint,
+      status,
+      ttlMs: entry.ttlMs,
+      blocking: entry.blocking,
+      reason: entry.reason,
+      ...(typeof entry.connectorProfile === 'string' ? { connectorProfile: entry.connectorProfile as AgentEvidenceRequirement['connectorProfile'] } : {}),
+      ...(typeof entry.connectorId === 'string' ? { connectorId: entry.connectorId } : {}),
+      ...(typeof entry.capability === 'string' ? { capability: entry.capability } : {}),
+    });
+    if (requirements.length >= 64) break;
+  }
+  return requirements.length ? requirements : undefined;
+}
+
+function parseAgentEvidenceFacts(value: unknown): AgentEvidenceFact[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const facts: AgentEvidenceFact[] = [];
+  for (const entry of value) {
+    if (!isJsonObject(entry)) continue;
+    const tone = entry.tone === 'good' || entry.tone === 'neutral' || entry.tone === 'warn' || entry.tone === 'fail'
+      ? entry.tone
+      : undefined;
+    const freshness = entry.freshness === 'fresh' || entry.freshness === 'stale' || entry.freshness === 'missing'
+      ? entry.freshness
+      : undefined;
+    const severity = entry.severity === 'info' || entry.severity === 'warn' || entry.severity === 'block'
+      ? entry.severity
+      : undefined;
+    if (
+      typeof entry.id !== 'string' ||
+      typeof entry.label !== 'string' ||
+      typeof entry.value !== 'string' ||
+      !tone ||
+      typeof entry.source !== 'string' ||
+      typeof entry.checkedAt !== 'string' ||
+      !freshness ||
+      !severity
+    ) {
+      continue;
+    }
+    facts.push({
+      id: entry.id,
+      ...(typeof entry.requirementId === 'string' ? { requirementId: entry.requirementId } : {}),
+      ...(typeof entry.routeId === 'string' ? { routeId: entry.routeId } : {}),
+      label: entry.label,
+      value: entry.value,
+      tone,
+      source: entry.source as AgentEvidenceFact['source'],
+      checkedAt: entry.checkedAt,
+      ...(typeof entry.expiresAt === 'string' ? { expiresAt: entry.expiresAt } : {}),
+      freshness,
+      severity,
+      ...(isJsonObject(entry.detail) ? { detail: entry.detail } : {}),
+      ...(typeof entry.usd === 'number' && Number.isFinite(entry.usd) ? { usd: entry.usd } : {}),
+    });
+    if (facts.length >= 96) break;
+  }
+  return facts.length ? facts : undefined;
+}
+
+function parseAgentEvidenceGateResult(value: unknown): AgentEvidenceGateResult | undefined {
+  if (!isJsonObject(value)) return undefined;
+  if (value.decision !== 'pass' && value.decision !== 'block' && value.decision !== 'needs_input') return undefined;
+  if (typeof value.checkedAt !== 'string' || typeof value.reason !== 'string') return undefined;
+  return {
+    decision: value.decision,
+    checkedAt: value.checkedAt,
+    requirements: parseAgentEvidenceRequirements(value.requirements) ?? [],
+    facts: parseAgentEvidenceFacts(value.facts) ?? [],
+    missingRequired: parseAgentEvidenceRequirements(value.missingRequired) ?? [],
+    staleRequired: parseAgentEvidenceRequirements(value.staleRequired) ?? [],
+    blockingFacts: parseAgentEvidenceFacts(value.blockingFacts) ?? [],
+    warnings: parseAgentEvidenceFacts(value.warnings) ?? [],
+    reason: value.reason,
+  };
+}
+
+function parseAgentDecisionContract(value: unknown): AgentDecisionContract | undefined {
+  if (!isJsonObject(value)) return undefined;
+  if (value.decision !== 'approve' && value.decision !== 'deny' && value.decision !== 'needs_input') return undefined;
+  if (typeof value.reason !== 'string' || typeof value.summary !== 'string') return undefined;
+  const evidenceFactIds = parseAgentReviewStringArrayValue(value.evidenceFactIds, 96);
+  if (!evidenceFactIds) return undefined;
+  const confidence = value.confidence === 'high' || value.confidence === 'medium' || value.confidence === 'low'
+    ? value.confidence
+    : undefined;
+  const confidenceFactors = Array.isArray(value.confidenceFactors)
+    ? value.confidenceFactors.filter(isJsonObject).filter((entry) => (
+      typeof entry.id === 'string' &&
+      typeof entry.label === 'string' &&
+      typeof entry.delta === 'number' &&
+      Number.isFinite(entry.delta)
+    )).slice(0, 12) as unknown as AgentDecisionContract['confidenceFactors']
+    : undefined;
+  const counterfactuals = Array.isArray(value.counterfactuals)
+    ? value.counterfactuals.filter(isJsonObject).slice(0, 12) as unknown as AgentDecisionContract['counterfactuals']
+    : undefined;
+  const missingFactIds = parseAgentReviewStringArray(value.missingFactIds, 96);
+  const blockingFactIds = parseAgentReviewStringArray(value.blockingFactIds, 96);
+  const warnings = parseAgentReviewStringArray(value.warnings, 24);
+  const questions = parseAgentReviewQuestions(value.questions);
+  return {
+    decision: value.decision,
+    ...(confidence ? { confidence } : {}),
+    ...(typeof value.confidenceScore === 'number' && Number.isFinite(value.confidenceScore) ? { confidenceScore: value.confidenceScore } : {}),
+    ...(confidenceFactors?.length ? { confidenceFactors } : {}),
+    ...(counterfactuals?.length ? { counterfactuals } : {}),
+    reason: value.reason,
+    summary: value.summary,
+    evidenceFactIds,
+    ...(missingFactIds ? { missingFactIds } : {}),
+    ...(blockingFactIds ? { blockingFactIds } : {}),
+    ...(warnings ? { warnings } : {}),
+    ...(questions ? { questions } : {}),
+  };
+}
+
+function parseAgentDecisionAuditReceipt(value: unknown): AgentDecisionAuditReceipt | undefined {
+  if (!isJsonObject(value)) return undefined;
+  if (value.schemaVersion !== 1) return undefined;
+  if (value.finalDecision !== 'approve' && value.finalDecision !== 'deny' && value.finalDecision !== 'needs_input') return undefined;
+  if (value.gateDecision !== 'pass' && value.gateDecision !== 'block' && value.gateDecision !== 'needs_input') return undefined;
+  const providerRoutes = parseAgentReviewStringArrayValue(value.providerRoutes, 64);
+  const evidenceFactIds = parseAgentReviewStringArrayValue(value.evidenceFactIds, 96);
+  const blockingFactIds = parseAgentReviewStringArrayValue(value.blockingFactIds, 96);
+  const missingRequirementIds = parseAgentReviewStringArrayValue(value.missingRequirementIds, 96);
+  if (
+    typeof value.receiptId !== 'string' ||
+    typeof value.planFingerprint !== 'string' ||
+    typeof value.walletAddress !== 'string' ||
+    typeof value.cluster !== 'string' ||
+    typeof value.routePlanHash !== 'string' ||
+    typeof value.evidenceHash !== 'string' ||
+    typeof value.aiDecisionHash !== 'string' ||
+    typeof value.checkedAt !== 'string' ||
+    !providerRoutes ||
+    !evidenceFactIds ||
+    !blockingFactIds ||
+    !missingRequirementIds
+  ) {
+    return undefined;
+  }
+  const confidenceBand = value.confidenceBand === 'high' || value.confidenceBand === 'medium' || value.confidenceBand === 'low'
+    ? value.confidenceBand
+    : undefined;
+  return {
+    schemaVersion: 1,
+    receiptId: value.receiptId,
+    planFingerprint: value.planFingerprint,
+    walletAddress: value.walletAddress,
+    cluster: value.cluster,
+    ...(typeof value.connectorId === 'string' ? { connectorId: value.connectorId } : {}),
+    ...(typeof value.connectorProfile === 'string' ? { connectorProfile: value.connectorProfile as AgentDecisionAuditReceipt['connectorProfile'] } : {}),
+    routePlanHash: value.routePlanHash,
+    evidenceHash: value.evidenceHash,
+    aiDecisionHash: value.aiDecisionHash,
+    finalDecision: value.finalDecision,
+    gateDecision: value.gateDecision,
+    checkedAt: value.checkedAt,
+    providerRoutes,
+    evidenceFactIds,
+    blockingFactIds,
+    missingRequirementIds,
+    ...(typeof value.confidenceScore === 'number' && Number.isFinite(value.confidenceScore) ? { confidenceScore: value.confidenceScore } : {}),
+    ...(confidenceBand ? { confidenceBand } : {}),
+    ...(Array.isArray(value.counterfactualSummary)
+      ? { counterfactualSummary: value.counterfactualSummary.filter(isJsonObject).slice(0, 12) as AgentDecisionAuditReceipt['counterfactualSummary'] }
+      : {}),
+    ...(isJsonObject(value.spotPrices) ? { spotPrices: value.spotPrices as AgentDecisionAuditReceipt['spotPrices'] } : {}),
+    ...(typeof value.totalUsdAtRisk === 'number' && Number.isFinite(value.totalUsdAtRisk) ? { totalUsdAtRisk: value.totalUsdAtRisk } : {}),
   };
 }
 

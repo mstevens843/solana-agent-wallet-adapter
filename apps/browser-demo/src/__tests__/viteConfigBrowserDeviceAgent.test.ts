@@ -18,4 +18,11 @@ describe('browser-demo Vite browser Device Agent flag', () => {
   it('does not expose a non-Vite browser Device Agent environment alias to client code', () => {
     expect(viteConfigSource).not.toMatch(/process\.env\.AGENTIC_BROWSER_DEVICE_AGENT\b/);
   });
+
+  it('exposes the staged Chat decision planner hide flag from Render env to client code', () => {
+    expect(viteConfigSource).toContain('process.env.HIDE_DECISION_CHECK');
+    expect(viteConfigSource).toContain(
+      "'import.meta.env.VITE_HIDE_DECISION_CHECK': JSON.stringify(hideDecisionCheck)",
+    );
+  });
 });
