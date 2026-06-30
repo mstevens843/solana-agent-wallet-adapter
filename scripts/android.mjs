@@ -44,6 +44,11 @@ if (command === 'assetlinks:check-live') {
   process.exit(0);
 }
 
+if (command === 'assetlinks:diagnose') {
+  await diagnoseAssetLinks(extraArgs);
+  process.exit(0);
+}
+
 const tasks = {
   build: ['assembleDebug'],
   debug: ['assembleDebug'],
@@ -61,7 +66,7 @@ const tasks = {
 
 if (!Object.hasOwn(tasks, command)) {
   console.error(`[android] Unknown command: ${command}`);
-  console.error('[android] Use one of: build, debug, release, install, test, instrumented-test, fingerprint, assetlinks, assetlinks:write, assetlinks:verify, assetlinks:check-live');
+  console.error('[android] Use one of: build, debug, release, install, test, instrumented-test, fingerprint, assetlinks, assetlinks:write, assetlinks:verify, assetlinks:check-live, assetlinks:diagnose');
   process.exit(1);
 }
 
@@ -376,6 +381,56 @@ async function checkLiveAssetLinks(args) {
   console.log(`[android] Verified live Digital Asset Links for ${appPackage} at ${url}`);
 }
 
+async function diagnoseAssetLinks(args) {
+  const options = parseOptions(args);
+  const appPackage = options.package ?? process.env.AGENTIC_ANDROID_PACKAGE_NAME ?? packageName;
+  const site = normalizeAssetLinksSite(
+    options.site ??
+      process.env.AGENTIC_ANDROID_ASSETLINKS_SITE ??
+      process.env.AGENTIC_ANDROID_LAUNCH_URL ??
+      'https://agentic-signer.com',
+  );
+  const { fingerprints: expectedFingerprints, source: fingerprintSource } = resolveDiagnosticFingerprints(options);
+  const url = `${site}/.well-known/assetlinks.json`;
+
+  let response;
+  let raw;
+  try {
+    response = await fetch(url, { headers: { accept: 'application/json' } });
+    raw = await response.text();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[android] DAL_DIAG fetchFailed=true url=${url} package=${appPackage} message=${JSON.stringify(message)}`);
+    process.exit(1);
+  }
+
+  const contentType = response.headers.get('content-type') ?? '';
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[android] DAL_DIAG parseOk=false url=${url} package=${appPackage} httpStatus=${response.status} contentType=${JSON.stringify(contentType)} bodyChars=${raw.length} message=${JSON.stringify(message)}`);
+    process.exit(1);
+  }
+
+  const inspection = inspectAssetLinksPayload(parsed, appPackage, expectedFingerprints);
+  const ok = response.ok && inspection.fingerprintMatch;
+  console.log(`[android] DAL_DIAG url=${url}`);
+  console.log(`[android] DAL_DIAG package=${appPackage}`);
+  console.log(`[android] DAL_DIAG fingerprintSource=${fingerprintSource}`);
+  console.log(`[android] DAL_DIAG expectedFingerprints=${expectedFingerprints.join(',')}`);
+  console.log(`[android] DAL_DIAG httpStatus=${response.status} contentType=${contentType || '(missing)'} bodyChars=${raw.length}`);
+  console.log(`[android] DAL_DIAG packageEntryFound=${inspection.packageEntryFound} relationFound=${inspection.relationFound} namespaceOk=${inspection.namespaceOk} fingerprintMatch=${inspection.fingerprintMatch}`);
+  console.log(`[android] DAL_DIAG assetlinksFingerprints=${inspection.fingerprints.join(',')}`);
+  console.log(`[android] DAL_DIAG matchedFingerprints=${inspection.matchedFingerprints.join(',')}`);
+  if (!ok) {
+    console.error('[android] DAL_DIAG result=FAIL');
+    process.exit(1);
+  }
+  console.log('[android] DAL_DIAG result=OK');
+}
+
 function verifyAssetLinksPayload(parsed, { appPackage, expectedFingerprints, allowPlaceholder, label }) {
   if (!Array.isArray(parsed)) {
     console.error(`[android] ${label} must be a JSON array.`);
@@ -412,6 +467,46 @@ function verifyAssetLinksPayload(parsed, { appPackage, expectedFingerprints, all
   }
 }
 
+function inspectAssetLinksPayload(parsed, appPackage, expectedFingerprints) {
+  if (!Array.isArray(parsed)) {
+    return {
+      packageEntryFound: false,
+      relationFound: false,
+      namespaceOk: false,
+      fingerprints: [],
+      matchedFingerprints: [],
+      fingerprintMatch: false,
+    };
+  }
+  const normalizedExpected = expectedFingerprints.map((value) => normalizeFingerprint(String(value))).filter(Boolean);
+  let packageEntryFound = false;
+  let relationFound = false;
+  let namespaceOk = false;
+  const fingerprints = [];
+  const matchedFingerprints = [];
+  for (const entry of parsed) {
+    if (entry?.target?.package_name !== appPackage) continue;
+    packageEntryFound = true;
+    relationFound = Array.isArray(entry.relation) && entry.relation.includes('delegate_permission/common.handle_all_urls');
+    namespaceOk = entry.target?.namespace === 'android_app';
+    const entryFingerprints = Array.isArray(entry.target?.sha256_cert_fingerprints)
+      ? entry.target.sha256_cert_fingerprints.map((value) => normalizeFingerprint(String(value))).filter(Boolean)
+      : [];
+    fingerprints.push(...entryFingerprints);
+    matchedFingerprints.push(...entryFingerprints.filter((value) => normalizedExpected.includes(value)));
+  }
+  const uniqueFingerprints = [...new Set(fingerprints)];
+  const uniqueMatched = [...new Set(matchedFingerprints)];
+  return {
+    packageEntryFound,
+    relationFound,
+    namespaceOk,
+    fingerprints: uniqueFingerprints,
+    matchedFingerprints: uniqueMatched,
+    fingerprintMatch: relationFound && namespaceOk && uniqueMatched.length > 0,
+  };
+}
+
 function normalizeAssetLinksSite(value) {
   let url;
   try {
@@ -425,6 +520,32 @@ function normalizeAssetLinksSite(value) {
     process.exit(1);
   }
   return `${url.protocol}//${url.host}`;
+}
+
+function resolveDiagnosticFingerprints(options) {
+  const explicit = optionFingerprints(options);
+  if (explicit.length > 0) {
+    validateFingerprints(explicit, { allowPlaceholder: false });
+    return { fingerprints: explicit, source: 'explicit' };
+  }
+  const fromEnv = process.env.AGENTIC_ANDROID_SHA256_CERT_FINGERPRINTS;
+  if (fromEnv) {
+    const fingerprints = fromEnv
+      .split(/[,\n]/)
+      .map((value) => normalizeFingerprint(value))
+      .filter(Boolean);
+    validateFingerprints(fingerprints, { allowPlaceholder: false });
+    return { fingerprints, source: 'env' };
+  }
+  const config = keystoreConfig(options);
+  return { fingerprints: [readKeystoreFingerprint(config)], source: 'keystore' };
+}
+
+function optionFingerprints(options) {
+  return (options.fingerprints ?? [])
+    .flatMap((value) => String(value).split(/[,\n]/))
+    .map((value) => normalizeFingerprint(value))
+    .filter(Boolean);
 }
 
 function validateFingerprints(fingerprints, { allowPlaceholder }) {
@@ -487,6 +608,22 @@ function parseOptions(args) {
     }
     if (arg === '--site') {
       options.site = args[++index];
+      continue;
+    }
+    if (arg.startsWith('--fingerprint=')) {
+      options.fingerprints = [...(options.fingerprints ?? []), arg.slice('--fingerprint='.length)];
+      continue;
+    }
+    if (arg === '--fingerprint') {
+      options.fingerprints = [...(options.fingerprints ?? []), args[++index]];
+      continue;
+    }
+    if (arg.startsWith('--fingerprints=')) {
+      options.fingerprints = [...(options.fingerprints ?? []), arg.slice('--fingerprints='.length)];
+      continue;
+    }
+    if (arg === '--fingerprints') {
+      options.fingerprints = [...(options.fingerprints ?? []), args[++index]];
       continue;
     }
     if (arg.startsWith('--keystore=')) {

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   AndroidNativeWalletBackend,
+  androidNativePostRestoreRoute,
   resolveAndroidAppSurface,
   restoreLatestAndroidNativeWallet,
 } from '../androidNative.js';
@@ -181,6 +182,81 @@ describe('AndroidNativeWalletBackend cached restore', () => {
     expect(calls).toEqual(['reconnectForPubkey', 'reconnectLatest']);
   });
 
+  it('falls back to latest when an older native bridge rejects provider-scoped restore', async () => {
+    const calls: string[] = [];
+    installAndroidBridge((method, payload) => {
+      calls.push(method);
+      if (method === 'reconnectForPubkey') {
+        expect(payload.pubkey).toBe('Android11111111111111111111111111111111');
+        throw new AndroidBridgeReject(
+          'UNSUPPORTED_METHOD',
+          'Unsupported Android MWA bridge method: reconnectForPubkey',
+        );
+      }
+      if (method === 'reconnectLatest') {
+        return androidStatus({
+          connected: true,
+          address: 'Android11111111111111111111111111111111',
+          authCacheKey: 'mainnet-beta|pkg:app.phantom|Android11111111111111111111111111111111',
+          walletPackage: 'app.phantom',
+          walletType: 20,
+          cachedCount: 1,
+        });
+      }
+      throw new Error(`unexpected Android MWA method ${method}`);
+    });
+
+    await expect(restoreLatestAndroidNativeWallet({
+      cluster: 'mainnet-beta',
+      address: 'Android11111111111111111111111111111111',
+      walletPackage: 'app.phantom',
+      walletType: 20,
+    })).resolves.toMatchObject({
+      address: 'Android11111111111111111111111111111111',
+      authCacheKey: 'mainnet-beta|pkg:app.phantom|Android11111111111111111111111111111111',
+      cacheCount: 1,
+    });
+    expect(calls).toEqual(['reconnectForPubkey', 'reconnectLatest']);
+  });
+
+  it('falls back through unsupported exact and provider methods before latest restore', async () => {
+    const calls: string[] = [];
+    installAndroidBridge((method) => {
+      calls.push(method);
+      if (method === 'reconnectSession' || method === 'reconnectForPubkey') {
+        throw new AndroidBridgeReject(
+          'UNSUPPORTED_METHOD',
+          `Unsupported Android MWA bridge method: ${method}`,
+        );
+      }
+      if (method === 'reconnectLatest') {
+        return androidStatus({
+          connected: true,
+          address: 'Android55555555555555555555555555555555',
+          authCacheKey: 'mainnet-beta|pkg:ag.jup.jupiter.android|Android55555555555555555555555555555555',
+          walletPackage: 'ag.jup.jupiter.android',
+          walletType: 40,
+          cachedCount: 1,
+        });
+      }
+      throw new Error(`unexpected Android MWA method ${method}`);
+    });
+
+    await expect(restoreLatestAndroidNativeWallet({
+      cluster: 'mainnet-beta',
+      address: 'Android55555555555555555555555555555555',
+      authCacheKey: 'mainnet-beta|pkg:ag.jup.jupiter.android|Android55555555555555555555555555555555',
+      walletPackage: 'ag.jup.jupiter.android',
+      walletType: 40,
+    })).resolves.toMatchObject({
+      address: 'Android55555555555555555555555555555555',
+      walletName: 'Jupiter',
+      authCacheKey: 'mainnet-beta|pkg:ag.jup.jupiter.android|Android55555555555555555555555555555555',
+      cacheCount: 1,
+    });
+    expect(calls).toEqual(['reconnectSession', 'reconnectForPubkey', 'reconnectLatest']);
+  });
+
   it('lets native latest cache repair stale live-origin web session identity', async () => {
     const calls: string[] = [];
     installAndroidBridge((method) => {
@@ -296,6 +372,25 @@ describe('AndroidNativeWalletBackend cached restore', () => {
   });
 });
 
+describe('Android cached restore routing', () => {
+  it('sends successful Android cached restores from demo to app', () => {
+    expect(androidNativePostRestoreRoute('/demo')).toBe('/app');
+    expect(androidNativePostRestoreRoute('/app')).toBeNull();
+    expect(androidNativePostRestoreRoute('/docs')).toBeNull();
+    expect(androidNativePostRestoreRoute(null)).toBeNull();
+  });
+});
+
+class AndroidBridgeReject extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = 'AndroidBridgeReject';
+    this.code = code;
+  }
+}
+
 function installAndroidBridge(handler: (method: string, payload: Record<string, unknown>) => unknown): void {
   const testWindow = installAndroidTestWindow();
   vi.stubGlobal('AgenticAndroid', {
@@ -306,7 +401,7 @@ function installAndroidBridge(handler: (method: string, payload: Record<string, 
         testWindow.__agenticAndroidMwaBridge?.resolve(requestId, result);
       } catch (err) {
         testWindow.__agenticAndroidMwaBridge?.reject(requestId, {
-          code: 'TEST_ERROR',
+          code: err instanceof AndroidBridgeReject ? err.code : 'TEST_ERROR',
           message: err instanceof Error ? err.message : String(err),
         });
       }

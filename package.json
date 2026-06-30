@@ -26,6 +26,7 @@
     "android:assetlinks:write": "node scripts/android.mjs assetlinks:write",
     "android:assetlinks:verify": "node scripts/android.mjs assetlinks:verify",
     "android:assetlinks:check-live": "node scripts/android.mjs assetlinks:check-live",
+    "android:assetlinks:diagnose": "node scripts/android.mjs assetlinks:diagnose",
     "android:test": "node scripts/android.mjs test",
     "android:instrumented-test": "node scripts/android.mjs instrumented-test",
     "ios:mode": "node scripts/ios.mjs mode",

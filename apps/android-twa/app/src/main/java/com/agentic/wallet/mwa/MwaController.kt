@@ -453,7 +453,8 @@ class MwaController(
                 "path" to path,
                 "hadActiveRecord" to (activeRecord != null),
                 "cachedAuthToken" to (cachedReference?.authToken?.isNotBlank() == true),
-            ),
+            ) + MwaIdentityPreflight.installedPackageMetadata(context, "targetWallet", resolvedTargetWalletPackage) +
+                MwaIdentityPreflight.backpackFamilyMetadata(context),
         )
         val adapter = newAdapter(cluster, cachedReference)
         when (val result = adapter.connect(sender)) {
@@ -2167,6 +2168,7 @@ class MwaController(
         val code = when {
             crashed -> "WALLET_CRASHED"
             cls == "CancellationException" && message.isBlank() -> "WALLET_CRASHED"
+            lower.contains("-1/authorization request failed") || lower == "authorization request failed" -> "WALLET_IDENTITY_VERIFICATION_LIKELY"
             lower.contains("auth_token") || lower.contains("auth token") || lower.contains("not authorized") || lower.contains("reauthorize") -> "WALLET_AUTH_MISMATCH"
             lower.contains("user rejected") || lower.contains("declined") || lower.contains("cancelled") || lower.contains("canceled") -> "USER_REJECTED"
             lower.contains("timeout") || lower.contains("timed out") -> "WALLET_HUNG"
@@ -2178,6 +2180,7 @@ class MwaController(
         }
         val resolvedMessage = when {
             crashed -> "Wallet crashed mid-request. Try another wallet (Backpack, Phantom, or Jupiter)."
+            code == "WALLET_IDENTITY_VERIFICATION_LIKELY" -> "Wallet authorization failed before approval; identity verification is likely. Check identityUri Digital Asset Links for this app package and signing certificate."
             message.isNotBlank() -> message
             err != null -> "${err.javaClass.simpleName} (no message)"
             else -> "Wallet operation failed."

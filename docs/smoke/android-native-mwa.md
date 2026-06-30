@@ -52,6 +52,22 @@ Every user action and bridge approval should emit deterministic redacted lines:
 [AgentAndroidMWA] [Component] method | START/STEP/SUCCESS/FAIL key=value
 ```
 
+Fresh `connect` attempts also emit an identity preflight before the wallet opens:
+
+```text
+[AgentAndroidMWA] [MwaIdentityPreflight] logBeforeConnect | START ...
+[AgentAndroidMWA] [MwaIdentityPreflight] logBeforeConnect | SUCCESS/WARN_VERIFICATION ...
+```
+
+For Backpack identity failures, capture the preflight result plus the wallet-side line if present:
+
+```text
+SolanaMobileDigitalAssetLinksModule: Package verification failed ...
+```
+
+The dApp-side failure classifier should report `WALLET_IDENTITY_VERIFICATION_LIKELY` when the
+wallet returns the generic `-1/authorization request failed` shape.
+
 The first launch should include the native marker:
 
 ```text
@@ -60,3 +76,10 @@ message="native activity launched" mode="app_native" webFallbackEnabled="false"
 
 It should not emit `TwaLauncher` or start `WebLaunchActivity` unless the APK was built with
 `AGENTIC_ANDROID_ENABLE_WEB_FALLBACK=true`.
+
+To verify a release or dApp Store APK certificate against the live Digital Asset Links endpoint without relying on the
+local debug keystore, pass the exact signing certificate fingerprint:
+
+```sh
+pnpm android:assetlinks:diagnose --site https://agentic-signer.com --package com.agentic.wallet --fingerprint "AA:BB:..."
+```

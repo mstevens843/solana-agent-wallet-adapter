@@ -50,6 +50,7 @@ import com.agentic.wallet.mwa.AgentMwaBridgeRequest
 import com.agentic.wallet.mwa.AgentMwaIdentity
 import com.agentic.wallet.mwa.AgentMwaLog
 import com.agentic.wallet.mwa.AgentMwaSigningResult
+import com.agentic.wallet.mwa.MwaIdentityPreflight
 import com.agentic.wallet.mwa.MwaController
 import com.agentic.wallet.mwa.MwaOperationException
 import com.agentic.wallet.mwa.WalletRegistry
@@ -2051,7 +2052,7 @@ class MainActivity : FragmentActivity() {
                         "android js bridge request payload parsed",
                         mapOf("method" to method, "requestId" to requestId, "payload" to if (BuildConfig.DEBUG) activity.mwaJsonLogSummary(payload) else "[debug-only]"),
                     )
-                    val result = handleMwaRequest(method, payload)
+                    val result = handleMwaRequest(requestId, method, payload)
                     AgentMwaLog.info(
                         "MainActivity",
                         "mwaRequest",
@@ -2121,19 +2122,29 @@ class MainActivity : FragmentActivity() {
             }
         }
 
-        private suspend fun handleMwaRequest(method: String, payload: JSONObject): JSONObject {
+        private suspend fun handleMwaRequest(requestId: String, method: String, payload: JSONObject): JSONObject {
             AgentMwaLog.info(
                 "MainActivity",
                 "handleMwaRequest",
                 "START",
                 "handling Android MWA bridge method",
-                mapOf("method" to method, "payload" to if (BuildConfig.DEBUG) activity.mwaJsonLogSummary(payload) else "[debug-only]"),
+                mapOf("method" to method, "requestId" to requestId, "payload" to if (BuildConfig.DEBUG) activity.mwaJsonLogSummary(payload) else "[debug-only]"),
             )
             return when (method) {
                 "status" -> statusJson()
                 "connect" -> {
                     val walletPackage = payload.optString("walletPackage", "")
-                    val record = activity.mwaController.connect(activity.activityResultSender, clusterFromPayload(payload), walletPackage)
+                    val cluster = clusterFromPayload(payload)
+                    val resolvedWalletPackage = MwaIdentityPreflight.resolveBackpackTargetPackage(activity.applicationContext, walletPackage)
+                    MwaIdentityPreflight.logBeforeConnect(
+                        context = activity.applicationContext,
+                        identity = activity.defaultMwaIdentity(),
+                        requestId = requestId,
+                        cluster = cluster,
+                        targetWalletPackage = walletPackage,
+                        resolvedTargetWalletPackage = resolvedWalletPackage,
+                    )
+                    val record = activity.mwaController.connect(activity.activityResultSender, cluster, walletPackage)
                     statusJson(record)
                 }
                 "reconnectLatest" -> {

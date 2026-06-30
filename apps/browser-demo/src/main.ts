@@ -309,8 +309,10 @@ import {
   AndroidNativeWalletBackend,
   androidNativeCacheSummary,
   androidNativeCloudSessionToken,
+  androidNativePostRestoreRoute,
   clearAndroidNativeCloudSessionToken,
   detectAndroidNativeEnvironment,
+  isUnsupportedAndroidNativeBridgeMethodError,
   resolveAndroidAppSurface,
   restoreLatestAndroidNativeWallet,
   setAndroidNativeCloudSessionToken,
@@ -5864,6 +5866,7 @@ async function bootstrap(): Promise<void> {
         selectedWalletName: state.selectedWalletName,
         cacheCount: state.androidAuthCacheCount,
       });
+      routeAndroidNativeAfterCachedRestore();
     }
   }
   state.tauriNativeEnvironment = detectTauriNativeEnvironment();
@@ -63360,15 +63363,42 @@ async function reconnectAndroidNativeSavedSession(
   session: WalletPathSession,
 ): Promise<string | null> {
   if (session.androidAuthCacheKey?.trim()) {
-    return backend.reconnectSession(session.androidAuthCacheKey, session.address);
+    try {
+      return await backend.reconnectSession(session.androidAuthCacheKey, session.address);
+    } catch (err) {
+      if (!isUnsupportedAndroidNativeBridgeMethodError(err, 'reconnectSession')) throw err;
+      logAndroidNativeRestore('WEB_RECONNECT_SAVED_SESSION_UNSUPPORTED', 'FAIL', {
+        method: 'reconnectSession',
+        reason: 'native_bridge_unsupported_method',
+        address: session.address,
+        hasAuthCacheKey: true,
+        walletPackage: androidWalletPackageForSession(session) ?? '',
+        walletType: androidWalletTypeForSession(session) ?? '',
+        webBuildCommit: __AGENTIC_BROWSER_BUILD_COMMIT__ || 'unknown',
+      });
+    }
   }
   const walletPackage = androidWalletPackageForSession(session);
   const walletType = androidWalletTypeForSession(session);
   if (!walletPackage && typeof walletType !== 'number') return null;
-  return backend.reconnectForPubkey(session.address, {
-    ...(walletPackage ? { walletPackage } : {}),
-    ...(typeof walletType === 'number' ? { walletType } : {}),
-  });
+  try {
+    return await backend.reconnectForPubkey(session.address, {
+      ...(walletPackage ? { walletPackage } : {}),
+      ...(typeof walletType === 'number' ? { walletType } : {}),
+    });
+  } catch (err) {
+    if (!isUnsupportedAndroidNativeBridgeMethodError(err, 'reconnectForPubkey')) throw err;
+    logAndroidNativeRestore('WEB_RECONNECT_SAVED_SESSION_UNSUPPORTED', 'FAIL', {
+      method: 'reconnectForPubkey',
+      reason: 'native_bridge_unsupported_method',
+      address: session.address,
+      hasAuthCacheKey: Boolean(session.androidAuthCacheKey),
+      walletPackage: walletPackage ?? '',
+      walletType: typeof walletType === 'number' ? walletType : '',
+      webBuildCommit: __AGENTIC_BROWSER_BUILD_COMMIT__ || 'unknown',
+    });
+    return null;
+  }
 }
 
 function androidWalletPackageForSession(session: WalletPathSession): string | undefined {
@@ -63470,6 +63500,21 @@ async function restoreAndroidNativeSession(): Promise<boolean> {
   });
   await applyAndroidNativeRestore(restored);
   return true;
+}
+
+function routeAndroidNativeAfterCachedRestore(): void {
+  const route = currentRoute();
+  const nextRoute = androidNativePostRestoreRoute(route);
+  if (!nextRoute) return;
+  logAndroidNativeRestore('WEB_RESTORE_ROUTE_TO_APP', 'SUCCESS', {
+    fromRoute: route,
+    toRoute: nextRoute,
+    address: state.address,
+    selectedWalletName: state.selectedWalletName,
+    cacheCount: state.androidAuthCacheCount,
+    webBuildCommit: __AGENTIC_BROWSER_BUILD_COMMIT__ || 'unknown',
+  });
+  navigateTo(nextRoute);
 }
 
 async function refreshAndroidNativeCacheState(): Promise<void> {

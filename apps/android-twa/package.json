@@ -13,6 +13,7 @@
     "assetlinks": "node ../../scripts/android.mjs assetlinks",
     "assetlinks:write": "node ../../scripts/android.mjs assetlinks:write",
     "assetlinks:verify": "node ../../scripts/android.mjs assetlinks:verify",
-    "assetlinks:check-live": "node ../../scripts/android.mjs assetlinks:check-live"
+    "assetlinks:check-live": "node ../../scripts/android.mjs assetlinks:check-live",
+    "assetlinks:diagnose": "node ../../scripts/android.mjs assetlinks:diagnose"
   }
 }

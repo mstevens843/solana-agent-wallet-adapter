@@ -11,6 +11,8 @@ import {
   type WalletBackend,
 } from '@solana-agent-wallet-adapter/core';
 
+declare const __AGENTIC_BROWSER_BUILD_COMMIT__: string | undefined;
+
 import {
   androidWalletDisplayNameFromStatus,
   walletLogoIdFromAndroidStatus,
@@ -150,6 +152,18 @@ export function resolveAndroidAppSurface(): boolean {
   return Boolean(androidNativeBridge());
 }
 
+export function androidNativePostRestoreRoute(route: string | null | undefined): '/app' | null {
+  return route === '/demo' ? '/app' : null;
+}
+
+export function isUnsupportedAndroidNativeBridgeMethodError(err: unknown, method?: string): boolean {
+  const code = normalizedAndroidNativeErrorCode(err);
+  if (code !== 'unsupported_method') return false;
+  if (!method) return true;
+  const message = androidNativeErrorMessage(err);
+  return !message || message.includes(method) || message.includes('Unsupported Android MWA bridge method');
+}
+
 export async function androidNativeCacheSummary(): Promise<{ count: number }> {
   const status = await androidNativeRequest<AndroidMwaStatus>('status');
   return { count: status.cachedCount };
@@ -237,6 +251,7 @@ export async function restoreLatestAndroidNativeWallet(
   let restoredAddress: string | null = null;
   let restoredMethod: AndroidNativeRestoreMethod = 'reconnectLatest';
   for (const [index, attempt] of attempts.entries()) {
+    const nextAttempt = attempts[index + 1];
     logAndroidNative('WEB_RESTORE_NATIVE_CALL', 'START', {
       method: attempt.method,
       reason: attempt.reason,
@@ -249,7 +264,28 @@ export async function restoreLatestAndroidNativeWallet(
       walletPackage: expectedWalletPackage ?? '',
       walletType: typeof expectedWalletType === 'number' ? expectedWalletType : '',
     });
-    const address = await attempt.run();
+    let address: string | null = null;
+    try {
+      address = await attempt.run();
+    } catch (err) {
+      restoredMethod = attempt.method;
+      if (isUnsupportedAndroidNativeBridgeMethodError(err, attempt.method)) {
+        logAndroidNative('WEB_RESTORE_ATTEMPT_UNSUPPORTED', 'FAIL', {
+          method: attempt.method,
+          reason: 'native_bridge_unsupported_method',
+          attempt: index + 1,
+          attempts: attempts.length,
+          cluster: options.cluster,
+          code: normalizedAndroidNativeErrorCode(err),
+          message: androidNativeErrorMessage(err),
+          willFallback: Boolean(nextAttempt),
+          webBuildCommit: androidWebBuildCommit(),
+        }, 'warn');
+        logAndroidRestoreFallback(attempt, nextAttempt, 'unsupported_method', index, attempts.length, options.cluster, backend.cacheCount());
+        continue;
+      }
+      throw err;
+    }
     restoredMethod = attempt.method;
     if (!address) {
       logAndroidNative('WEB_RESTORE_RESULT', 'FAIL', {
@@ -260,6 +296,7 @@ export async function restoreLatestAndroidNativeWallet(
         cacheCount: backend.cacheCount(),
         willFallback: index < attempts.length - 1,
       }, 'warn');
+      logAndroidRestoreFallback(attempt, nextAttempt, 'no_address', index, attempts.length, options.cluster, backend.cacheCount());
       continue;
     }
     if (attempt.method !== 'reconnectLatest' && attempt.expectedAddress && address !== attempt.expectedAddress) {
@@ -273,6 +310,7 @@ export async function restoreLatestAndroidNativeWallet(
         cacheCount: backend.cacheCount(),
         willFallback: index < attempts.length - 1,
       }, 'warn');
+      logAndroidRestoreFallback(attempt, nextAttempt, 'expected_address_mismatch', index, attempts.length, options.cluster, backend.cacheCount());
       continue;
     }
     if (attempt.method === 'reconnectLatest' && attempt.expectedAddress && address !== attempt.expectedAddress) {
@@ -331,6 +369,29 @@ interface AndroidNativeRestoreAttempt {
   reason: 'web_session_key' | 'web_session_provider' | 'native_latest_fallback' | 'native_latest';
   expectedAddress?: string;
   run: () => Promise<string | null>;
+}
+
+function logAndroidRestoreFallback(
+  attempt: AndroidNativeRestoreAttempt,
+  nextAttempt: AndroidNativeRestoreAttempt | undefined,
+  reason: string,
+  index: number,
+  attempts: number,
+  cluster: Cluster,
+  cacheCount: number,
+): void {
+  if (!nextAttempt) return;
+  logAndroidNative('WEB_RESTORE_FALLBACK', 'START', {
+    fromMethod: attempt.method,
+    toMethod: nextAttempt.method,
+    reason,
+    attempt: index + 1,
+    nextAttempt: index + 2,
+    attempts,
+    cluster,
+    cacheCount,
+    webBuildCommit: androidWebBuildCommit(),
+  });
 }
 
 export class AndroidNativeWalletBackend implements WalletBackend {
@@ -968,6 +1029,30 @@ function protocolErrorFromUnknown(err: unknown): ProtocolError {
 
 function protocolErrorFromNative(error: NativeMwaError): ProtocolError {
   return new ProtocolError(nativeErrorCode(error.code), error.message || 'Android native MWA request failed.');
+}
+
+function normalizedAndroidNativeErrorCode(err: unknown): ErrorCode | '' {
+  if (err instanceof ProtocolError) return err.code;
+  if (isNativeMwaError(err)) return nativeErrorCode(err.code);
+  if (isProtocolPayload(err)) return err.code;
+  return '';
+}
+
+function androidNativeErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (isProtocolPayload(err)) return err.message;
+  if (isNativeMwaError(err)) return err.message ?? '';
+  return String(err ?? '');
+}
+
+function androidWebBuildCommit(): string {
+  try {
+    return typeof __AGENTIC_BROWSER_BUILD_COMMIT__ === 'string' && __AGENTIC_BROWSER_BUILD_COMMIT__
+      ? __AGENTIC_BROWSER_BUILD_COMMIT__
+      : 'unknown';
+  } catch {
+    return 'unknown';
+  }
 }
 
 function nativeErrorCode(code?: string): ErrorCode {
