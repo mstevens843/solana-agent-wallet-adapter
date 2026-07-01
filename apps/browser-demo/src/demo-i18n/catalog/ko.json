@@ -5604,6 +5604,17 @@
     "Credential saved; no wallet signature was requested.": "Credential saved; no wallet signature was requested.",
     "Tap to enable": "Tap to enable",
     "Access code": "Access code",
-    "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction.": "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction."
+    "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction.": "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction.",
+    "Build a wallet action to check, then send…": "점검할 지갑 작업을 만든 후 전송하세요…",
+    "Checking this action against your conditions...": "이 작업을 조건과 대조해 점검 중...",
+    "Conditions passed. Review and sign this action below.": "조건을 통과했습니다. 아래에서 이 작업을 검토하고 서명하세요.",
+    "Decision prompt": "결정 프롬프트",
+    "Got your conditions. Now build the wallet action you want me to decision-check - tap + Wallet Actions, fill it out, then send it.": "조건을 확인했습니다. 이제 제가 결정 점검할 지갑 작업을 만드세요 - + 지갑 작업을 탭하고 입력한 뒤 전송하세요.",
+    "Recurring: {what}": "반복: {what}",
+    "That is not a wallet action yet. Tap + Wallet Actions to build a Swap, Send, or Sign, then send it to check.": "아직 지갑 작업이 아닙니다. + 지갑 작업을 탭해 스왑, 전송 또는 서명을 만든 뒤 전송해 점검하세요.",
+    "Wallet action to check": "점검할 지갑 작업",
+    "Wallet action": "지갑 작업",
+    "Write a decision prompt…": "결정 프롬프트를 작성하세요…",
+    "Write your conditions, then build a wallet action to check. The agent researches it and returns an exact APPROVE, DENY, or NEEDS INPUT verdict - and lets you sign on approve.": "조건을 작성한 뒤 점검할 지갑 작업을 만드세요. 에이전트가 이를 조사해 정확한 APPROVE, DENY 또는 NEEDS INPUT 판정을 반환하며 - 승인 시 서명할 수 있게 해줍니다."
   }
 }

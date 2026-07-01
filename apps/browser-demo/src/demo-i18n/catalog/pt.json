@@ -5604,6 +5604,17 @@
     "Credential saved; no wallet signature was requested.": "Credential saved; no wallet signature was requested.",
     "Tap to enable": "Tap to enable",
     "Access code": "Access code",
-    "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction.": "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction."
+    "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction.": "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction.",
+    "Build a wallet action to check, then send…": "Monte uma ação da carteira para verificar, depois envie…",
+    "Checking this action against your conditions...": "Verificando esta ação com base nas suas condições...",
+    "Conditions passed. Review and sign this action below.": "Condições atendidas. Revise e assine esta ação abaixo.",
+    "Decision prompt": "Prompt de decisão",
+    "Got your conditions. Now build the wallet action you want me to decision-check - tap + Wallet Actions, fill it out, then send it.": "Recebi suas condições. Agora monte a ação da carteira que você quer submeter à checagem de decisão - toque em + Ações da carteira, preencha e envie.",
+    "Recurring: {what}": "Recorrente: {what}",
+    "That is not a wallet action yet. Tap + Wallet Actions to build a Swap, Send, or Sign, then send it to check.": "Isso ainda não é uma ação da carteira. Toque em + Ações da carteira para montar uma ação de Trocar, Enviar ou Assinar e envie para verificar.",
+    "Wallet action to check": "Ação da carteira para verificar",
+    "Wallet action": "Ação da carteira",
+    "Write a decision prompt…": "Escreva um prompt de decisão…",
+    "Write your conditions, then build a wallet action to check. The agent researches it and returns an exact APPROVE, DENY, or NEEDS INPUT verdict - and lets you sign on approve.": "Escreva suas condições e monte uma ação da carteira para verificar. O agente pesquisa e retorna um veredito exato de APPROVE, DENY ou NEEDS INPUT - e permite que você assine em caso de aprovação."
   }
 }

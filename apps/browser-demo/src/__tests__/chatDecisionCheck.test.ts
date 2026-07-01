@@ -28,6 +28,36 @@ describe('chat decision check', () => {
     expect(plan.safeguards.join(' ').toLowerCase()).toContain('do not create');
   });
 
+  it('embeds a concrete wallet action into the plan so the fact router evaluates the real token', () => {
+    const prompt = 'Approve only if the output token has mint and freeze authority disabled.';
+    const plan = buildChatDecisionCheckPlan(prompt, {
+      kind: 'swap',
+      summary: 'Swap 1 SOL to POPCAT',
+      parameters: {
+        inputMint: 'So11111111111111111111111111111111111111112',
+        outputMint: '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr',
+        amount: '1',
+      },
+    });
+
+    expect(plan.actionType).toBe('manual_review');
+    expect(plan.parameters).toMatchObject({
+      mode: 'chat_decision_check',
+      decisionMode: 'pass_fail',
+      policy: prompt,
+      walletActionKind: 'swap',
+      walletAction: 'Swap 1 SOL to POPCAT',
+      // planMints() scans these keys, so token safety/price/age is fetched for the REAL output token.
+      inputMint: 'So11111111111111111111111111111111111111112',
+      outputMint: '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr',
+      amount: '1',
+    });
+    // The instruction/approval must make clear it's approving THIS action, and only APPROVE is signable.
+    expect(plan.fields.map((f) => f.label)).toContain('Wallet action');
+    expect(plan.approval.toLowerCase()).toContain('approve');
+    expect(plan.safeguards.join(' ').toLowerCase()).toContain('attached wallet action');
+  });
+
   it('ships four concise example prompts that cover market, payment, nft, and token safety checks', () => {
     expect(CHAT_DECISION_SUGGESTED_PROMPTS).toHaveLength(4);
     expect(CHAT_DECISION_SUGGESTED_PROMPTS.join('\n')).toContain('POPCAT');

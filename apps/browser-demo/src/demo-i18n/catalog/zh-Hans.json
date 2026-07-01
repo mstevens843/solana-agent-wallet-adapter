@@ -5604,6 +5604,17 @@
     "Credential saved; no wallet signature was requested.": "Credential saved; no wallet signature was requested.",
     "Tap to enable": "Tap to enable",
     "Access code": "Access code",
-    "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction.": "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction."
+    "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction.": "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction.",
+    "Build a wallet action to check, then send…": "构建要检查的钱包操作，然后发送…",
+    "Checking this action against your conditions...": "正在根据你的条件检查此操作...",
+    "Conditions passed. Review and sign this action below.": "条件已通过。请在下方查看并签名此操作。",
+    "Decision prompt": "决策提示词",
+    "Got your conditions. Now build the wallet action you want me to decision-check - tap + Wallet Actions, fill it out, then send it.": "已收到你的条件。现在构建你想让我进行决策检查的钱包操作——点击 + 钱包操作，填写后发送。",
+    "Recurring: {what}": "定期：{what}",
+    "That is not a wallet action yet. Tap + Wallet Actions to build a Swap, Send, or Sign, then send it to check.": "这还不是钱包操作。点击 + 钱包操作来构建兑换、发送或签名，然后发送以进行检查。",
+    "Wallet action to check": "要检查的钱包操作",
+    "Wallet action": "钱包操作",
+    "Write a decision prompt…": "编写决策提示词…",
+    "Write your conditions, then build a wallet action to check. The agent researches it and returns an exact APPROVE, DENY, or NEEDS INPUT verdict - and lets you sign on approve.": "写下你的条件，然后构建要检查的钱包操作。智能体会进行研究，并返回明确的 APPROVE、DENY 或 NEEDS INPUT 结论——并让你在 APPROVE 时签名。"
   }
 }

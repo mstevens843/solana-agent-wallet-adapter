@@ -83,7 +83,11 @@ describe('chat decision planner surface', () => {
 
   it('keeps decision mode as a reversible overlay instead of clearing wallet action builder state', () => {
     const toggle = sourceBetween("for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-decision-toggle]'))", "for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-research-tab]'))");
-    expect(toggle).toContain('state.chatDecisionCheckActive = !state.chatDecisionCheckActive');
+    // The toggle is a single on/off for the whole 2-step flow: lit while typing conditions OR armed,
+    // a tap cancels (clearChatDecisionFlow), otherwise it starts step 1.
+    expect(toggle).toContain('chatDecisionFlowActive()');
+    expect(toggle).toContain('clearChatDecisionFlow()');
+    expect(toggle).toContain('state.chatDecisionCheckActive = true');
     expect(toggle).toContain('closeChatActionSheet()');
     expect(toggle).not.toContain('resetChatActionBuilder()');
   });
@@ -125,5 +129,103 @@ describe('chat decision planner surface', () => {
     expect(card).toContain('chatDecisionEvidenceDetailsHtml');
     expect(stylesSource).toContain('.chat-decision-reason-row');
     expect(stylesSource).toContain('.chat-decision-evidence-details');
+  });
+});
+
+describe('chat wallet-actions menu opens as a modal on native mobile', () => {
+  it('routes the "+" toggle to the chat-action sheet (scrim/z-index) instead of the inline popover', () => {
+    const handler = sourceBetween("const plusToggle = document.querySelector<HTMLButtonElement>('[data-chat-plus-toggle]')", 'for (const button of document.querySelectorAll<HTMLButtonElement>(\'[data-chat-action]\'))');
+    expect(handler).toContain('if (chatUsesSheet())');
+    expect(handler).toContain('openChatActionSheet()');
+    expect(handler).toContain('closeChatActionSheet()');
+    // the sheet body already renders the Primary/Advanced menu when no builder is active
+    const sheetBody = sourceBetween('function chatActionSheetBodyHtml', 'function chatWalletActionTabs');
+    expect(sheetBody).toContain('chatWalletActionTabs()');
+    expect(sheetBody).toContain('chatWalletActionList()');
+  });
+});
+
+describe('every wallet action → structured message → Send → card (held-draft)', () => {
+  it('connector Confirm stashes the resolved action + a picker-answer label instead of materializing the card', () => {
+    const confirm = sourceBetween('function confirmChatConnectorAction', 'function chatRecurringConfirmText');
+    expect(confirm).toContain('compileConnectorDraftToMessage(plan)');
+    expect(confirm).toContain("stageChatHeldAction({ kind: 'connector'");
+    // no longer pushes/promotes the card at Confirm time
+    expect(confirm).not.toContain('state.preparedActions = mergePreparedActions([action], state.preparedActions)');
+    expect(confirm).not.toContain('preparedActionId: action.id');
+  });
+
+  it('recurring Confirm defers createRecurringFromDraft to Send', () => {
+    const confirm = sourceBetween('async function confirmChatRecurringAction', 'function chatRecurringCardHtml');
+    expect(confirm).toContain('compileRecurringDraftToMessage(draft)');
+    expect(confirm).toContain("stageChatHeldAction({ kind: 'recurring'");
+    expect(confirm).not.toContain('await createRecurringFromDraft');
+  });
+
+  it('Send materializes the held draft, checked BEFORE decision routing and disarming on consume', () => {
+    const submit = sourceBetween('async function submitChatMessage', 'const signMatch =');
+    // held-draft consumption must come BEFORE the Decision-Check routing so an armed user who built
+    // a connector action isn't dead-ended.
+    const consumeIdx = submit.indexOf('if (await tryConsumeHeldChatAction(content))');
+    const decisionIdx = submit.indexOf('if (chatDecisionCheckModeActive() && !state.chatDecisionArmed)');
+    expect(consumeIdx).toBeGreaterThan(-1);
+    expect(decisionIdx).toBeGreaterThan(-1);
+    expect(consumeIdx).toBeLessThan(decisionIdx);
+    const consume = sourceBetween('async function tryConsumeHeldChatAction', 'function confirmChatConnectorAction');
+    expect(consume).toContain('content.trim() !== held.composerText.trim()');
+    expect(consume).toContain('mergePreparedActions([held.preparedAction], state.preparedActions)');
+    expect(consume).toContain('await createRecurringFromDraft(held.recurringDraft');
+    // supersede an armed decision policy + re-check the wallet at Send.
+    expect(consume).toContain('state.chatDecisionArmed = null');
+    expect(consume).toContain('if (!state.address)');
+  });
+
+  it('the picker-answer label never leaks an id, drops redundant rows, and resolves token symbols', () => {
+    const compile = sourceBetween('function compileConnectorDraftToMessage', 'function compileRecurringDraftToMessage');
+    expect(compile).toContain('/mint$/i.test(label)');
+    expect(compile).toContain('CHAT_BASE58_MINT.test(value)');
+    // redundant Connector/Operation auto-rows are dropped (title already carries them)
+    expect(compile).toContain('/^(connector|operation)$/i.test(label.trim())');
+    // a base58 token mint resolves to its symbol (asset never lost on manual entry); opaque ids drop
+    expect(compile).toContain('tokenDisplayLabel(value)');
+    expect(compile).toContain('looksLikeMintAddress(resolved)');
+    // recurring resolves its tokens too
+    const recurring = sourceBetween('function compileRecurringDraftToMessage', 'function stageChatHeldAction');
+    expect(recurring).toContain('tokenDisplayLabel(draft.inputToken)');
+    expect(recurring).toContain('tokenDisplayLabel(draft.token)');
+  });
+
+  it('drops the held draft when the composer diverges or is wiped', () => {
+    const input = sourceBetween("bindOnce(input, 'input'", "bindOnce(input, 'keydown'");
+    expect(input).toContain('state.chatHeldAction = null');
+    const clear = sourceBetween('function clearChatComposerDraft', 'function');
+    expect(clear).toContain('state.chatHeldAction = null');
+  });
+});
+
+describe('chat swap balance guard + balance refresh', () => {
+  it('uses a small realistic SOL fee reserve (not the oversized 0.01) in every spend-balance guard', () => {
+    expect(mainSource).toContain('const SOL_FEE_RESERVE = 0.001;');
+    // all four native-SOL reserve sites go through the constant
+    const balanceErr = sourceBetween('function chatAmountBalanceError', 'function parseChatWalletAction');
+    expect(balanceErr).toContain('asset.mint === WSOL_MINT ? SOL_FEE_RESERVE : 0');
+    const resolveAmt = sourceBetween('function resolveChatAmount', 'function chatAmountBalanceError');
+    expect(resolveAmt).toContain('amount - SOL_FEE_RESERVE');
+    const pct = sourceBetween('function chatPercentAmount', 'function');
+    expect(pct).toContain('tokenAmount - SOL_FEE_RESERVE');
+    const insufficient = sourceBetween('function insufficientBalanceError', 'function');
+    expect(insufficient).toContain('asset.amount - SOL_FEE_RESERVE');
+    // no bare 0.01 SOL reserve remains in these guards
+    expect(balanceErr).not.toContain('? 0.01 :');
+    expect(insufficient).not.toContain('- 0.01');
+  });
+
+  it('force-refreshes balances after a completed action + on every balance-surface open', () => {
+    // no balance load stays on the 60s cache (force=false) — opening a surface always re-fetches
+    expect(mainSource).not.toContain('startWalletBalanceFullLoad(false');
+    // post-action refresh (+ delayed indexer catch-up) in the single completion funnel
+    const sideEffects = sourceBetween('function applyActionCompletionSideEffects', 'function showCompletedHistoryForAction');
+    expect(sideEffects).toContain('startWalletBalanceFullLoad(true, { openOverlay: false })');
+    expect(sideEffects).toContain('window.setTimeout(');
   });
 });

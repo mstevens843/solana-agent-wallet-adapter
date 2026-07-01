@@ -5604,6 +5604,17 @@
     "Credential saved; no wallet signature was requested.": "Credential saved; no wallet signature was requested.",
     "Tap to enable": "Tap to enable",
     "Access code": "Access code",
-    "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction.": "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction."
+    "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction.": "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction.",
+    "Build a wallet action to check, then send…": "Создайте действие с кошельком для проверки, затем отправьте…",
+    "Checking this action against your conditions...": "Проверяем это действие на соответствие вашим условиям...",
+    "Conditions passed. Review and sign this action below.": "Условия выполнены. Проверьте и подпишите это действие ниже.",
+    "Decision prompt": "Запрос на решение",
+    "Got your conditions. Now build the wallet action you want me to decision-check - tap + Wallet Actions, fill it out, then send it.": "Условия получены. Теперь создайте действие с кошельком, которое я должен проверить, — нажмите + Действия с кошельком, заполните его, затем отправьте.",
+    "Recurring: {what}": "Повторяющийся: {what}",
+    "That is not a wallet action yet. Tap + Wallet Actions to build a Swap, Send, or Sign, then send it to check.": "Это ещё не действие с кошельком. Нажмите + Действия с кошельком, чтобы создать Обменять, Отправить или Подписать, затем отправьте его на проверку.",
+    "Wallet action to check": "Действие с кошельком для проверки",
+    "Wallet action": "Действие с кошельком",
+    "Write a decision prompt…": "Напишите запрос на решение…",
+    "Write your conditions, then build a wallet action to check. The agent researches it and returns an exact APPROVE, DENY, or NEEDS INPUT verdict - and lets you sign on approve.": "Напишите свои условия, затем создайте действие с кошельком для проверки. Агент изучит его и вернёт точный вердикт APPROVE, DENY или NEEDS INPUT — и позволит подписать при одобрении."
   }
 }

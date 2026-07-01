@@ -5604,6 +5604,17 @@
     "Credential saved; no wallet signature was requested.": "Credential saved; no wallet signature was requested.",
     "Tap to enable": "Tap to enable",
     "Access code": "Access code",
-    "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction.": "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction."
+    "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction.": "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction.",
+    "Build a wallet action to check, then send…": "Crea una acción de wallet para verificar y luego envíala…",
+    "Checking this action against your conditions...": "Verificando esta acción con tus condiciones...",
+    "Conditions passed. Review and sign this action below.": "Condiciones cumplidas. Revisa y firma esta acción abajo.",
+    "Decision prompt": "Instrucción de decisión",
+    "Got your conditions. Now build the wallet action you want me to decision-check - tap + Wallet Actions, fill it out, then send it.": "Ya tengo tus condiciones. Ahora crea la acción de wallet que quieres que evalúe - toca + Acciones de wallet, complétala y luego envíala.",
+    "Recurring: {what}": "Recurrente: {what}",
+    "That is not a wallet action yet. Tap + Wallet Actions to build a Swap, Send, or Sign, then send it to check.": "Eso todavía no es una acción de wallet. Toca + Acciones de wallet para crear un Intercambiar, Enviar o Firmar y luego envíalo para verificar.",
+    "Wallet action to check": "Acción de wallet para verificar",
+    "Wallet action": "Acción de wallet",
+    "Write a decision prompt…": "Escribe una instrucción de decisión…",
+    "Write your conditions, then build a wallet action to check. The agent researches it and returns an exact APPROVE, DENY, or NEEDS INPUT verdict - and lets you sign on approve.": "Escribe tus condiciones y luego crea una acción de wallet para verificar. El agente la investiga y devuelve un veredicto exacto de APPROVE, DENY o NEEDS INPUT - y te permite firmar si el veredicto es APPROVE."
   }
 }

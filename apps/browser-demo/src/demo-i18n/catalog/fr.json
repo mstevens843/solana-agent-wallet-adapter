@@ -5604,6 +5604,17 @@
     "Credential saved; no wallet signature was requested.": "Credential saved; no wallet signature was requested.",
     "Tap to enable": "Tap to enable",
     "Access code": "Access code",
-    "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction.": "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction."
+    "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction.": "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction.",
+    "Build a wallet action to check, then send…": "Créez une action du portefeuille à vérifier, puis envoyez-la…",
+    "Checking this action against your conditions...": "Vérification de cette action selon vos conditions...",
+    "Conditions passed. Review and sign this action below.": "Conditions remplies. Vérifiez et signez cette action ci-dessous.",
+    "Decision prompt": "Invite de décision",
+    "Got your conditions. Now build the wallet action you want me to decision-check - tap + Wallet Actions, fill it out, then send it.": "J'ai bien reçu vos conditions. Créez maintenant l'action du portefeuille à soumettre à la vérification de décision - touchez + Actions du portefeuille, remplissez-la, puis envoyez-la.",
+    "Recurring: {what}": "Récurrent : {what}",
+    "That is not a wallet action yet. Tap + Wallet Actions to build a Swap, Send, or Sign, then send it to check.": "Ce n'est pas encore une action du portefeuille. Touchez + Actions du portefeuille pour créer un Échanger, un Envoyer ou un Signer, puis envoyez-la pour la vérifier.",
+    "Wallet action to check": "Action du portefeuille à vérifier",
+    "Wallet action": "Action du portefeuille",
+    "Write a decision prompt…": "Rédigez une invite de décision…",
+    "Write your conditions, then build a wallet action to check. The agent researches it and returns an exact APPROVE, DENY, or NEEDS INPUT verdict - and lets you sign on approve.": "Rédigez vos conditions, puis créez une action du portefeuille à vérifier. L'agent l'analyse et renvoie un verdict exact : APPROVE, DENY ou NEEDS INPUT - et vous permet de signer en cas d'approbation."
   }
 }

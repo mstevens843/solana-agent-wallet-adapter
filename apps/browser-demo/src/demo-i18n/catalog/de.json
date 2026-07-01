@@ -5604,6 +5604,17 @@
     "Credential saved; no wallet signature was requested.": "Credential saved; no wallet signature was requested.",
     "Tap to enable": "Tap to enable",
     "Access code": "Access code",
-    "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction.": "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction."
+    "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction.": "Enable a protocol so the agent can read facts or prepare actions against it. You still approve every transaction.",
+    "Build a wallet action to check, then send…": "Erstelle eine Wallet-Aktion zum Prüfen, dann sende sie…",
+    "Checking this action against your conditions...": "Diese Aktion wird anhand deiner Bedingungen geprüft...",
+    "Conditions passed. Review and sign this action below.": "Bedingungen erfüllt. Prüfe und signiere diese Aktion unten.",
+    "Decision prompt": "Entscheidungs-Prompt",
+    "Got your conditions. Now build the wallet action you want me to decision-check - tap + Wallet Actions, fill it out, then send it.": "Bedingungen erhalten. Erstelle jetzt die Wallet-Aktion, die ich per Entscheidungscheck prüfen soll - tippe auf + Wallet-Aktionen, fülle sie aus und sende sie.",
+    "Recurring: {what}": "Wiederkehrend: {what}",
+    "That is not a wallet action yet. Tap + Wallet Actions to build a Swap, Send, or Sign, then send it to check.": "Das ist noch keine Wallet-Aktion. Tippe auf + Wallet-Aktionen, um Swappen, Senden oder Signieren zu erstellen, dann sende sie zum Prüfen.",
+    "Wallet action to check": "Zu prüfende Wallet-Aktion",
+    "Wallet action": "Wallet-Aktion",
+    "Write a decision prompt…": "Schreibe einen Entscheidungs-Prompt…",
+    "Write your conditions, then build a wallet action to check. The agent researches it and returns an exact APPROVE, DENY, or NEEDS INPUT verdict - and lets you sign on approve.": "Schreibe deine Bedingungen und erstelle dann eine zu prüfende Wallet-Aktion. Der Agent recherchiert sie und gibt ein exaktes Urteil zurück: APPROVE, DENY oder NEEDS INPUT - und lässt dich bei APPROVE signieren."
   }
 }

@@ -547,6 +547,7 @@ import {
   buildChatDecisionCheckPlan,
   chatDecisionStatusClass,
   chatDecisionStatusLabel,
+  type ChatDecisionCheckAction,
   type ChatDecisionStatus,
 } from './chatDecisionCheck.js';
 import {
@@ -870,6 +871,10 @@ setCloudWalletBridge({
 });
 
 const LEDGER_DEVICE_APPROVAL_TOAST_KEY = 'ledger-device-approval';
+// Shared key so the cloud sign-in proof toast ("Waiting for signature" → "Signature approved /
+// Verifying…") and the terminal "Cloud workspace signed in" toast collapse into ONE toast:
+// pushToast drops any existing same-key toast, so the final push replaces the intermediate.
+const CLOUD_SIGN_IN_TOAST_KEY = 'cloud-sign-in';
 let proofSigningToastDepth = 0;
 
 function isLedgerWalletSelected(): boolean {
@@ -1638,6 +1643,11 @@ const LAB_ARCHIVE_DB_VERSION = 1;
 const LAB_ARCHIVE_STORE_NAME = 'artifacts';
 const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+// SOL kept back for the tx fee (+ priority) when a chat/template action SPENDS native SOL — a
+// lenient client-side guard only (the base fee is ~0.000005 SOL; exact fee + any ATA rent is
+// enforced at sign time via the real quote). Must stay small so partial swaps of a small SOL
+// balance aren't falsely blocked (0.01 was ~1000x a real fee and broke sub-0.02-SOL wallets).
+const SOL_FEE_RESERVE = 0.001;
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const USDT_MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
 const JUP_MINT = 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN';
@@ -1810,6 +1820,16 @@ function decisionCheckVisible(): boolean {
 }
 function chatDecisionCheckModeActive(): boolean {
   return decisionCheckVisible() && state.chatDecisionCheckActive;
+}
+// The whole Decision Check flow is "on" while typing conditions (step 1) OR while a policy is
+// armed and awaiting the wallet action (step 2). Used to keep the toggle lit and to route sends.
+function chatDecisionFlowActive(): boolean {
+  return chatDecisionCheckModeActive() || Boolean(state.chatDecisionArmed);
+}
+// Cancel/disarm the Decision Check flow (used by the toggle and by session/new-chat resets).
+function clearChatDecisionFlow(): void {
+  state.chatDecisionCheckActive = false;
+  state.chatDecisionArmed = null;
 }
 function chatTabAiConnected(): boolean {
   if (!CHAT_AI_CONNECTION_GATE_ENABLED) return true;
@@ -2827,6 +2847,9 @@ interface ChatResearchCard {
 interface ChatDecisionCheckCard {
   prompt: string;
   review: AgentPlanReviewState;
+  // The concrete wallet action that was checked (2-step action-gated flow). Absent for a
+  // legacy standalone (text-only) decision check.
+  action?: { kind: string; summary: string };
 }
 
 interface ChatResearchChart {
@@ -3601,6 +3624,11 @@ interface DemoState {
   chatResearchDraft: ChatResearchDraft | null;
   chatResearchConfirm: ChatResearchConfirmState | null;
   chatDecisionCheckActive: boolean;
+  // Decision Check step-2 arming (2-step flow): step 1 captures the conditions here and the
+  // user then builds the wallet action to check. Transient (NOT persisted to history/cloud);
+  // a reload mid-flow just drops it. sessionId guards against a stale policy leaking into
+  // another chat. Null = not armed. See armChatDecisionPolicy / submitChatDecisionCheckAction.
+  chatDecisionArmed: { policyPrompt: string; sessionId: string } | null;
   chatHistoryOpen: boolean;
   // The history session whose × is armed for delete (ephemeral). '' = none armed; set to a
   // session id to show the inline Cancel/Delete confirm in that row. Cleared on menu close.
@@ -3615,6 +3643,11 @@ interface DemoState {
   chatActionPicker: ChatActionPickerState | null;
   // Transient editing session for the chat "Connector Actions" surface (ephemeral).
   chatConnectorSession: ChatConnectorSession | null;
+  // Held wallet-action draft awaiting the user's Send (Confirm→structured message→Send→card flow).
+  // Confirm on a connector/recurring sheet compiles a readable picker-answer message into the
+  // composer and stashes the FULLY-RESOLVED draft here (exact on-chain ids never touch the text);
+  // Send materializes the card from this held object (no re-parse). Transient; not persisted.
+  chatHeldAction: ChatHeldAction | null;
   // In-place connect surface (popover web / sheet mobile) opened when a user picks an
   // un-enabled connector in an action's "Use connector" dropdown.
   connectorConnect: ConnectorConnectSession | null;
@@ -4786,6 +4819,7 @@ const state: DemoState = {
   chatResearchDraft: null,
   chatResearchConfirm: null,
   chatDecisionCheckActive: false,
+  chatDecisionArmed: null,
   chatHistoryOpen: false,
   chatDeleteConfirmId: '',
   chatPendingOpen: false,
@@ -4794,6 +4828,7 @@ const state: DemoState = {
   chatActionBuilder: null,
   chatActionPicker: null,
   chatConnectorSession: null,
+  chatHeldAction: null,
   connectorConnect: null,
   swapShield: {},
   chatRecurringSession: null,
@@ -10353,18 +10388,29 @@ function bindWalletSurfaceControls(): void {
   bindQrConnectPage();
 }
 
-// True when a render() can be served by the scoped Chat morph instead of a full rebuild:
-// we're still on /app's Chat tab, its workspace DOM already exists (so every binder attached
-// once on the first full paint), and nothing OUTSIDE #workspace (a toast / a wallet overlay)
-// changed since the last paint.
+// True when a render() can be served by the scoped in-place morph instead of a full rebuild:
+// we're still on /app, its workspace DOM already exists (so every binder attached once on the
+// first full paint), and nothing OUTSIDE #workspace (a toast / a wallet overlay) changed since
+// the last paint. Serves BOTH the Chat tab AND any open mobile-rail bottom sheet — every sheet
+// (AI Connector 'ai-drafting', workspace-storage, wallet-balances, connector-connect, chat-*)
+// is rendered INSIDE #workspace via appWorkspace()→mobileRailBottomSheet(), so morphing it
+// preserves node identity (focus/scroll/caret/value survive → no blink on any control tap).
 function canMorphActiveTab(): boolean {
   if (!appRoot || typeof document === 'undefined') return false;
-  if (currentRoute() !== '/app' || state.activeTab !== 'chat') return false;
+  if (currentRoute() !== '/app') return false;
+  const sheetOpen = Boolean(state.activeMobileRailSheet);
+  // Off the Chat tab, only morph while a bottom sheet is open (the overview tab's own controls
+  // never needed morphing); the Chat tab always morphs.
+  if (state.activeTab !== 'chat' && !sheetOpen) return false;
   const workspace = document.getElementById('workspace');
-  // Require the existing active panel so this is a Chat in-tab update, not a first paint.
+  // Require the existing active panel so this is an in-tab update, not a first paint.
   // Route changes and anything OUTSIDE #workspace (a toast / a wallet overlay) take the
   // full render path.
   if (!workspace || !workspace.querySelector('[data-layout="active-panel"]')) return false;
+  // A sheet-open morph off the Chat tab must be an IN-SHEET update, not the first paint that
+  // injects the sheet — require the live sheet root so the opening render still takes the full
+  // path (adding the sheet + playing its enter animation); subsequent taps then morph.
+  if (sheetOpen && state.activeTab !== 'chat' && !workspace.querySelector('[data-mobile-rail-sheet-root]')) return false;
   if (chatOutsideWorkspaceHtml() !== lastRenderedChatOutsideWorkspaceHtml) return false;
   // A pageShell modal (delete confirm, etc.) opening/closing must take the full render path so the
   // modal — which lives outside #workspace — is actually painted/removed.
@@ -15210,7 +15256,7 @@ function openMobileRailSheet(sheet: MobileRailSheet): void {
   state.activeMobileRailSheet = sheet;
   state.error = '';
   if (sheet === 'wallet-balances' || sheet === 'chat-wallet-balances') {
-    startWalletBalanceFullLoad(false, { openOverlay: false });
+    startWalletBalanceFullLoad(true, { openOverlay: false });
     // startWalletBalanceFullLoad returns WITHOUT rendering when no wallet is connected — paint the
     // (empty) sheet anyway so the tap isn't a dead no-op.
     if (!state.address) render();
@@ -21825,6 +21871,18 @@ interface ConnectorConnectSession {
   draftApiKey?: string;
 }
 
+// A wallet action built by a sheet Confirm but NOT yet promoted to a card: it waits for the user
+// to tap Send. `composerText` is the readable picker-answer label shown in the composer; the card
+// is materialized from `preparedAction` (connector) or `recurringDraft` (recurring) — never by
+// re-parsing the text — so exact on-chain ids are carried, not re-resolved.
+interface ChatHeldAction {
+  kind: 'connector' | 'recurring';
+  composerText: string;
+  preparedAction?: PreparedAction;
+  recurringDraft?: RecurringDraft;
+  evidence?: boolean;
+}
+
 // Transient editing session for the chat "Recurring / DCA" surface. Mirrors ChatConnectorSession:
 // the surface drives the SAME global Repeat-tab state (recurringDraft/recurringPreset/…) so the
 // recurring form renders + submits with ZERO duplication; this snapshot restores the Repeat-tab
@@ -22056,7 +22114,7 @@ function chatDecisionEmptyState(): string {
     <div class="chat-empty chat-empty--decision">
       <div class="chat-empty-mark" aria-hidden="true"></div>
       <h3>${escapeHtml(t('Agent Decision Planner'))}</h3>
-      <p>${escapeHtml(t('Write a prompt with conditions. The agent researches it and returns an exact APPROVE, DENY, or NEEDS INPUT result.'))}</p>
+      <p>${escapeHtml(t('Write your conditions, then build a wallet action to check. The agent researches it and returns an exact APPROVE, DENY, or NEEDS INPUT verdict - and lets you sign on approve.'))}</p>
       <div class="chat-suggest-grid">
         ${CHAT_DECISION_SUGGESTED_PROMPTS.map((prompt) => `
           <button type="button" class="chat-suggest" data-chat-suggest="${escapeHtml(prompt)}">${escapeHtml(t(prompt))}</button>
@@ -22288,6 +22346,11 @@ function chatDecisionCheckCardHtml(card: ChatDecisionCheckCard): string {
         <span>${escapeHtml(t('Prompt'))}</span>
         <p>${escapeHtml(card.prompt)}</p>
       </blockquote>
+      ${card.action ? `
+      <blockquote class="chat-decision-prompt chat-decision-action">
+        <span>${escapeHtml(t('Wallet action'))}</span>
+        <p>${escapeHtml(card.action.summary)}</p>
+      </blockquote>` : ''}
       <p class="chat-decision-summary">${escapeHtml(summary)}</p>
       ${questionsHtml}
       <section class="chat-decision-reasons" aria-label="${escapeHtml(t('Pass/fail reasons'))}">
@@ -23242,7 +23305,7 @@ function chatSheetFieldRow(...fields: string[]): string {
 function chatPercentAmount(asset: WalletBalanceAsset, pct: number, mode: ChatAmountMode): string {
   if (!(asset.amount > 0) || !(pct > 0)) return '';
   let tokenAmount = asset.amount * (pct / 100);
-  if (asset.mint === WSOL_MINT && pct >= 100) tokenAmount = Math.max(0, tokenAmount - 0.01);
+  if (asset.mint === WSOL_MINT && pct >= 100) tokenAmount = Math.max(0, tokenAmount - SOL_FEE_RESERVE);
   if (!(tokenAmount > 0)) return '';
   if (mode === 'usd') {
     const price = asset.priceUsd;
@@ -23683,6 +23746,126 @@ function reconcileChatConnectorSession(): void {
 // Confirm: build a PreparedAction (queueable) or an evidence proof (read-only) from the filled
 // connector form via the EXACT New Request submit pipeline, attach it to a chat card, then
 // restore the New Request draft. The agent does no work — pure client-side.
+// --- Confirm → structured message → Send → card (held-draft) ------------------
+// Connector + Recurring Confirm compiles a readable, ID-free "picker answers" label into the
+// composer and stashes the fully-resolved draft in state.chatHeldAction; Send materializes the
+// card from that held object (never by re-parsing the text), so exact on-chain ids are carried,
+// not re-resolved. Swap/Send/Sign keep their own text round-trip (parseChatWalletAction).
+
+// Readable label from the plan's already-resolved picker answers. Drops the raw-mint rows
+// readableParameters() adds (label ends "mint") + any pure base58 value, so no id leaks.
+function compileConnectorDraftToMessage(plan: AgentPlan): string {
+  const title = t(plan.templateTitle || plan.category || 'Wallet action');
+  const parts: string[] = [];
+  for (const field of plan.fields ?? []) {
+    const label = field.label ?? '';
+    // The title already carries the connector + product ("Jupiter Lend") and the sub-action row
+    // conveys the operation, so skip the redundant auto-rows readableParameters adds + raw-mint rows.
+    if (/^(connector|operation)$/i.test(label.trim()) || /mint$/i.test(label)) continue;
+    let value = (field.value ?? '').trim();
+    if (!value) continue;
+    if (CHAT_BASE58_MINT.test(value)) {
+      // A base58 TOKEN mint (e.g. a manually-typed asset) → show its symbol, never the id. Opaque
+      // pool/market/proposal addresses don't resolve to a symbol (stay a mint/truncated) → drop them.
+      const resolved = tokenDisplayLabel(value);
+      if (!resolved || resolved.includes('...') || looksLikeMintAddress(resolved)) continue;
+      value = resolved;
+    }
+    parts.push(`${t(label)}: ${value}`);
+  }
+  return parts.length ? `${title} · ${parts.join(' · ')}` : title;
+}
+
+function compileRecurringDraftToMessage(draft: RecurringDraft): string {
+  // Resolve tokens to symbols so a long-tail DCA token never shows a raw base58 mint.
+  const what = recurringDraftIsSwap(draft)
+    ? tf('{amount} {from} to {to}', { amount: draft.amount, from: tokenDisplayLabel(draft.inputToken), to: tokenDisplayLabel(draft.outputToken) })
+    : tf('{amount} {token}', { amount: draft.amount, token: tokenDisplayLabel(draft.token) });
+  return tf('Recurring: {what}', { what });
+}
+
+// Stash the held draft + show its label in the composer (the user taps Send to materialize it).
+function stageChatHeldAction(held: ChatHeldAction): void {
+  state.chatHeldAction = held;
+  setChatActiveDraft(held.composerText);
+  const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
+  if (input) { input.value = held.composerText; chatAutoGrow(input); }
+}
+
+// Send-time consumer: when the composer text matches the held draft, materialize its card. Returns
+// true when it handled the message. Mirrors the wording the old Confirm handlers posted inline.
+async function tryConsumeHeldChatAction(content: string): Promise<boolean> {
+  const held = state.chatHeldAction;
+  if (!held || content.trim() !== held.composerText.trim()) return false;
+  const session = ensureActiveChatSession();
+  appendChatMessage(session.id, { id: newId('chat-msg'), role: 'user', content, createdAt: new Date().toISOString(), status: 'done' });
+  state.chatHeldAction = null;
+  // A concrete built action supersedes any armed Decision Check policy (this runs BEFORE the
+  // decision routing in submitChatMessage, so an armed user who built a connector action isn't
+  // dead-ended). Disarm cleanly.
+  state.chatDecisionArmed = null;
+  clearChatComposerDraft();
+  const finish = (): boolean => {
+    chatScrollPinned = true;
+    chatForceScrollBottom = true;
+    saveChatHistoryState();
+    void syncChatSessionToCloud(session.id);
+    if (state.activeTab === 'chat') render();
+    return true;
+  };
+  // Re-check the wallet at Send: it may have disconnected between Confirm and now (the connector
+  // action carries the Confirm-time wallet; recurring creation needs a live wallet).
+  if (!state.address) {
+    appendChatMessage(session.id, {
+      id: newId('chat-msg'), role: 'assistant',
+      content: t('Connect a wallet to prepare this action.'),
+      createdAt: new Date().toISOString(), status: 'done',
+    });
+    return finish();
+  }
+  if (held.kind === 'connector' && held.preparedAction) {
+    state.preparedActions = mergePreparedActions([held.preparedAction], state.preparedActions);
+    state.materializedActions = state.preparedActions;
+    saveBrowserWorkflowState();
+    appendChatMessage(session.id, {
+      id: newId('chat-msg'),
+      role: 'assistant',
+      content: held.evidence
+        ? t('Prepared this evidence request. Review the card below, then tap Approve or type "sign" to sign a proof.')
+        : t('Prepared this action. Review the card below, then tap Approve or type "sign".'),
+      createdAt: new Date().toISOString(),
+      status: 'done',
+      preparedActionId: held.preparedAction.id,
+    });
+    return finish();
+  }
+  if (held.kind === 'recurring' && held.recurringDraft) {
+    let created: RecurringPayment | undefined;
+    try {
+      const before = new Set(state.recurringPayments.map((p) => p.id));
+      await createRecurringFromDraft(held.recurringDraft, { status: 'active' });
+      created = state.recurringPayments.find((p) => !before.has(p.id));
+    } catch (err) {
+      appendChatMessage(session.id, {
+        id: newId('chat-msg'), role: 'assistant',
+        content: redactSecrets(err instanceof Error ? err.message : String(err)),
+        createdAt: new Date().toISOString(), status: 'error',
+      });
+      return finish();
+    }
+    appendChatMessage(session.id, {
+      id: newId('chat-msg'),
+      role: 'assistant',
+      content: chatRecurringConfirmText(created, held.recurringDraft),
+      createdAt: new Date().toISOString(),
+      status: 'done',
+      ...(created ? { recurringCardId: created.id } : {}),
+    });
+    return finish();
+  }
+  return finish();
+}
+
 function confirmChatConnectorAction(): void {
   if (!state.chatConnectorSession?.active) return;
   if (!chatRequireWalletOrNotify()) return;
@@ -23691,6 +23874,7 @@ function confirmChatConnectorAction(): void {
   state.templateFields = parameters;
   let action: PreparedAction;
   let evidence = false;
+  let composerText = '';
   try {
     assertValidTemplatePlanInput(template, parameters, '', { mode: 'template' });
     const plan = planWithRuntimeTokenLabels(buildTemplatePlan(template, parameters, 'template', ''));
@@ -23715,6 +23899,7 @@ function confirmChatConnectorAction(): void {
       // proof — ask the user to choose the option.
       throw new Error(t('Choose an action option to continue.'));
     }
+    composerText = compileConnectorDraftToMessage(plan);
   } catch (err) {
     // assertValidTemplatePlanInput populates state.templateFieldErrors — surface them inline
     // and keep the surface open so the user can fix the fields.
@@ -23722,20 +23907,10 @@ function confirmChatConnectorAction(): void {
     render();
     return;
   }
-  state.preparedActions = mergePreparedActions([action], state.preparedActions);
-  state.materializedActions = state.preparedActions;
-  saveBrowserWorkflowState();
-  const session = ensureActiveChatSession();
-  appendChatMessage(session.id, {
-    id: newId('chat-msg'),
-    role: 'assistant',
-    content: evidence
-      ? t('Prepared this evidence request. Review the card below, then tap Approve or type "sign" to sign a proof.')
-      : t('Prepared this action. Review the card below, then tap Approve or type "sign".'),
-    createdAt: new Date().toISOString(),
-    status: 'done',
-    preparedActionId: action.id,
-  });
+  // Confirm → structured message → Send → card: don't materialize the card yet. Stash the fully
+  // resolved action (with its exact on-chain ids) and show a readable picker-answer label in the
+  // composer; tryConsumeHeldChatAction promotes it to the card when the user taps Send.
+  stageChatHeldAction({ kind: 'connector', preparedAction: action, evidence, composerText });
   closeChatConnectorSurface(true);
   chatScrollPinned = true;
   chatForceScrollBottom = true;
@@ -23932,13 +24107,13 @@ async function confirmChatRecurringAction(): Promise<void> {
   if (chatRecurringSubmitting) return;
   if (!chatRequireWalletOrNotify()) return;
   chatRecurringSubmitting = true;
-  let created: RecurringPayment | undefined;
+  let draft: RecurringDraft;
+  let composerText = '';
   try {
-    state.recurringDraft = readRecurringDraft();
-    assertValidRecurringDraft(state.recurringDraft);
-    const before = new Set(state.recurringPayments.map((p) => p.id));
-    await createRecurringFromDraft(state.recurringDraft, { status: 'active' });
-    created = state.recurringPayments.find((p) => !before.has(p.id));
+    draft = readRecurringDraft();
+    state.recurringDraft = draft;
+    assertValidRecurringDraft(draft);
+    composerText = compileRecurringDraftToMessage(draft);
   } catch (err) {
     // assertValidRecurringDraft populates state.recurringErrors — surface them inline + keep open.
     pushToast('error', t('Complete required fields'), redactSecrets(err instanceof Error ? err.message : String(err)));
@@ -23947,15 +24122,11 @@ async function confirmChatRecurringAction(): Promise<void> {
   } finally {
     chatRecurringSubmitting = false;
   }
-  const session = ensureActiveChatSession();
-  appendChatMessage(session.id, {
-    id: newId('chat-msg'),
-    role: 'assistant',
-    content: chatRecurringConfirmText(created, state.recurringDraft),
-    createdAt: new Date().toISOString(),
-    status: 'done',
-    ...(created ? { recurringCardId: created.id } : {}),
-  });
+  // Confirm → structured message → Send → card: stash the validated draft + show a readable label.
+  // The repeat is actually created (createRecurringFromDraft) only when the user taps Send, so an
+  // un-sent Confirm never leaves an orphan payment. `draft` is captured before closeChatRecurringSurface
+  // restores the Repeat-tab snapshot into state.recurringDraft.
+  stageChatHeldAction({ kind: 'recurring', recurringDraft: draft, composerText });
   closeChatRecurringSurface(true);
   chatScrollPinned = true;
   chatForceScrollBottom = true;
@@ -24263,7 +24434,8 @@ function chatResearchButtonHtml(surface: 'web' | 'mobile'): string {
 
 function chatDecisionButtonHtml(surface: 'web' | 'mobile'): string {
   if (!decisionCheckVisible()) return '';
-  const active = chatDecisionCheckModeActive();
+  // Lit through BOTH steps (typing conditions or armed awaiting the wallet action).
+  const active = chatDecisionFlowActive();
   const label = surface === 'mobile' ? t('Decision') : t('Decision Check');
   const title = t('Agent Decision Planner');
   return `
@@ -24280,8 +24452,12 @@ function chatComposerHtml(): string {
   const sendButton = chatStreamActive()
     ? `<button type="button" class="chat-send chat-stop" data-chat-stop aria-label="${escapeHtml(t('Stop'))}" title="${escapeHtml(t('Stop'))}">■</button>`
     : `<button type="submit" class="chat-send" data-chat-send aria-label="${escapeHtml(t('Send'))}"${sendBlocked ? ' disabled aria-disabled="true"' : ''}>↑</button>`;
-  const inputPlaceholder = chatDecisionCheckModeActive() ? t('Write a decision prompt…') : t('Message your agent…');
-  const inputLabel = chatDecisionCheckModeActive() ? t('Decision prompt') : t('Message your agent');
+  const inputPlaceholder = state.chatDecisionArmed
+    ? t('Build a wallet action to check, then send…')
+    : chatDecisionCheckModeActive() ? t('Write a decision prompt…') : t('Message your agent…');
+  const inputLabel = state.chatDecisionArmed
+    ? t('Wallet action to check')
+    : chatDecisionCheckModeActive() ? t('Decision prompt') : t('Message your agent');
   const textarea = `<textarea class="chat-input" data-chat-input rows="1" placeholder="${escapeHtml(inputPlaceholder)}" aria-label="${escapeHtml(inputLabel)}"></textarea>`;
   const walletActionsBtn = `<button type="button" class="chat-plus-btn" data-chat-plus-toggle aria-haspopup="menu" aria-expanded="${state.chatComposerOpen ? 'true' : 'false'}" aria-label="${escapeHtml(t('Wallet Actions'))}"><span class="chat-plus-icon" aria-hidden="true">+</span><span class="chat-plus-label">${escapeHtml(t('Wallet Actions'))}</span></button>`;
   // Receive is an accessory action (instant, no form), so it rides in the menu header next to
@@ -25833,6 +26009,9 @@ function clearChatComposerDraft(scope: 'active' | 'all' = 'active'): void {
   if (scope === 'all') {
     chatDraft = '';
     chatDecisionDraft = '';
+    // A full composer wipe (new chat, clear, session switch, disconnect) invalidates any held
+    // wallet-action draft whose label lived in the composer.
+    state.chatHeldAction = null;
   } else {
     setChatActiveDraft('');
   }
@@ -26118,10 +26297,31 @@ async function submitChatMessage(text: string): Promise<void> {
   chatForceFocus = !isMobileAppViewport();
 
   try {
-    if (chatDecisionCheckModeActive()) {
+    // Held wallet-action draft (connector/recurring Confirm→structured message): materialize the
+    // card from the stashed, fully-resolved draft when the user sends its label verbatim. Checked
+    // FIRST — before the Decision-Check routing — so an armed user who built a connector action
+    // isn't dead-ended (the built action supersedes the armed policy; tryConsume disarms).
+    if (await tryConsumeHeldChatAction(content)) {
       chatSubmitPending = false;
-      await submitChatDecisionCheck(content);
       return;
+    }
+
+    // Decision Check is a 2-step flow. Step 1: capture the conditions (mode on, not yet armed).
+    // Step 2: the wallet action the user just built is checked against those conditions.
+    if (chatDecisionCheckModeActive() && !state.chatDecisionArmed) {
+      chatSubmitPending = false;
+      armChatDecisionPolicy(content);
+      return;
+    }
+    if (state.chatDecisionArmed) {
+      const armedSession = activeChatSession();
+      if (armedSession && state.chatDecisionArmed.sessionId === armedSession.id) {
+        chatSubmitPending = false;
+        await submitChatDecisionCheckAction(content);
+        return;
+      }
+      // Stale arm (session switched since it was set): drop it and fall through to normal chat.
+      state.chatDecisionArmed = null;
     }
 
     // NL shortcut: a bare "sign"/"approve" approves the most recent pending card
@@ -26676,8 +26876,8 @@ function resolveChatAmount(raw: string, fromAsset: WalletBalanceAsset | null): {
     const pct = Number(pctMatch[1]);
     if (!Number.isFinite(pct) || pct <= 0 || pct > 100) return { error: t('Enter a percentage between 0 and 100.') };
     let amount = fromAsset.amount * (pct / 100);
-    // Reserve a fee/rent buffer for native SOL near 100% so the tx can pay fees.
-    if (fromAsset.mint === WSOL_MINT && pct >= 100) amount = Math.max(0, amount - 0.01);
+    // Reserve a fee buffer for native SOL near 100% so the tx can pay fees.
+    if (fromAsset.mint === WSOL_MINT && pct >= 100) amount = Math.max(0, amount - SOL_FEE_RESERVE);
     if (!(amount > 0)) return { error: t('That percentage leaves nothing to send after fees.') };
     return { amount: trimChatAmount(amount, fromAsset.decimals) };
   }
@@ -26714,7 +26914,7 @@ function resolveChatAmount(raw: string, fromAsset: WalletBalanceAsset | null): {
 // SOL). Skips when the balance isn't loaded so a stale snapshot never false-blocks.
 function chatAmountBalanceError(amount: number, asset: WalletBalanceAsset | null): string {
   if (!asset || !(asset.amount > 0)) return '';
-  const buffer = asset.mint === WSOL_MINT ? 0.01 : 0;
+  const buffer = asset.mint === WSOL_MINT ? SOL_FEE_RESERVE : 0;
   if (amount > asset.amount - buffer) return t('Amount exceeds your balance.');
   return '';
 }
@@ -26778,7 +26978,7 @@ function tryDeterministicWalletAction(content: string): boolean {
   // Backstop: ensure the full balance snapshot is loading so $/% amounts and
   // owned-token symbol resolution work (WS5 also loads it on chat open). Non-blocking.
   if (state.address && !currentChatWalletBalanceSnapshot()) {
-    startWalletBalanceFullLoad(false, { openOverlay: false });
+    startWalletBalanceFullLoad(true, { openOverlay: false });
   }
   const parsed = parseChatWalletAction(content);
   if (parsed.kind === 'none') return false;
@@ -28081,39 +28281,117 @@ function chatDecisionResultText(review: AgentPlanReviewState): string {
   return detail ? `${label}: ${compactSentence(detail, 220)}` : `${label}.`;
 }
 
-async function submitChatDecisionCheck(content: string): Promise<void> {
-  const now = new Date().toISOString();
+// Decision Check step 1: capture the user's conditions and arm step 2. No research runs yet
+// (a text-only check overlaps with plain chat) - the agent evaluates a CONCRETE wallet action
+// against these conditions in step 2. We drop out of "type a decision prompt" mode so the
+// composer + the `+ Wallet Actions` builder use the normal chatDraft; the Decision toggle stays
+// lit while armed (chatDecisionFlowActive) and tapping it cancels the flow.
+function armChatDecisionPolicy(content: string): void {
   const session = ensureActiveChatSession();
+  const now = new Date().toISOString();
   appendChatMessage(session.id, { id: newId('chat-msg'), role: 'user', content, createdAt: now, status: 'done' });
-  chatDecisionDraft = '';
+  clearChatComposerDraft('all');
+  state.chatDecisionArmed = { policyPrompt: content, sessionId: session.id };
   state.chatDecisionCheckActive = false;
-  state.chatResearchOpen = false;
-  state.chatResearchDraft = null;
-  state.chatResearchConfirm = null;
-  state.chatComposerOpen = false;
-  chatActionPopoverOpen = false;
-  closeChatActionSheet();
-  chatDecisionCheckPending = true;
+  appendChatMessage(session.id, {
+    id: newId('chat-msg'),
+    role: 'assistant',
+    content: t('Got your conditions. Now build the wallet action you want me to decision-check - tap + Wallet Actions, fill it out, then send it.'),
+    createdAt: new Date().toISOString(),
+    status: 'done',
+  });
+  // Open the Wallet Actions kind menu (sheet on native mobile, popover on web) so the next
+  // step is one tap away. A menu raises no keyboard; the builder handles the keyboard itself.
+  if (chatUsesSheet()) {
+    state.chatActionBuilder = null;
+    state.chatActionPicker = null;
+    openChatActionSheet();
+  } else {
+    state.chatComposerOpen = true;
+  }
   chatScrollPinned = true;
   chatForceScrollBottom = true;
+  saveChatHistoryState();
+  void syncChatSessionToCloud(session.id);
+  render();
+}
+
+// Map a prepared chat proposal into the `planMints`-friendly parameters the decision plan
+// embeds, so the agent-review fact router fetches token-safety/price/age for the REAL tokens.
+function decisionActionForPlan(mapped: ChatActionProposal): ChatDecisionCheckAction {
+  const p = normalizeProposalParams(mapped);
+  const str = (v: unknown): string => (v === undefined || v === null ? '' : String(v));
+  const parameters: Record<string, string> = {};
+  if (mapped.kind === 'swap') {
+    if (str(p.inputToken)) parameters.inputMint = str(p.inputToken);
+    if (str(p.outputToken)) parameters.outputMint = str(p.outputToken);
+    if (str(p.amount)) parameters.amount = str(p.amount);
+  } else if (mapped.kind === 'transfer_spl') {
+    if (str(p.token)) parameters.token = str(p.token);
+    if (str(p.recipient)) parameters.recipient = str(p.recipient);
+    if (str(p.amount)) parameters.amount = str(p.amount);
+  } else if (mapped.kind === 'transfer_sol') {
+    if (str(p.amountSol)) parameters.amountSol = str(p.amountSol);
+    if (str(p.recipient)) parameters.recipient = str(p.recipient);
+  } else if (mapped.kind === 'manual_review') {
+    if (str(p.statement)) parameters.statement = str(p.statement);
+  }
+  return { kind: mapped.kind, summary: mapped.summary, parameters };
+}
+
+// Decision Check step 2: the armed conditions + the wallet action the user just built are sent
+// to the SAME review engine as New Request, which returns APPROVE / DENY / NEEDS INPUT for THIS
+// action. On APPROVE we also promote the action to an inline signable card.
+async function submitChatDecisionCheckAction(content: string): Promise<void> {
+  const armed = state.chatDecisionArmed;
+  if (!armed) { await submitChatMessage(content); return; }
+  const session = ensureActiveChatSession();
+  const now = new Date().toISOString();
+  appendChatMessage(session.id, { id: newId('chat-msg'), role: 'user', content, createdAt: now, status: 'done' });
+  clearChatComposerDraft();
+  const nudge = (text: string): void => {
+    appendChatMessage(session.id, { id: newId('chat-msg'), role: 'assistant', content: text, createdAt: new Date().toISOString(), status: 'done' });
+    chatScrollPinned = true;
+    chatForceScrollBottom = true;
+    saveChatHistoryState();
+    void syncChatSessionToCloud(session.id);
+    if (state.activeTab === 'chat') render();
+  };
+
+  const parsed = parseChatWalletAction(content);
+  if (parsed.kind === 'none') { nudge(t('That is not a wallet action yet. Tap + Wallet Actions to build a Swap, Send, or Sign, then send it to check.')); return; }
+  if (parsed.kind === 'error') { nudge(parsed.message); return; }
+  if (!state.address) { nudge(t('Connect a wallet to prepare this action.')); return; }
+  if (parsed.proposal.kind !== 'sign_proof') {
+    const supports = state.capabilities?.supports;
+    if (supports && !supports.signTransaction && !supports.signAndSendTransaction) {
+      nudge(t('This wallet cannot sign transactions on this device.'));
+      return;
+    }
+  }
+  const mapped = mapProposedActionToChatProposal(parsed.proposal);
+  if (!mapped) { nudge(t('I could not prepare that action. Try rephrasing it.')); return; }
 
   const assistantId = newId('chat-msg');
   const assistant: ChatMessage = {
     id: assistantId,
     role: 'assistant',
-    content: t('Checking this against your conditions...'),
+    content: t('Checking this action against your conditions...'),
     createdAt: new Date().toISOString(),
     status: 'streaming',
   };
   appendChatMessage(session.id, assistant);
+  chatDecisionCheckPending = true;
+  chatScrollPinned = true;
+  chatForceScrollBottom = true;
   render();
 
   if (!canRunAgentReview()) {
-    const reason = agentReviewUnavailableReason();
     assistant.status = 'error';
     assistant.content = '';
-    assistant.error = reason;
+    assistant.error = agentReviewUnavailableReason();
     chatDecisionCheckPending = false;
+    state.chatDecisionArmed = null;
     chatForceScrollBottom = true;
     saveChatHistoryState();
     void syncChatSessionToCloud(session.id);
@@ -28122,7 +28400,8 @@ async function submitChatDecisionCheck(content: string): Promise<void> {
   }
 
   const toastId = pushToast('pending', t('Asking agent'), t('Running decision check.'));
-  const plan = buildChatDecisionCheckPlan(content);
+  const actionForPlan = decisionActionForPlan(mapped);
+  const plan = buildChatDecisionCheckPlan(armed.policyPrompt, actionForPlan);
   const record: GeneratedPlanRecord = {
     id: `chat-decision-${assistantId}`,
     plan,
@@ -28131,7 +28410,7 @@ async function submitChatDecisionCheck(content: string): Promise<void> {
     source: plan.source,
     templateId: CHAT_DECISION_CHECK_TEMPLATE_ID,
     templateTitle: plan.templateTitle,
-    prompt: content,
+    prompt: armed.policyPrompt,
     walletAddress: state.address,
     cluster: state.cluster,
     status: 'draft',
@@ -28143,12 +28422,13 @@ async function submitChatDecisionCheck(content: string): Promise<void> {
     }),
   };
 
+  let evaluated = false;
   try {
     await run('ai', async () => {
       const reviewPlan = planWithRuntimeTokenLabels(record.plan);
       const instruction = [
         agentReviewInstruction(record, reviewPlan),
-        'Chat decision planner mode: treat the user prompt as a one-shot pass/fail policy. Use current research for any condition that is not fully answered by deterministic wallet, token, provider, or connector facts. Return exactly one final result: APPROVE, DENY, or NEEDS INPUT, with reasons tied to the user-supplied conditions.',
+        `Chat decision planner mode: treat the user prompt as a pass/fail policy for THIS wallet action (${actionForPlan.summary}). Use current research for any condition not fully answered by deterministic wallet, token, provider, or connector facts. Return exactly one final result: APPROVE, DENY, or NEEDS INPUT, with reasons tied to the user-supplied conditions.`,
       ].join('\n\n');
       const appliedPolicyIds = enabledUserAgentPolicies().map((policy) => policy.id);
       const deterministicFacts = await gatherAgentReviewFacts(record, { instruction });
@@ -28156,9 +28436,10 @@ async function submitChatDecisionCheck(content: string): Promise<void> {
       const result = normalizeAgentReviewResultForFacts(orchestration.rawResult, reviewPlan, deterministicFacts, { instruction });
       const review = agentReviewStateFromResult(result, undefined, reviewPlan, appliedPolicyIds, orchestration);
       review.facts = mergeReviewFacts(deterministicFacts, result.evidence);
+      evaluated = true;
       assistant.status = 'done';
       assistant.content = chatDecisionResultText(review);
-      assistant.decisionCheckCard = { prompt: content, review };
+      assistant.decisionCheckCard = { prompt: armed.policyPrompt, review, action: { kind: mapped.kind, summary: mapped.summary } };
       assistant.toolEvidence = [{
         tool: 'agent_decision_planner',
         resultSummary: assistant.content.slice(0, MAX_CHAT_TOOL_RESULT_CHARS),
@@ -28170,6 +28451,19 @@ async function submitChatDecisionCheck(content: string): Promise<void> {
         review.status === 'approved' ? t('Decision approved') : review.status === 'denied' ? t('Decision denied') : t('Decision check complete'),
         review.reason,
       );
+      // APPROVE: promote the checked action to an inline signable card (the user reviews + signs).
+      if (review.status === 'approved' && state.address) {
+        const signId = newId('chat-msg');
+        appendChatMessage(session.id, {
+          id: signId,
+          role: 'assistant',
+          content: t('Conditions passed. Review and sign this action below.'),
+          createdAt: new Date().toISOString(),
+          status: 'done',
+          proposal: mapped,
+        });
+        try { promoteChatProposalToPreparedAction(session.id, signId); } catch { /* leave pending; card shows Prepare */ }
+      }
     }, {
       onError: (message, err) => {
         const toastMessage = applyAiErrorDiagnostics(err, message);
@@ -28181,6 +28475,9 @@ async function submitChatDecisionCheck(content: string): Promise<void> {
     });
   } finally {
     chatDecisionCheckPending = false;
+    // Clear the armed policy once a verdict was produced. On a review ERROR keep it armed so
+    // the user can re-send the action without re-typing their conditions.
+    if (evaluated) state.chatDecisionArmed = null;
     session.updatedAt = new Date().toISOString();
     chatScrollPinned = true;
     chatForceScrollBottom = true;
@@ -28565,7 +28862,7 @@ function handleChatResearchBuyAction(button: HTMLButtonElement): void {
   chatTokenPickerModes.toToken = 'list';
   chatTokenListLimits.fromToken = CHAT_TOKEN_PAGE;
   chatTokenListLimits.toToken = CHAT_TOKEN_PAGE;
-  if (state.address) startWalletBalanceFullLoad(false, { openOverlay: false });
+  if (state.address) startWalletBalanceFullLoad(true, { openOverlay: false });
   ensureChatTokenLogos();
   hydrateChatResearchBuyToken(mint);
   if (chatUsesSheet()) {
@@ -28597,7 +28894,7 @@ function handleChatPowerAction(id: string): void {
       // Swap/Send token LIST mode reads owned balances — kick a full load so the picker
       // is populated the moment the sheet opens, then hydrate its logos.
       if ((id === 'swap' || id === 'send') && state.address) {
-        startWalletBalanceFullLoad(false, { openOverlay: false });
+        startWalletBalanceFullLoad(true, { openOverlay: false });
         ensureChatTokenLogos();
       }
       openChatActionSheet();
@@ -28615,7 +28912,7 @@ function handleChatPowerAction(id: string): void {
   if (isBuilder) {
     if (state.chatActionBuilder?.kind !== id) state.chatActionBuilder = defaultBuilderFor(id);
     if ((id === 'swap' || id === 'send') && state.address) {
-      startWalletBalanceFullLoad(false, { openOverlay: false });
+      startWalletBalanceFullLoad(true, { openOverlay: false });
       ensureChatTokenLogos();
     }
     chatSheetTokenOpen = null;
@@ -28700,7 +28997,7 @@ function bindChat(): void {
     if (chatBalancePreloadScope !== scope) {
       chatBalancePreloadScope = scope;
       if (state.walletBalance.fullStatus !== 'loading') {
-        setTimeout(() => { if (state.activeTab === 'chat') startWalletBalanceFullLoad(false, { openOverlay: false }); }, 0);
+        setTimeout(() => { if (state.activeTab === 'chat') startWalletBalanceFullLoad(true, { openOverlay: false }); }, 0);
       }
     }
   }
@@ -28732,6 +29029,11 @@ function bindChat(): void {
         resetChatActionBuilder();
         render();
       }
+      // Same for a held connector/recurring draft: once the user edits its label, it no longer
+      // matches, so drop the stash (the message goes to the agent as freestyle instead).
+      if (state.chatHeldAction && input.value.trim() !== state.chatHeldAction.composerText.trim()) {
+        state.chatHeldAction = null;
+      }
     });
     bindOnce(input, 'keydown', (event) => {
       // Don't send mid-IME-composition (CJK/accent input) — Enter there commits
@@ -28762,6 +29064,29 @@ function bindChat(): void {
   if (plusToggle) {
     bindOnce(plusToggle, 'click', (event) => {
       event.stopPropagation();
+      // Native mobile: the Wallet Actions kind menu is a bottom-sheet MODAL (full-screen scrim +
+      // z-index 320 + scroll-lock via the chat-action sheet), NOT the inline .chat-plus-menu popover
+      // (z-index 30, no scrim) which let the Research/Decision row + the chat transcript bleed through.
+      // chatActionSheetBodyHtml() already renders the Primary/Advanced menu when no builder is active.
+      if (chatUsesSheet()) {
+        if (state.activeMobileRailSheet === 'chat-action') {
+          closeChatActionSheet();
+        } else {
+          state.chatComposerOpen = false; // never show the buggy popover alongside the sheet
+          state.chatActionBuilder = null; // show the kind menu, not a stale builder
+          state.chatActionPicker = null;
+          state.chatDecisionCheckActive = false;
+          state.chatResearchOpen = false;
+          state.chatResearchDraft = null;
+          state.chatResearchConfirm = null;
+          state.chatHistoryOpen = false;
+          state.chatPendingOpen = false;
+          state.chatPendingSelectedId = null;
+          openChatActionSheet();
+        }
+        render();
+        return;
+      }
       // The Wallet Actions menu is an upward dropdown; picking an action opens the sheet
       // (native) or the consolidated popover (desktop).
       state.chatComposerOpen = !state.chatComposerOpen;
@@ -28817,7 +29142,7 @@ function bindChat(): void {
         // the swap output), needs no Birdeye key, and search (MINT) is one tap away.
         chatTokenPickerModes[field] = 'list';
         chatTokenListLimits[field] = CHAT_TOKEN_PAGE;
-        if (state.address) startWalletBalanceFullLoad(false, { openOverlay: false });
+        if (state.address) startWalletBalanceFullLoad(true, { openOverlay: false });
         ensureChatTokenLogos();
       }
       render();
@@ -28863,7 +29188,7 @@ function bindChat(): void {
       if (next === 'mint' && chatSheetTokenOpen === field) chatSheetTokenOpen = null;
       if (next === 'list') {
         chatTokenListLimits[field] = CHAT_TOKEN_PAGE;
-        if (state.address) startWalletBalanceFullLoad(false, { openOverlay: false });
+        if (state.address) startWalletBalanceFullLoad(true, { openOverlay: false });
         ensureChatTokenLogos();
       }
       suppressMobileRailSheetEnterAnimation = true;
@@ -28879,7 +29204,7 @@ function bindChat(): void {
       if (field !== 'fromToken' && field !== 'toToken') return;
       chatSheetTokenOpen = chatSheetTokenOpen === field ? null : field;
       if (chatSheetTokenOpen) {
-        if (state.address) startWalletBalanceFullLoad(false, { openOverlay: false });
+        if (state.address) startWalletBalanceFullLoad(true, { openOverlay: false });
         ensureChatTokenLogos();
       }
       suppressMobileRailSheetEnterAnimation = true;
@@ -29211,7 +29536,7 @@ function bindChat(): void {
       event.stopPropagation();
       if (!researchTabsVisible()) return;
       if (chatUsesSheet()) {
-        state.chatDecisionCheckActive = false;
+        clearChatDecisionFlow();
         state.chatResearchOpen = false;
         state.chatResearchDraft = null;
         state.chatResearchConfirm = null;
@@ -29220,7 +29545,7 @@ function bindChat(): void {
       }
       state.chatResearchOpen = !state.chatResearchOpen;
       if (state.chatResearchOpen) {
-        state.chatDecisionCheckActive = false;
+        clearChatDecisionFlow();
         state.chatHistoryOpen = false;
         state.chatPendingOpen = false;
         state.chatPendingSelectedId = null;
@@ -29242,8 +29567,14 @@ function bindChat(): void {
         return;
       }
       if (chatSubmitBlocked()) return;
-      state.chatDecisionCheckActive = !state.chatDecisionCheckActive;
-      if (chatDecisionCheckModeActive()) {
+      // The toggle is a single on/off for the whole 2-step flow: while it's lit (typing
+      // conditions OR a policy is armed) a tap CANCELS/disarms; otherwise it starts step 1.
+      if (chatDecisionFlowActive()) {
+        clearChatDecisionFlow();
+        closeChatActionSheet();
+      } else {
+        state.chatDecisionCheckActive = true;
+        state.chatDecisionArmed = null;
         state.chatResearchOpen = false;
         state.chatResearchDraft = null;
         state.chatResearchConfirm = null;
@@ -29260,7 +29591,12 @@ function bindChat(): void {
         closeChatRecurringSurface(true);
       }
       render();
-      document.querySelector<HTMLTextAreaElement>('[data-chat-input]')?.focus({ preventScroll: true });
+      // On mobile (Android/iOS), toggling Research/Decision must NOT pop the on-screen keyboard —
+      // it's a mode switch, not an input action. Let the user tap the composer when ready. Desktop
+      // keeps insta-focus so you can start typing. Mirrors chatForceFocus = !isMobileAppViewport().
+      if (!isMobileAppViewport()) {
+        document.querySelector<HTMLTextAreaElement>('[data-chat-input]')?.focus({ preventScroll: true });
+      }
     });
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-research-tab]')) {
@@ -29480,7 +29816,7 @@ function bindChat(): void {
       if (!id || state.chat.activeSessionId === id) { render(); return; }
       if (chatStreamActive()) cancelChatStream();
       state.chat.activeSessionId = id;
-      state.chatDecisionCheckActive = false;
+      clearChatDecisionFlow();
       clearChatComposerDraft('all');
       saveChatHistoryState();
       render();
@@ -29550,7 +29886,7 @@ function bindChat(): void {
     state.chatResearchOpen = false;
     state.chatResearchDraft = null;
     state.chatResearchConfirm = null;
-    state.chatDecisionCheckActive = false;
+    clearChatDecisionFlow();
     // Reuse the active session if it's still empty — don't stack blank "New chat" rows.
     const active = activeChatSession();
     if (active && !chatSessionHasContent(active)) {
@@ -29571,7 +29907,7 @@ function bindChat(): void {
   });
   bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-clear]'), 'click', () => {
     if (chatStreamActive()) cancelChatStream();
-    state.chatDecisionCheckActive = false;
+    clearChatDecisionFlow();
     clearChatComposerDraft('all');
     state.chatHistoryOpen = false;
     clearAllChatSessions();
@@ -46917,6 +47253,18 @@ function openManageForm(kind: string, orderId: string, fields?: Record<string, s
 // Monitor position — and a manage/close action still closes it — while the user stays in the Chat
 // tab. Returns whether a position was opened, closed, or neither (so callers can word the message).
 function applyActionCompletionSideEffects(actionId?: string): 'opened' | 'closed' | 'none' {
+  // A completed on-chain action changed the wallet's balances. Refresh the shared balance snapshot
+  // now (force past the 60s cache) + once more shortly after so the RPC/indexer reflects the tx —
+  // the chat "$X" pill, the Wallet Balances sheet, the swap/send token pickers, and the Home-tab
+  // "View balances" sheet all read this snapshot. The in-flight guard in startWalletBalanceFullLoad
+  // keeps the immediate + delayed calls from stacking. This is the single completion funnel for both
+  // chat-originated and New-Request/inbox actions, so it covers every executed action.
+  if (state.address) {
+    startWalletBalanceFullLoad(true, { openOverlay: false });
+    if (typeof window !== 'undefined') {
+      window.setTimeout(() => { if (state.address) startWalletBalanceFullLoad(true, { openOverlay: false }); }, 2500);
+    }
+  }
   const action = actionId ? state.preparedActions.find((a) => a.id === actionId) : undefined;
   if (!action) return 'none';
   const category = ACTION_TYPE_CATEGORY[action.kind];
@@ -51606,6 +51954,7 @@ async function runSetAndConfirmAiKey(trigger?: HTMLButtonElement): Promise<void>
     return;
   }
   const quietMobileSheet = state.activeMobileRailSheet === 'ai-drafting' && isMobileAppViewport();
+  let confirmedOk = false;
   state.error = '';
   state.busy = true;
   state.steps.ai = 'active';
@@ -51638,6 +51987,7 @@ async function runSetAndConfirmAiKey(trigger?: HTMLButtonElement): Promise<void>
       clearCurrentSessionAiApiKey();
     }
     state.steps.ai = 'done';
+    confirmedOk = true;
   } catch (err) {
     state.steps.ai = 'error';
     const message = redactSecrets(err instanceof Error ? err.message : String(err));
@@ -51649,7 +51999,12 @@ async function runSetAndConfirmAiKey(trigger?: HTMLButtonElement): Promise<void>
     state.busy = false;
     state.activeOperation = null;
     if (trigger) trigger.removeAttribute('aria-busy');
-    if (quietMobileSheet) {
+    if (confirmedOk && state.activeMobileRailSheet === 'ai-drafting') {
+      // Auto-close the AI Connector bottom sheet after a successful confirm (Android/iOS). The
+      // success toast from confirmAiPlannerCore still shows. Gating on the 'ai-drafting' sheet
+      // scopes this to the mobile sheet; the desktop rail card is unaffected.
+      state.activeMobileRailSheet = null;
+    } else if (quietMobileSheet) {
       suppressMobileRailSheetEnterAnimation = true;
     }
     render();
@@ -52498,6 +52853,7 @@ async function runCloudSignIn(): Promise<void> {
       const nonceValue = stringPayload(nonce.nonce, 'Auth nonce');
       cloudSignInDiag('signing', { walletStillConnected: Boolean(state.address) });
       const result = await signWalletProofMessageWithToast(message, 'Agentic Cloud sign-in', state.cluster, {
+        key: CLOUD_SIGN_IN_TOAST_KEY,
         message: 'Approve this cloud sign-in proof in your wallet. No transaction will be submitted.',
         successMessage: 'Verifying cloud workspace session.',
       });
@@ -52603,8 +52959,13 @@ async function finishCloudSignIn(session: CloudSessionResponse): Promise<void> {
   const transfer = await transferLocalWorkspaceToCloud({ confirm: false, showEmptyToast: false });
   cloudSignInDiag('done', { transferred: transfer.total, walletStillConnected: Boolean(state.address), cloudStatus: state.cloudSession?.status });
   if (transfer.total > 0) {
+    // The workspace-transfer summary is its own message; clear the shared sign-in toast so it
+    // doesn't linger beside it (keeps the "one toast" invariant).
+    dismissToastByKey(CLOUD_SIGN_IN_TOAST_KEY);
     toastLocalWorkspaceStorageTransfer(transfer);
   } else {
+    // Reuse CLOUD_SIGN_IN_TOAST_KEY so this REPLACES the in-place "Signature approved / Verifying…"
+    // toast rather than stacking a second one — the loading toast ends as "Cloud workspace signed in".
     pushToast(
       'success',
       t('Cloud workspace signed in'),
@@ -52613,6 +52974,7 @@ async function finishCloudSignIn(session: CloudSessionResponse): Promise<void> {
           ? tf('{address} · 1 chat syncing to storage.', { address: short(state.address) })
           : tf('{address} · {count} chats syncing to storage.', { address: short(state.address), count: chatsQueued }))
         : short(state.address),
+      { key: CLOUD_SIGN_IN_TOAST_KEY },
     );
   }
 }
@@ -60836,7 +61198,7 @@ function toggleWalletBalanceOverlay(): void {
     overlayOpen: !state.walletBalance.overlayOpen,
   };
   if (state.walletBalance.overlayOpen) {
-    startWalletBalanceFullLoad(false, { openOverlay: true });
+    startWalletBalanceFullLoad(true, { openOverlay: true });
     return;
   }
   render();
@@ -62143,7 +62505,7 @@ function insufficientBalanceError(tokenRef: string, amountStr: string): string {
     : assets.find((a) => a.symbol?.toUpperCase() === ref.toUpperCase());
   if (!asset) return '';
   const isSol = asset.symbol?.toUpperCase() === 'SOL';
-  const available = isSol ? asset.amount - 0.01 : asset.amount; // reserve ~0.01 SOL for fees/rent
+  const available = isSol ? asset.amount - SOL_FEE_RESERVE : asset.amount; // reserve SOL for fees
   if (amount > available) return 'Amount exceeds your balance.';
   return '';
 }
@@ -64209,7 +64571,7 @@ function resetWalletConnection(): void {
   cancelChatStream();
   state.chat = loadChatHistoryState('');
   state.chatInitialized = false;
-  state.chatDecisionCheckActive = false;
+  clearChatDecisionFlow();
   clearChatComposerDraft('all');
   state.capabilities = null;
   state.walletBalance = emptyWalletBalanceViewState();
@@ -74297,9 +74659,14 @@ function normalizeChatDecisionCheckCard(input: unknown): ChatDecisionCheckCard |
   if (!card || typeof card.prompt !== 'string') return undefined;
   const review = parseAgentPlanReviewState(card.review);
   if (!review) return undefined;
+  const rawAction = asRecord(card.action);
+  const action = rawAction && typeof rawAction.kind === 'string' && typeof rawAction.summary === 'string'
+    ? { kind: rawAction.kind.slice(0, 40), summary: rawAction.summary.slice(0, 200) }
+    : undefined;
   return {
     prompt: card.prompt.slice(0, CHAT_MAX_INPUT_CHARS),
     review,
+    ...(action ? { action } : {}),
   };
 }
 
