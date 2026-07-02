@@ -15367,7 +15367,15 @@ function closeMobileRailSheet(): void {
   if (state.activeMobileRailSheet === 'chat-action') {
     // The connector + recurring surfaces borrow this same sheet; closing one must restore the
     // draft it was editing (snapshot/restore), or that draft is left clobbered.
-    if (state.chatConnectorSession?.active) restoreChatConnectorPlannerSnapshot();
+    if (state.chatConnectorSession?.active) {
+      restoreChatConnectorPlannerSnapshot();
+      // Cancel (scrim/×/Escape): drop an un-confirmed advanced-action live preview so it doesn't
+      // linger in the composer. Confirm releases ownership (chatConnectorPreviewDraft='') first.
+      if (chatConnectorPreviewDraft && chatDraft === chatConnectorPreviewDraft) {
+        clearChatComposerDraft();
+        chatConnectorPreviewDraft = '';
+      }
+    }
     if (state.chatRecurringSession?.active) restoreChatRecurringSnapshot();
     chatConnectorPopoverOpen = false;
     chatRecurringPopoverOpen = false;
@@ -23713,6 +23721,9 @@ function openChatActionSurface(category: ActionCategory): void {
   } else {
     render();
   }
+  // Seed the composer with a live template (mirrors Swap seeding "Swap [amount] SOL to [token]")
+  // now that the form is painted — it updates as the user fills the form via the field funnel.
+  applyChatConnectorDraftPreview();
 }
 
 // Restore the snapshotted New Request planner draft (no render — callers render).
@@ -23738,6 +23749,13 @@ function closeChatConnectorSurface(restore: boolean): void {
   else state.chatConnectorSession = null;
   if (state.activeMobileRailSheet === 'chat-action') state.activeMobileRailSheet = null;
   chatConnectorPopoverOpen = false;
+  // Cancel path: if the composer still holds the un-confirmed live preview (user didn't Confirm and
+  // didn't hand-edit it away), clear it so a cancelled advanced draft never lingers. Confirm releases
+  // ownership via stageChatHeldAction (chatConnectorPreviewDraft='') so its held label is preserved.
+  if (chatConnectorPreviewDraft && chatDraft === chatConnectorPreviewDraft) {
+    clearChatComposerDraft();
+    chatConnectorPreviewDraft = '';
+  }
 }
 
 // Catch-all (called at the top of render): if the connector surface was left open while the
@@ -23748,6 +23766,11 @@ function reconcileChatConnectorSession(): void {
     restoreChatConnectorPlannerSnapshot();
     chatConnectorPopoverOpen = false;
     if (state.activeMobileRailSheet === 'chat-action') state.activeMobileRailSheet = null;
+    // Drop an un-confirmed live preview so it doesn't linger in the composer on return to Chat.
+    if (chatConnectorPreviewDraft && chatDraft === chatConnectorPreviewDraft) {
+      clearChatComposerDraft();
+      chatConnectorPreviewDraft = '';
+    }
   }
   if (state.chatRecurringSession?.active && state.activeTab !== 'chat') {
     restoreChatRecurringSnapshot();
@@ -23767,27 +23790,41 @@ function reconcileChatConnectorSession(): void {
 
 // Readable label from the plan's already-resolved picker answers. Drops the raw-mint rows
 // readableParameters() adds (label ends "mint") + any pure base58 value, so no id leaks.
-function compileConnectorDraftToMessage(plan: AgentPlan): string {
-  const title = t(plan.templateTitle || plan.category || 'Wallet action');
-  const parts: string[] = [];
-  for (const field of plan.fields ?? []) {
-    const label = field.label ?? '';
-    // The title already carries the connector + product ("Jupiter Lend") and the sub-action row
-    // conveys the operation, so skip the redundant auto-rows readableParameters adds + raw-mint rows.
-    if (/^(connector|operation)$/i.test(label.trim()) || /mint$/i.test(label)) continue;
-    let value = (field.value ?? '').trim();
-    if (!value) continue;
-    if (CHAT_BASE58_MINT.test(value)) {
-      // A base58 TOKEN mint (e.g. a manually-typed asset) → show its symbol, never the id. Opaque
-      // pool/market/proposal addresses don't resolve to a symbol (stay a mint/truncated) → drop them.
-      const resolved = tokenDisplayLabel(value);
-      if (!resolved || resolved.includes('...') || looksLikeMintAddress(resolved)) continue;
-      value = resolved;
-    }
-    parts.push(`${t(label)}: ${value}`);
-  }
-  return parts.length ? `${title} · ${parts.join(' · ')}` : title;
+function compileConnectorDraftToMessage(plan: AgentPlan, opts: { amountPlaceholder?: boolean } = {}): string {
+  // Reuse the approval CARD's OWN summary primitives — they are concise, deduped, per-protocol,
+  // scoped to the SELECTED sub-action, and localized. (The old plan.fields join emitted a row per
+  // flattened sub-action field — dupes + irrelevant repay/withdraw rows — because readableParameters
+  // ignores showWhen.) `connectorActionDisplayParts` resolves the form + branch from the params, so
+  // passing plan.actionType is enough (matches the card call sites).
+  const display = connectorActionDisplayParts(plan.actionType, plan.parameters);
+  const title = display?.title || t(plan.templateTitle || plan.category || 'Wallet action');
+  const amount = connectorPlanAmountInfo(plan)?.label;
+  const note = (plan.parameters.memo || plan.parameters.note || plan.userNotes || '').trim();
+  const segments = [title];
+  // The amount is the one universal blank — while previewing an unfilled draft show its placeholder
+  // so the composer reads like Swap's "Swap [amount] SOL to [token]" (the title fills the asset/target
+  // in as it's picked). Only when the form actually HAS an amount field (opts.amountPlaceholder) — so
+  // an amount-less action (governance vote, oracle post) never shows a misleading "[amount]". On
+  // Confirm every required field is filled, so callers pass no placeholder and there are none.
+  if (amount) segments.push(amount);
+  else if (opts.amountPlaceholder) segments.push('[amount]');
+  if (note) segments.push(`note: ${note}`);
+  return segments.join(' · ');
 }
+
+// True when the LIVE connector form currently renders an amount/price/size input (scoped to the
+// selected sub-action, since only visible fields are in the DOM). Drives whether the live preview
+// shows an "[amount]" placeholder — mirrors the amount keys connectorPlanAmountInfo resolves.
+function connectorFormHasAmountInput(): boolean {
+  return CONNECTOR_AMOUNT_FIELD_IDS.some((id) => document.querySelector(`[data-template-field="${id}"]`));
+}
+const CONNECTOR_AMOUNT_FIELD_IDS = [
+  'amount', 'amountSol', 'solAmount', 'msolAmount', 'inputAmount', 'totalAmount', 'plannedAmount',
+  'maxAmount', 'collateralAmount', 'borrowAmount', 'makingAmount', 'takingAmount', 'liquidityAmount',
+  'shares', 'percentage', 'tokenAAmount', 'tokenBAmount', 'tokenXAmount', 'tokenYAmount',
+  'maxTokenAAmount', 'maxTokenBAmount', 'priceSol', 'bidPriceSol', 'maxPriceSol', 'maxPricePerNftSol',
+  'maxEscrowSol',
+];
 
 function compileRecurringDraftToMessage(draft: RecurringDraft): string {
   // Resolve tokens to symbols so a long-tail DCA token never shows a raw base58 mint.
@@ -23800,6 +23837,10 @@ function compileRecurringDraftToMessage(draft: RecurringDraft): string {
 // Stash the held draft + show its label in the composer (the user taps Send to materialize it).
 function stageChatHeldAction(held: ChatHeldAction): void {
   state.chatHeldAction = held;
+  // The held action now OWNS the composer text (not the live preview). Release the preview so the
+  // cancel-clear guard in closeChatConnectorSurface doesn't wipe this committed label — a filled
+  // form's final message equals its last preview string.
+  chatConnectorPreviewDraft = '';
   setChatActiveDraft(held.composerText);
   const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
   if (input) { input.value = held.composerText; chatAutoGrow(input); }
@@ -24571,6 +24612,11 @@ let chatDecisionDraft = '';
 // The exact draft last produced by the chip builder. If the user edits the
 // textarea so it diverges from this, the chips are stale and get cleared.
 let chatBuilderCompiledDraft = '';
+// The exact live-preview draft last produced by the ADVANCED connector form (mirrors
+// chatBuilderCompiledDraft for swap/send/sign): the connector surface seeds + updates a
+// concise template in the composer as the form is filled. Tracked so the cancel path can
+// clear the composer only when it still holds the (un-confirmed) preview.
+let chatConnectorPreviewDraft = '';
 // Wallet/cluster scope we've already kicked a full-balance preload for on chat
 // open (so we trigger it at most once per scope, not every render).
 let chatBalancePreloadScope: string | null = null;
@@ -28715,6 +28761,31 @@ function applyChatBuilderDraft(): void {
   if (input) { input.value = chatDraft; chatAutoGrow(input); }
 }
 
+// ADVANCED (connector) equivalent of applyChatBuilderDraft: build a plan from the CURRENT
+// connector form state and mirror its concise summary into the composer so advanced actions
+// get the same live "Swap [amount] SOL to [token]"-style template that swap/send/sign do.
+// Reuses the exact pipeline confirmChatConnectorAction runs (readTemplateFields →
+// normalizeConnectorDraftParameters → buildTemplatePlan), then compileConnectorDraftToMessage in
+// preview mode (shows `[amount]` while the amount is blank; the title fills the picked
+// selection in). Guarded to the active connector session; a partial/invalid draft (no
+// sub-action picked yet) is tolerated — buildTemplatePlan never validates, and any throw leaves
+// the last preview in place.
+function applyChatConnectorDraftPreview(): void {
+  if (!state.chatConnectorSession?.active) return;
+  const template = selectedTemplate();
+  let text = '';
+  try {
+    const parameters = normalizeConnectorDraftParameters(template, readTemplateFields(template));
+    const plan = planWithRuntimeTokenLabels(buildTemplatePlan(template, parameters, 'template', ''));
+    text = compileConnectorDraftToMessage(plan, { amountPlaceholder: connectorFormHasAmountInput() });
+  } catch { text = ''; }
+  if (!text) return;
+  chatDraft = text;
+  chatConnectorPreviewDraft = text;
+  const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
+  if (input) { input.value = text; chatAutoGrow(input); }
+}
+
 // Commit a token selection into an EXPLICIT token field and recompile. Used by the
 // full-form sheet (both token fields are present at once, so the field can't be inferred
 // from a single "open picker") and by the token-search routing.
@@ -28899,7 +28970,12 @@ function handleChatPowerAction(id: string): void {
   // The composer is NOT autofilled until the user taps Confirm in the sheet.
   if (chatUsesSheet()) {
     if (isBuilder) {
-      if (state.chatActionBuilder?.kind !== id) state.chatActionBuilder = defaultBuilderFor(id);
+      if (state.chatActionBuilder?.kind !== id) {
+        state.chatActionBuilder = defaultBuilderFor(id);
+        // Fresh swap: output defaults to the MINT (search) pill — you swap INTO a token you
+        // usually don't hold, so the owned-balances LIST is the wrong first surface. Input stays LIST.
+        if (id === 'swap') { chatTokenPickerModes.fromToken = 'list'; chatTokenPickerModes.toToken = 'mint'; }
+      }
       // Swap/Send token LIST mode reads owned balances — kick a full load so the picker
       // is populated the moment the sheet opens, then hydrate its logos.
       if ((id === 'swap' || id === 'send') && state.address) {
@@ -28919,7 +28995,11 @@ function handleChatPowerAction(id: string): void {
   // Reuse a same-kind builder so re-opening shows current values; the field handlers
   // live-compile into the composer (no Confirm here).
   if (isBuilder) {
-    if (state.chatActionBuilder?.kind !== id) state.chatActionBuilder = defaultBuilderFor(id);
+    if (state.chatActionBuilder?.kind !== id) {
+      state.chatActionBuilder = defaultBuilderFor(id);
+      // Fresh swap: output defaults to the MINT (search) pill (see mobile branch above).
+      if (id === 'swap') { chatTokenPickerModes.fromToken = 'list'; chatTokenPickerModes.toToken = 'mint'; }
+    }
     if ((id === 'swap' || id === 'send') && state.address) {
       startWalletBalanceFullLoad(true, { openOverlay: false });
       ensureChatTokenLogos();
@@ -40200,6 +40280,9 @@ function bind(): void {
       state.agentPreparedActionId = '';
       scheduleRaydiumPairPreview(fieldId);
       if (shouldRerender || cascadingRerender || fieldId === 'dcaDirection') render();
+      // Live-update the chat composer preview when this form is the Chat connector surface
+      // (no-op elsewhere — self-guarded on state.chatConnectorSession.active).
+      applyChatConnectorDraftPreview();
     });
     bindOnce(fieldInput, 'change', () => {
       const fieldId = fieldInput.dataset.templateField;
@@ -40209,6 +40292,7 @@ function bind(): void {
       syncConnectorTemplateFieldChange(fieldId);
       scheduleRaydiumPairPreview(fieldId);
       if (handleCascadingFieldChange(fieldInput, fieldId) || fieldId === 'dcaDirection') render();
+      applyChatConnectorDraftPreview();
     });
   }
 
@@ -40229,6 +40313,8 @@ function bind(): void {
       state.agentPreparedActionId = '';
       scheduleRaydiumPairPreview(fieldId);
       render();
+      // Live-update the chat composer preview (sub-action / choice picks change the title).
+      applyChatConnectorDraftPreview();
     });
   }
 

@@ -38603,8 +38603,12 @@ button.danger:hover:not(:disabled) {
 /* The expanded owned/preset rows (reuse .chat-token-opt rows). */
 /* Sheet token LIST is an absolute overlay (like the MINT search menu) so opening one side's list
    floats over the form below it instead of growing its grid cell and pushing the other token side
-   down. The field is the positioning context. */
-.mobile-planner-field-row .token-choice-field { position: relative; }
+   down. The field is the positioning context. On the WEB popover the token field lives in
+   .chat-popover-row (no anchor), so without this the list anchored to .chat-action-popover and
+   top:100% dropped it BELOW the whole popover where overflow-y:auto clipped it (looked like it
+   never opened). Anchoring to the field itself opens it right under the trigger, same as MINT. */
+.mobile-planner-field-row .token-choice-field,
+.chat-action-popover .token-choice-field { position: relative; }
 .chat-sheet-token-list {
   position: absolute;
   top: calc(100% + 6px);

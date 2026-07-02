@@ -187,15 +187,24 @@ describe('every wallet action → structured message → Send → card (held-dra
     expect(consume).toContain('if (!state.address)');
   });
 
-  it('the picker-answer label never leaks an id, drops redundant rows, and resolves token symbols', () => {
+  it('builds a concise connector label from the card summary primitives, not a plan.fields join', () => {
     const compile = sourceBetween('function compileConnectorDraftToMessage', 'function compileRecurringDraftToMessage');
-    expect(compile).toContain('/mint$/i.test(label)');
-    expect(compile).toContain('CHAT_BASE58_MINT.test(value)');
-    // redundant Connector/Operation auto-rows are dropped (title already carries them)
-    expect(compile).toContain('/^(connector|operation)$/i.test(label.trim())');
-    // a base58 token mint resolves to its symbol (asset never lost on manual entry); opaque ids drop
-    expect(compile).toContain('tokenDisplayLabel(value)');
-    expect(compile).toContain('looksLikeMintAddress(resolved)');
+    // Reuse the approval CARD's own deduped, sub-action-scoped summary (title + amount), NOT a per-field
+    // join of plan.fields — the old join repeated shared sub-action fields (Earn asset/Amount) and
+    // emitted irrelevant other-branch rows (Repay/Withdraw amount), because readableParameters ignores
+    // showWhen. The card primitives resolve the form + selected branch from plan.parameters.
+    expect(compile).toContain('connectorActionDisplayParts(plan.actionType, plan.parameters)');
+    expect(compile).toContain('connectorPlanAmountInfo(plan)?.label');
+    // preview seed shows an [amount] placeholder while the amount is still blank (mirrors Swap's
+    // template) — but ONLY when the form actually has an amount field (no stray [amount] on votes)
+    expect(compile).toContain('opts.amountPlaceholder');
+    expect(compile).toContain("segments.push('[amount]')");
+    // note/memo is appended when present
+    expect(compile).toContain('plan.parameters.memo');
+    expect(compile).toContain('note: ${note}');
+    // the old per-field id-scanning primitives are gone (the summary is already id-free + deduped)
+    expect(compile).not.toContain('/mint$/i.test(label)');
+    expect(compile).not.toContain('CHAT_BASE58_MINT.test(value)');
     // recurring resolves its tokens too
     const recurring = sourceBetween('function compileRecurringDraftToMessage', 'function stageChatHeldAction');
     expect(recurring).toContain('tokenDisplayLabel(draft.inputToken)');
@@ -207,6 +216,45 @@ describe('every wallet action → structured message → Send → card (held-dra
     expect(input).toContain('state.chatHeldAction = null');
     const clear = sourceBetween('function clearChatComposerDraft', 'function');
     expect(clear).toContain('state.chatHeldAction = null');
+  });
+});
+
+describe('advanced actions: live composer preview + web token picker defaults', () => {
+  it('advanced connector surface seeds + live-updates a composer template like Swap', () => {
+    const preview = sourceBetween('function applyChatConnectorDraftPreview', 'function applyChatTokenPickFor');
+    // builds a plan from the CURRENT form state (same pipeline confirm uses) and compiles it in preview mode
+    expect(preview).toContain("if (!state.chatConnectorSession?.active) return;");
+    expect(preview).toContain('normalizeConnectorDraftParameters(template, readTemplateFields(template))');
+    expect(preview).toContain('buildTemplatePlan(template, parameters');
+    expect(preview).toContain('compileConnectorDraftToMessage(plan, { amountPlaceholder: connectorFormHasAmountInput() })');
+    expect(preview).toContain('chatConnectorPreviewDraft = text');
+    // seeded when the advanced surface opens
+    const open = sourceBetween('function openChatActionSurface', 'function restoreChatConnectorPlannerSnapshot');
+    expect(open).toContain('applyChatConnectorDraftPreview()');
+    // live-updated on every field input/change + choice pick (the connector field funnel)
+    const funnel = sourceBetween('const shouldRerender = syncConnectorTemplateFieldChange(fieldId);', "querySelectorAll<HTMLButtonElement>('button[data-cascading-retry]')");
+    expect((funnel.match(/applyChatConnectorDraftPreview\(\)/g) || []).length).toBeGreaterThanOrEqual(3);
+    // cancelling an un-confirmed preview clears the composer; Confirm releases ownership so its label survives
+    const close = sourceBetween('function closeChatConnectorSurface', 'function reconcileChatConnectorSession');
+    expect(close).toContain('chatDraft === chatConnectorPreviewDraft');
+    expect(close).toContain('clearChatComposerDraft()');
+    const stage = sourceBetween('function stageChatHeldAction', 'async function tryConsumeHeldChatAction');
+    expect(stage).toContain("chatConnectorPreviewDraft = ''");
+  });
+
+  it('a fresh swap defaults the OUTPUT token to the MINT (search) pill, input stays LIST', () => {
+    const handler = sourceBetween('function handleChatPowerAction', 'function syncChatTextareaFromDraft');
+    // both mobile-sheet and web-popover branches set the fresh-swap output to mint search mode
+    expect((handler.match(/chatTokenPickerModes\.toToken = 'mint'/g) || []).length).toBeGreaterThanOrEqual(2);
+    expect(handler).toContain("chatTokenPickerModes.fromToken = 'list'");
+    // default resolver still falls back to LIST for everything else
+    expect(mainSource).toContain("return chatTokenPickerModes[field] ?? 'list';");
+  });
+
+  it('web popover token field is a positioning context so the LIST dropdown opens under its trigger', () => {
+    // without this the absolute .chat-sheet-token-list anchored to .chat-action-popover and top:100%
+    // dropped it below the whole (overflow-y:auto) popover, where it was clipped — looked like it never opened
+    expect(stylesSource).toContain('.chat-action-popover .token-choice-field { position: relative; }');
   });
 });
 
