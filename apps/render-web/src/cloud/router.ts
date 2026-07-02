@@ -417,9 +417,18 @@ export interface CloudApiRouterOptions {
   statelessConnectorPreparer?: StatelessConnectorTransactionPreparer;
   /**
    * Test-only override: replace the stateless connector fact reader used by
-   * `POST /api/connector/read-facts`. Production constructs a read-only action service.
+   * `POST /api/connector/read-facts` when the caller's session matches the requested
+   * wallet (so per-user BYO connector keys are loaded). Production constructs a
+   * read-only action service seeded with the per-wallet secrets loader.
    */
   statelessConnectorReader?: StatelessConnectorFactsReader;
+  /**
+   * Test-only override: replace the KEYLESS public connector fact reader used by
+   * `POST /api/connector/read-facts` for sessionless / wallet-mismatched callers.
+   * Production constructs a read-only action service with NO secrets loader — only
+   * connectors that read public on-chain data without a per-user key resolve.
+   */
+  publicConnectorReader?: StatelessConnectorFactsReader;
 }
 
 export interface CloudApiRouter {
@@ -555,6 +564,12 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
     createStatelessConnectorPreparer(secretsLoader ? { secretsLoader } : {});
   const statelessConnectorReader =
     options.statelessConnectorReader ?? createStatelessConnectorFactsReader(secretsLoader ? { secretsLoader } : {});
+  // Keyless public reader for sessionless / wallet-mismatched read-facts calls. No secrets
+  // loader → only connectors that read PUBLIC on-chain data without a per-user key resolve
+  // (Jupiter orders/lending/borrowing, marinade/jito, meteora/orca/raydium). BYO-key
+  // connectors (Sanctum/Tensor/Magic Eden/Lulo/Phoenix) degrade to an adapter error here.
+  const publicConnectorReader =
+    options.publicConnectorReader ?? createStatelessConnectorFactsReader();
   const evidenceStore = isEvidenceStore(store) ? store : evidenceStoreAdapterForCloudStore(store);
   const workflowApiHandler = createWorkflowApiHandler({
     service: workflowService,
@@ -701,6 +716,7 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
           recurringApiHandler,
           statelessConnectorPreparer,
           statelessConnectorReader,
+          publicConnectorReader,
           connectorSecretsService,
         );
       } catch (err) {
@@ -953,6 +969,9 @@ export function authRateLimitedRoute(pathname: string): AuthRateLimitInput['rout
   if (pathname === '/api/mobile-device-agent-debug') return pathname;
   if (pathname.startsWith('/api/plans')) return '/api/plans:*';
   if (pathname.startsWith('/api/approvals')) return '/api/approvals:*';
+  // Public read-only on-chain position reads (no sign-in required). Bucket with the
+  // public Solana relay so anonymous callers cannot amplify operator RPC/Jupiter-key cost.
+  if (pathname === '/api/connector/read-facts') return '/api/solana:*';
   if (pathname.startsWith('/api/connector')) return '/api/approvals:*';
   if (pathname.startsWith('/api/recurring')) return '/api/recurring:*';
   if (pathname.startsWith('/api/evidence')) return '/api/evidence:*';
@@ -1027,6 +1046,7 @@ async function routeApiRequest(
   recurringApiHandler: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>,
   statelessConnectorPreparer: StatelessConnectorTransactionPreparer,
   statelessConnectorReader: StatelessConnectorFactsReader,
+  publicConnectorReader: StatelessConnectorFactsReader,
   connectorSecretsService: ConnectorSecretsService | undefined,
 ): Promise<void> {
   if (url.pathname === '/api/ai/status') {
@@ -1469,7 +1489,7 @@ async function routeApiRequest(
 
   if (url.pathname === '/api/connector/read-facts') {
     requireMethod(req, 'POST');
-    await handleConnectorReadFacts(req, res, store, clock, statelessConnectorReader);
+    await handleConnectorReadFacts(req, res, store, clock, statelessConnectorReader, publicConnectorReader);
     return;
   }
 
@@ -2370,24 +2390,35 @@ async function handleConnectorPrepareTransaction(
   }
 }
 
+// Read-only connector facts are PUBLIC on-chain data (identical to any block explorer),
+// so this endpoint never requires sign-in. A signed-in caller reading its OWN wallet gets
+// the secrets-enabled reader (so BYO-key connectors authenticate); everyone else (no
+// session, or a session for a different wallet — e.g. a stale same-origin cookie after a
+// wallet switch) gets the keyless public reader, which resolves keyless connectors and
+// simply errors on BYO-key ones. The read-only backend refuses all signatures, so there
+// is no write surface here.
 async function handleConnectorReadFacts(
   req: IncomingMessage,
   res: ServerResponse,
   store: WorkflowStore,
   clock: Clock,
-  reader: StatelessConnectorFactsReader,
+  secretsReader: StatelessConnectorFactsReader,
+  publicReader: StatelessConnectorFactsReader,
 ): Promise<void> {
   const session = await sessionFromRequest({ req, store, clock });
-  if (!session) {
-    throw new ApiError(401, 'Sign in required.');
-  }
   const body = asJsonRecord(await readJsonBody(req), 'connector read-facts body');
   const connectorId = requiredBodyString(body, 'connectorId');
   const cluster = requiredCluster(body.cluster);
-  const requestedWallet = typeof body.walletAddress === 'string' ? body.walletAddress.trim() : '';
-  if (requestedWallet && requestedWallet !== session.walletAddress) {
-    throw new ApiError(401, 'Wallet address does not match the signed-in cloud session.');
+  // Prefer the body's wallet (sessionless public reads must supply it); fall back to the session
+  // wallet for signed-in callers that omit it. At least one must be present.
+  const bodyWallet = typeof body.walletAddress === 'string' ? body.walletAddress.trim() : '';
+  const requestedWallet = bodyWallet || session?.walletAddress || '';
+  if (!requestedWallet) {
+    throw new ApiError(400, 'walletAddress is required.');
   }
+  // Only load per-user BYO connector secrets when the session owns the requested wallet.
+  const useSecrets = Boolean(session) && requestedWallet === session!.walletAddress;
+  const reader = useSecrets ? secretsReader : publicReader;
   const capability = body.capability === undefined
     ? undefined
     : requiredBodyString(body, 'capability') as ConnectorReadFactsRequest['capability'];
@@ -2395,7 +2426,7 @@ async function handleConnectorReadFacts(
     ...(body as unknown as ConnectorReadFactsRequest),
     connectorId,
     cluster,
-    walletAddress: session.walletAddress,
+    walletAddress: requestedWallet,
     ...(capability !== undefined ? { capability } : {}),
   };
   try {

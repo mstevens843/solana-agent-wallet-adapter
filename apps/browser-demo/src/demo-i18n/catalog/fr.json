@@ -1,6 +1,11 @@
 {
   "language": "fr",
   "entries": {
+    "All positions": "Toutes les positions",
+    "Every open position across orders, lending, borrowing, staking and liquidity.": "Toutes les positions ouvertes : ordres, prêts, emprunts, staking et liquidité.",
+    "Filter positions": "Filtrer les positions",
+    "Couldn't reach live data right now. Showing what you opened. Tap Refresh to retry.": "Données en direct indisponibles pour le moment. Affichage de ce que vous avez ouvert. Appuyez sur Actualiser pour réessayer.",
+    "Updating…": "Mise à jour…",
     "Back to demo": "Retour à la démo",
     "Amount exceeds your balance.": "Le montant dépasse votre solde.",
     "Enter an amount or shares.": "Saisissez un montant ou des parts.",

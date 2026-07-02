@@ -132,16 +132,23 @@ describe('chat decision planner surface', () => {
   });
 });
 
-describe('chat wallet-actions menu opens as a modal on native mobile', () => {
-  it('routes the "+" toggle to the chat-action sheet (scrim/z-index) instead of the inline popover', () => {
-    const handler = sourceBetween("const plusToggle = document.querySelector<HTMLButtonElement>('[data-chat-plus-toggle]')", 'for (const button of document.querySelectorAll<HTMLButtonElement>(\'[data-chat-action]\'))');
-    expect(handler).toContain('if (chatUsesSheet())');
-    expect(handler).toContain('openChatActionSheet()');
-    expect(handler).toContain('closeChatActionSheet()');
-    // the sheet body already renders the Primary/Advanced menu when no builder is active
-    const sheetBody = sourceBetween('function chatActionSheetBodyHtml', 'function chatWalletActionTabs');
-    expect(sheetBody).toContain('chatWalletActionTabs()');
-    expect(sheetBody).toContain('chatWalletActionList()');
+describe('chat wallet-actions menu is a scrimmed popover on native mobile (not a sheet)', () => {
+  it('the "+" toggle keeps the upward popover (no chat-action sheet reroute)', () => {
+    const handler = sourceBetween("const plusToggle = document.querySelector<HTMLButtonElement>('[data-chat-plus-toggle]')", 'Native-mobile scrim behind the Wallet Actions popover');
+    // popover toggle, not a sheet: no openChatActionSheet in the "+" handler
+    expect(handler).toContain('state.chatComposerOpen = !state.chatComposerOpen');
+    expect(handler).not.toContain('openChatActionSheet()');
+  });
+
+  it('renders a full-screen scrim behind the popover on native mobile + a tap-to-close binding', () => {
+    // scrim is rendered as a sibling of the composer (root stacking context), native-mobile only
+    expect(mainSource).toContain("chatUsesSheet() && state.chatComposerOpen ? '<div class=\"chat-plus-scrim\" data-chat-plus-close");
+    // tapping the scrim closes the menu
+    expect(mainSource).toContain("document.querySelector<HTMLElement>('[data-chat-plus-close]')");
+    // CSS: scrim above the dock (z-index 300) + composer lifted above the scrim while open
+    expect(stylesSource).toContain('.chat-plus-scrim {');
+    expect(stylesSource).toContain('z-index: 300;');
+    expect(stylesSource).toContain('.chat-composer-mobile:has(.chat-plus-menu.open) { z-index: 310; }');
   });
 });
 

@@ -36558,6 +36558,24 @@ button.danger:hover:not(:disabled) {
 }
 .chat-plus-menu.open { display: flex; }
 
+/* Native-mobile: make the Wallet Actions popover read as a modal WITHOUT turning it into a sheet.
+   A full-screen scrim (rendered as a sibling of the composer, only on native mobile) dims + hides
+   the transcript, the Research/Decision strip, and the bottom dock behind the still-upward popover.
+   The scrim sits in the chat-surface's root stacking context at z-index 300 (above the dock's 240),
+   and the composer is lifted to 310 while the menu is open so the popover floats above the scrim.
+   .chat-surface / .chat-composer have no transforms, so position:fixed resolves against the viewport. */
+.chat-plus-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(5, 7, 6, 0.76);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+  touch-action: none;
+  animation: mobile-rail-sheet-scrim-in 180ms ease-out both;
+}
+.chat-composer-mobile:has(.chat-plus-menu.open) { z-index: 310; }
+
 /* --- Web/desktop consolidated wallet-action popover ------------------------- */
 /* Anchored above the composer; reuses the sheet field renderers in a desktop grid. */
 .chat-composer-dock { position: relative; }
@@ -39139,9 +39157,17 @@ button.danger:hover:not(:disabled) {
 .positions-opened { color: var(--muted); font-size: 0.74rem; }
 .positions-card-summary { align-items: baseline; color: var(--text); display: flex; flex-wrap: wrap; gap: 6px; line-height: 1.4; }
 .positions-title { font-size: 0.95rem; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+/* Bold-white title matching the chat approval card the user liked. */
+.positions-title--bold { color: var(--text); font-weight: 800; }
+/* Seeded/opening card hero: token logo chip + bold amount + muted category sub-label (reuses the
+   .chat-action-* chips emitted by tokenLogoChipHtml/chatActionHeroHtml so it matches the chat card). */
+.positions-hero { align-items: center; display: flex; flex-wrap: wrap; gap: 6px 10px; }
+.positions-hero strong { color: var(--text); font-weight: 800; white-space: nowrap; }
+.positions-hero .chat-action-sub { color: rgba(196, 205, 202, 0.7); font-size: 0.8rem; }
 /* Hero stat: the single number the user came to see, large under the title. */
 .positions-headline { display: flex; flex-direction: column; gap: 1px; margin: 2px 0; }
 .positions-headline-label { color: var(--muted); font-size: 0.64rem; letter-spacing: 0.03em; text-transform: uppercase; }
+.positions-headline-row { align-items: center; display: flex; gap: 8px; }
 .positions-headline-value { color: var(--text); font-size: 1.2rem; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
 .positions-headline.tone-good .positions-headline-value { color: var(--accent, #3ddc97); }
 .positions-headline.tone-warn .positions-headline-value { color: #f5c451; }
@@ -39188,6 +39214,15 @@ button.danger:hover:not(:disabled) {
 .positions-card-tone-warn { border-left: 3px solid #f5c451; }
 .positions-card-tone-bad { border-left: 3px solid #f0726b; }
 .positions-card-actions .positions-primary { border-color: var(--accent, #3ddc97); color: var(--accent, #3ddc97); }
+/* Mobile filter dropdown (replaces the horizontally-scrolling pill rail on phones). */
+.positions-selector-mobile { margin-bottom: 16px; }
+.positions-selector-mobile .select-picker-shell,
+.positions-section-picker .select-picker-trigger { width: 100%; }
+/* "All" view groups: each section labeled, so it reads as a structured list not a flat pile. */
+.positions-group { display: flex; flex-direction: column; gap: 10px; }
+.positions-group + .positions-group { margin-top: 18px; }
+.positions-group-head { align-items: center; color: var(--muted); display: flex; gap: 8px; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase; }
+.positions-group-head .positions-tab-count { margin-left: 0; }
 /* Mobile (Capacitor dock): single-column cards, horizontally-scrollable selector, stacked actions. */
 .mobile-positions-stage .positions-selector { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 4px; }
 .mobile-positions-stage .positions-tab { flex: 0 0 auto; white-space: nowrap; }

@@ -118,6 +118,75 @@ describe('cloud one-time workflow API', () => {
     });
   });
 
+  it('serves connector facts WITHOUT a session via the keyless public reader (public on-chain data)', async () => {
+    const store = new MemoryWorkflowStore();
+    await withRenderWorkflowServer(store, async (port) => {
+      // No cookie → sessionless. Read-only position facts are public on-chain data.
+      const response = await requestJsonWithHeaders(port, 'POST', '/api/connector/read-facts', {
+        connectorId: 'jupiter',
+        capability: 'earn',
+        cluster: 'mainnet-beta',
+        walletAddress: walletA,
+      }, {});
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({ reader: 'public', walletAddress: walletA });
+    }, {
+      statelessConnectorReader: async () => ({ reader: 'secrets' }),
+      publicConnectorReader: async (input) => ({ reader: 'public', walletAddress: input.walletAddress }),
+    });
+  });
+
+  it('uses the KEYLESS public reader when the session wallet does not match the requested wallet (no 401)', async () => {
+    const store = new MemoryWorkflowStore();
+    const session = await createWalletSession({ store, walletAddress: walletB, clock: fixedClock('2026-05-08T20:00:00.000Z') });
+    await withRenderWorkflowServer(store, async (port) => {
+      const response = await requestJsonWithHeaders(port, 'POST', '/api/connector/read-facts', {
+        connectorId: 'jupiter',
+        capability: 'earn',
+        cluster: 'mainnet-beta',
+        walletAddress: walletA, // different from the signed-in walletB (e.g. stale cookie after a wallet switch)
+      }, { cookie: `${SESSION_COOKIE_NAME}=${encodeURIComponent(session.token)}` });
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({ reader: 'public', walletAddress: walletA });
+    }, {
+      statelessConnectorReader: async () => ({ reader: 'secrets' }),
+      publicConnectorReader: async (input) => ({ reader: 'public', walletAddress: input.walletAddress }),
+    });
+  });
+
+  it('uses the SECRETS reader when the session owns the requested wallet (BYO connector keys)', async () => {
+    const store = new MemoryWorkflowStore();
+    const session = await createWalletSession({ store, walletAddress: walletA, clock: fixedClock('2026-05-08T20:00:00.000Z') });
+    await withRenderWorkflowServer(store, async (port) => {
+      const response = await requestJsonWithHeaders(port, 'POST', '/api/connector/read-facts', {
+        connectorId: 'tensor',
+        capability: 'positions',
+        cluster: 'mainnet-beta',
+        walletAddress: walletA,
+      }, { cookie: `${SESSION_COOKIE_NAME}=${encodeURIComponent(session.token)}` });
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({ reader: 'secrets' });
+    }, {
+      statelessConnectorReader: async () => ({ reader: 'secrets' }),
+      publicConnectorReader: async () => ({ reader: 'public' }),
+    });
+  });
+
+  it('requires a walletAddress on the read-facts body', async () => {
+    const store = new MemoryWorkflowStore();
+    await withRenderWorkflowServer(store, async (port) => {
+      const response = await requestJsonWithHeaders(port, 'POST', '/api/connector/read-facts', {
+        connectorId: 'jupiter',
+        capability: 'earn',
+        cluster: 'mainnet-beta',
+      }, {});
+      expect(response.status).toBe(400);
+    }, {
+      statelessConnectorReader: async () => ({ reader: 'secrets' }),
+      publicConnectorReader: async () => ({ reader: 'public' }),
+    });
+  });
+
   it('rejects workflow requests without a wallet session', async () => {
     await withWorkflowServer(async ({ port }) => {
       const response = await postJson(port, '/api/plans', createPlanBody(), null);

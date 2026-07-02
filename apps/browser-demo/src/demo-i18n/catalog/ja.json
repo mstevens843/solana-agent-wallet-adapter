@@ -1,6 +1,11 @@
 {
   "language": "ja",
   "entries": {
+    "All positions": "すべてのポジション",
+    "Every open position across orders, lending, borrowing, staking and liquidity.": "注文・貸出・借入・ステーキング・流動性にわたるすべての未決済ポジション。",
+    "Filter positions": "ポジションを絞り込む",
+    "Couldn't reach live data right now. Showing what you opened. Tap Refresh to retry.": "現在ライブデータを取得できません。開いた内容を表示しています。「更新」をタップして再試行してください。",
+    "Updating…": "更新中…",
     "Back to demo": "デモに戻る",
     "Amount exceeds your balance.": "金額が残高を超えています。",
     "Enter an amount or shares.": "金額またはシェアを入力してください。",

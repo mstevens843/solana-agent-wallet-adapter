@@ -1,6 +1,11 @@
 {
   "language": "en",
   "entries": {
+    "All positions": "All positions",
+    "Every open position across orders, lending, borrowing, staking and liquidity.": "Every open position across orders, lending, borrowing, staking and liquidity.",
+    "Filter positions": "Filter positions",
+    "Couldn't reach live data right now. Showing what you opened. Tap Refresh to retry.": "Couldn't reach live data right now. Showing what you opened. Tap Refresh to retry.",
+    "Updating…": "Updating…",
     "Back to demo": "Back to demo",
     "Amount exceeds your balance.": "Amount exceeds your balance.",
     "Enter an amount or shares.": "Enter an amount or shares.",

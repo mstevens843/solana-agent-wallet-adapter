@@ -1,6 +1,11 @@
 {
   "language": "ru",
   "entries": {
+    "All positions": "Все позиции",
+    "Every open position across orders, lending, borrowing, staking and liquidity.": "Все открытые позиции: ордера, кредитование, займы, стейкинг и ликвидность.",
+    "Filter positions": "Фильтр позиций",
+    "Couldn't reach live data right now. Showing what you opened. Tap Refresh to retry.": "Не удалось получить данные в реальном времени. Показано то, что вы открыли. Нажмите «Обновить», чтобы повторить.",
+    "Updating…": "Обновление…",
     "Back to demo": "Назад к демо",
     "Amount exceeds your balance.": "Сумма превышает ваш баланс.",
     "Enter an amount or shares.": "Введите сумму или доли.",

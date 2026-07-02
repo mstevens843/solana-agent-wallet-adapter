@@ -1,6 +1,11 @@
 {
   "language": "zh-Hans",
   "entries": {
+    "All positions": "所有仓位",
+    "Every open position across orders, lending, borrowing, staking and liquidity.": "涵盖订单、借出、借入、质押和流动性的所有未平仓仓位。",
+    "Filter positions": "筛选仓位",
+    "Couldn't reach live data right now. Showing what you opened. Tap Refresh to retry.": "暂时无法获取实时数据。显示你已开立的内容。点按“刷新”重试。",
+    "Updating…": "更新中…",
     "Back to demo": "返回演示",
     "Amount exceeds your balance.": "金额超过您的余额。",
     "Enter an amount or shares.": "请输入金额或份额。",

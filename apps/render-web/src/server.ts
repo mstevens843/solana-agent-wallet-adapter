@@ -95,6 +95,9 @@ export function createRenderWebServer(options: RenderWebServerOptions = {}): Ser
     ...(options.statelessConnectorReader
       ? { statelessConnectorReader: options.statelessConnectorReader }
       : {}),
+    ...(options.publicConnectorReader
+      ? { publicConnectorReader: options.publicConnectorReader }
+      : {}),
   });
   return createServer((req, res) => {
     void handleRequest(req, res, staticDir, apiRouter);

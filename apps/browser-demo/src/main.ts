@@ -2365,6 +2365,10 @@ interface PreparedAction {
 // Seeded from the opening PreparedAction; lives in the Positions tab until closed → then Done.
 type PositionStatus = 'open' | 'closed';
 type PositionSectionId = 'orders' | 'lending' | 'borrowing' | 'staking' | 'liquidity' | 'perps';
+// The Positions selector filter: a real (fetchable) section, or the aggregate 'all' view that
+// is the default landing tab. 'all' is intentionally NOT a PositionSectionId — the fetchers,
+// row parsers and SECTION_FOR_CATEGORY only ever deal with concrete sections.
+type PositionsFilterId = PositionSectionId | 'all';
 interface PositionRecord {
   id: string; // = the opening action id
   category: ActionCategory;
@@ -2378,6 +2382,11 @@ interface PositionRecord {
   txid?: string;
   status: PositionStatus;
   closedAt?: string;
+  // Set when a manage/close action (withdraw/repay/cancel/…) for this position has been signed
+  // but the authoritative live read hasn't reconciled yet. Keeps the card visible ("Updating…")
+  // through the confirm gap; a successful empty live read past the settle window then auto-closes
+  // it (full withdraw / cancel / period-ended → Done). A partial withdraw keeps it open via live.
+  manageRequestedAt?: string;
 }
 
 // A normalized, enriched live position/order row rendered in the Positions tab.
@@ -2396,6 +2405,9 @@ interface PositionLiveRow {
   // The single most important stat for this position, rendered large under the title. Parsers
   // extract it from `details` (so it isn't duplicated). Optional — cards degrade to title + tiles.
   headline?: PositionDetail;
+  // The mint (or token symbol) of the headline asset, so the card shows an inline token logo next
+  // to the hero number. Optional — degrades to text when absent (e.g. two-token LP rows).
+  heroMint?: string;
   details: PositionDetail[];
   progress?: { current: number; total: number };
   distancePct?: number | null; // limit: % from trigger
@@ -3493,7 +3505,7 @@ interface DemoState {
   // Live stateful positions (Limit/DCA/Lend/Borrow/Stake/LP/Perps) opened after signing.
   positions: PositionRecord[];
   lastPositionFocusId: string;
-  positionsCategory: PositionSectionId;
+  positionsCategory: PositionsFilterId;
   positionsLive: Partial<Record<PositionSectionId, PositionsLiveEntry>>;
   positionsClosed: Record<string, { kind: string; metrics: PositionClosedMetrics }>;
   positionsPrefetched: boolean; // fired all-section live fetch once this session so count pills are accurate
@@ -4676,7 +4688,7 @@ const state: DemoState = {
   artifactView: 'create',
   positions: [],
   lastPositionFocusId: '',
-  positionsCategory: 'orders',
+  positionsCategory: 'all',
   positionsLive: {},
   positionsClosed: {},
   positionsPrefetched: false,
@@ -22015,6 +22027,7 @@ function chatPanel(): string {
       <button type="button" class="chat-scroll-pill" data-chat-scroll-pill aria-label="${escapeHtml(t('Scroll to bottom'))}" title="${escapeHtml(t('Scroll to bottom'))}">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"></path><path d="m19 12-7 7-7-7"></path></svg>
       </button>
+      ${chatUsesSheet() && state.chatComposerOpen ? '<div class="chat-plus-scrim" data-chat-plus-close aria-hidden="true"></div>' : ''}
       ${chatComposerHtml()}
       <p class="chat-disclaimer">${escapeHtml(t('The agent reads live data to answer. You always review and sign.'))}</p>
     </section>
@@ -28300,15 +28313,11 @@ function armChatDecisionPolicy(content: string): void {
     createdAt: new Date().toISOString(),
     status: 'done',
   });
-  // Open the Wallet Actions kind menu (sheet on native mobile, popover on web) so the next
-  // step is one tap away. A menu raises no keyboard; the builder handles the keyboard itself.
-  if (chatUsesSheet()) {
-    state.chatActionBuilder = null;
-    state.chatActionPicker = null;
-    openChatActionSheet();
-  } else {
-    state.chatComposerOpen = true;
-  }
+  // Open the Wallet Actions kind menu (upward popover, native mobile + web) so the next step is one
+  // tap away. A menu raises no keyboard; the per-action builder handles the keyboard itself.
+  state.chatActionBuilder = null;
+  state.chatActionPicker = null;
+  state.chatComposerOpen = true;
   chatScrollPinned = true;
   chatForceScrollBottom = true;
   saveChatHistoryState();
@@ -29064,31 +29073,9 @@ function bindChat(): void {
   if (plusToggle) {
     bindOnce(plusToggle, 'click', (event) => {
       event.stopPropagation();
-      // Native mobile: the Wallet Actions kind menu is a bottom-sheet MODAL (full-screen scrim +
-      // z-index 320 + scroll-lock via the chat-action sheet), NOT the inline .chat-plus-menu popover
-      // (z-index 30, no scrim) which let the Research/Decision row + the chat transcript bleed through.
-      // chatActionSheetBodyHtml() already renders the Primary/Advanced menu when no builder is active.
-      if (chatUsesSheet()) {
-        if (state.activeMobileRailSheet === 'chat-action') {
-          closeChatActionSheet();
-        } else {
-          state.chatComposerOpen = false; // never show the buggy popover alongside the sheet
-          state.chatActionBuilder = null; // show the kind menu, not a stale builder
-          state.chatActionPicker = null;
-          state.chatDecisionCheckActive = false;
-          state.chatResearchOpen = false;
-          state.chatResearchDraft = null;
-          state.chatResearchConfirm = null;
-          state.chatHistoryOpen = false;
-          state.chatPendingOpen = false;
-          state.chatPendingSelectedId = null;
-          openChatActionSheet();
-        }
-        render();
-        return;
-      }
-      // The Wallet Actions menu is an upward dropdown; picking an action opens the sheet
-      // (native) or the consolidated popover (desktop).
+      // The Wallet Actions menu is an upward dropdown popover (native mobile + desktop); picking an
+      // action opens the per-action sheet (native) or the consolidated popover (desktop). On native
+      // mobile a full-screen scrim (rendered below) sits behind the popover so it reads as a modal.
       state.chatComposerOpen = !state.chatComposerOpen;
       if (state.chatComposerOpen) {
         state.chatDecisionCheckActive = false;
@@ -29112,6 +29099,13 @@ function bindChat(): void {
       plusToggle.setAttribute('aria-expanded', state.chatComposerOpen ? 'true' : 'false');
     });
   }
+  // Native-mobile scrim behind the Wallet Actions popover: tapping the dimmed backdrop closes the menu.
+  bindOnce(document.querySelector<HTMLElement>('[data-chat-plus-close]'), 'click', (event) => {
+    event.stopPropagation();
+    state.chatComposerOpen = false;
+    document.querySelector('.chat-plus-menu')?.classList.remove('open');
+    render();
+  });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-action]')) {
     bindOnce(button, 'click', () => handleChatPowerAction(button.dataset.chatAction ?? ''));
   }
@@ -39399,49 +39393,40 @@ function bind(): void {
     });
   }
 
-  // Positions tab: "Manage" routes to the action's New Request form (where the cancel/withdraw/repay
-  // sub-actions live, re-entering Needs Approval); "Move to Done" closes the card and shows the receipt.
-  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-position-manage]')) {
-    bindOnce(button, 'click', () => {
-      const id = button.dataset.positionManage;
-      const position = id ? state.positions.find((p) => p.id === id) : undefined;
-      if (!position) return;
-      state.createActionCategory = position.category;
-      state.oneTimePlanView = 'create';
-      state.activeTab = 'agent';
-      render();
-    });
-  }
-
-  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-position-close]')) {
-    bindOnce(button, 'click', () => {
-      const id = button.dataset.positionClose;
-      const position = id ? state.positions.find((p) => p.id === id) : undefined;
-      if (!position) return;
-      position.status = 'closed';
-      position.closedAt = new Date().toISOString();
-      savePositions();
-      delete state.positionsLive[sectionForCategory(position.category)]; // re-read on return so it doesn't resurface
-      state.activeTab = 'completed';
-      state.completedPlanFilter = 'receipts';
-      state.lastCompletedFocusId = position.id;
-      render();
-    });
-  }
+  // Positions cards no longer carry "New action" / "Move to Done" — every card offers its
+  // per-type manage action (Withdraw/Repay/Unstake/Remove/Cancel) via [data-position-cancel]
+  // below, and closing is driven by the authoritative live read (see the reconcile logic in
+  // fetchPositionCategory), never a manual button.
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-positions-tab]')) {
     bindOnce(button, 'click', () => {
-      const id = button.dataset.positionsTab as PositionSectionId | undefined;
+      const id = button.dataset.positionsTab as PositionsFilterId | undefined;
       if (!id || state.positionsCategory === id) return;
       state.positionsCategory = id;
-      render(); // panel lazy-fetches the section on first view
+      render(); // panel lazy-fetches the section(s) on first view
+    });
+  }
+
+  // Mobile filter dropdown (selectPicker → synthetic change on the hidden native <select>).
+  for (const sel of document.querySelectorAll<HTMLSelectElement>('select[data-positions-section-select]')) {
+    bindOnce(sel, 'change', () => {
+      const id = sel.value as PositionsFilterId;
+      if (!id || state.positionsCategory === id) return;
+      state.positionsCategory = id;
+      render();
     });
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-positions-refresh]')) {
     bindOnce(button, 'click', () => {
-      const id = button.dataset.positionsRefresh as PositionSectionId | undefined;
+      const id = button.dataset.positionsRefresh as PositionsFilterId | undefined;
       if (!id) return;
+      if (id === 'all') {
+        for (const s of POSITIONS_SECTIONS) {
+          if (s.id !== 'perps') void fetchPositionCategory(s.id, true);
+        }
+        return;
+      }
       void fetchPositionCategory(id, true);
     });
   }
@@ -46614,15 +46599,19 @@ function upsertPositionFromAction(action: PreparedAction, category: ActionCatego
   savePositions();
 }
 
-// A manage/close action signed → close the most-recent matching open position (same category + connector).
-function closePositionsForManageAction(action: PreparedAction, category: ActionCategory): void {
+// A manage/close action signed (withdraw/repay/cancel/…) → mark the most-recent matching open
+// position (same category + connector) as manage-pending, but DO NOT close it. The authoritative
+// live read decides remaining-vs-gone: a partial withdraw leaves a smaller live position (card
+// stays), a full withdraw / cancel / period-end leaves an empty live read that the reconcile step
+// in fetchPositionCategory then retires to Done. Marking (not closing) here also stops the card
+// from vanishing-then-reappearing during the confirm gap.
+function markManagePendingForAction(action: PreparedAction, category: ActionCategory): void {
   const conn = connectorIdForKind(action.kind);
   const match = state.positions.find(
     (p) => p.status === 'open' && p.category === category && p.cluster === action.cluster && (!conn || p.connector === conn),
   );
   if (match) {
-    match.status = 'closed';
-    match.closedAt = new Date().toISOString();
+    match.manageRequestedAt = new Date().toISOString();
     savePositions();
   }
 }
@@ -46661,6 +46650,46 @@ function expireStaleSeededForSection(sectionId: PositionSectionId, cluster: Clus
   if (changed) savePositions();
 }
 
+// Reconcile manage-pending seeded records against a fresh live read (the authoritative source):
+//  • the position still appears live (partial withdraw/reduce) → clear the pending flag, keep open
+//    (the live card shows the remaining amount);
+//  • it's gone from a CLEAN (non-partial), non-empty-or-empty live read and the settle window has
+//    passed (full withdraw / cancel / lend-period-ended → funds auto-returned) → close it to Done.
+// Guards: only touch THIS section's categories, this wallet, this cluster; never auto-close on a
+// partial (some sources failed) read — that could retire a position a keyed connector just couldn't
+// read. Fresh opens carry no manageRequestedAt, so they are never auto-closed here.
+function reconcileManagePendingForSection(
+  sectionId: PositionSectionId,
+  cluster: Cluster,
+  rows: PositionLiveRow[],
+  partial: boolean,
+): void {
+  const section = POSITIONS_SECTIONS.find((s) => s.id === sectionId);
+  if (!section) return;
+  const now = Date.now();
+  let changed = false;
+  for (const p of state.positions) {
+    if (p.status !== 'open' || !p.manageRequestedAt) continue;
+    if (p.cluster !== cluster || p.walletAddress !== state.address) continue;
+    if (!section.categories.includes(p.category)) continue;
+    // Wait out the settle window before deciding — the just-signed manage tx may not be indexed on
+    // the very next read, so an early "still there"/"already gone" is unreliable.
+    if (now - new Date(p.manageRequestedAt).getTime() < POSITION_PENDING_MS) continue;
+    const stillLive = rows.some((r) => r.connectorId === p.connector && (r.kind as string) === p.category);
+    if (stillLive) {
+      delete p.manageRequestedAt; // confirmed partial reduce — position persists; stop "Updating…"
+      changed = true;
+    } else if (!partial) {
+      // Gone from a clean read after the settle window → full withdraw / cancel / period-ended → Done.
+      p.status = 'closed';
+      p.closedAt = new Date().toISOString();
+      delete p.manageRequestedAt;
+      changed = true;
+    }
+  }
+  if (changed) savePositions();
+}
+
 // ---- Positions live fetch (Jupiter read-facts + Birdeye USD enrichment) ----
 const POSITIONS_FRESH_MS = 30_000;
 
@@ -46683,7 +46712,18 @@ async function connectorRead(
   if (state.bridgeActive && state.bridgeToken && isTrustedBridgeUrl(state.bridgeUrl)) {
     return bridgeRequest<Record<string, unknown>>('/bridge/action/connector-read-facts', { method: 'POST', body });
   }
-  return null; // not signed in / no bridge → keep seeded cards
+  // Public read-only fallback: connector position facts are PUBLIC on-chain data, so no
+  // sign-in is required. The cloud serves keyless connectors (Jupiter orders/lending/
+  // borrowing, marinade/jito, meteora/orca/raydium) statelessly for any connected wallet —
+  // this is what makes live cards appear on the paired Plan Connector, standalone Device
+  // Agent, and plain mobile-web transports (none of which set a matching cloud session or a
+  // trusted local bridge). A failure here (offline, or a BYO-key connector with no session)
+  // returns null → treated as "no live source" (seeded cards / partial), never an error wall.
+  try {
+    return await cloudRequest<Record<string, unknown>>('/api/connector/read-facts', { method: 'POST', body });
+  } catch {
+    return null;
+  }
 }
 
 function posArray(value: unknown): Record<string, unknown>[] {
@@ -46818,7 +46858,7 @@ function parseLendRows(res: Record<string, unknown> | null | undefined, prices: 
     const { headline, rest } = extractHeadline(details, 'Value');
     return {
       section: 'lending', id: posStr(p.shareMint) ?? posStr(p.assetMint) ?? sym, connectorId: 'jupiter', kind: 'lend',
-      title: `${sym} supplied`, status: 'earning', headline, details: rest,
+      title: `${sym} supplied`, status: 'earning', headline, heroMint: assetMint || sym, details: rest,
       cancel: { kind: 'jupiter_lend_earn_withdraw', orderId: assetMint },
       // Withdraw is partial (by amount); Redeem-all is the clean full-exit by shares.
       extras: assetMint ? [{ kind: 'jupiter_lend_earn_redeem', label: t('Redeem all'), orderId: assetMint }] : undefined,
@@ -46896,19 +46936,19 @@ function parseStakeRows(connectorId: string, res: Record<string, unknown> | null
     // Prefill the unstake form's required amount with the full mSOL balance the card already knows.
     const msolBal = posStr(r.msolBalance);
     const { headline, rest } = extractHeadline(details, 'mSOL');
-    rows.push({ section: 'staking', id: `${connectorId}-msol`, connectorId, kind: 'stake', title: t('Marinade staked'), headline, details: rest, cancel: { kind: 'marinade_liquid_unstake', orderId: '', ...(msolBal ? { fields: { msolAmount: msolBal } } : {}) } });
+    rows.push({ section: 'staking', id: `${connectorId}-msol`, connectorId, kind: 'stake', title: t('Marinade staked'), headline, heroMint: 'mSOL', details: rest, cancel: { kind: 'marinade_liquid_unstake', orderId: '', ...(msolBal ? { fields: { msolAmount: msolBal } } : {}) } });
   }
   const jitoSol = r.jitoSol as Record<string, unknown> | undefined;
   if (jitoSol && posStr(jitoSol.amount)) {
     const jitoBal = posStr(jitoSol.amount)!;
-    rows.push({ section: 'staking', id: `${connectorId}-jitosol`, connectorId, kind: 'stake', title: 'JitoSOL', headline: { label: 'Balance', value: posAmount(jitoBal) }, details: [], cancel: { kind: 'jito_unstake_jitosol', orderId: '', fields: { jitoSolAmount: jitoBal } } });
+    rows.push({ section: 'staking', id: `${connectorId}-jitosol`, connectorId, kind: 'stake', title: 'JitoSOL', headline: { label: 'Balance', value: posAmount(jitoBal) }, heroMint: 'JitoSOL', details: [], cancel: { kind: 'jito_unstake_jitosol', orderId: '', fields: { jitoSolAmount: jitoBal } } });
   }
   for (const lst of posArray(r.rows)) {
     // SanctumWalletPosition exposes the human balance as `amountUi` (not `amount`).
     const lstAmount = posStr(lst.amountUi);
     if (!lstAmount) continue;
     const sym = posStr(lst.symbol) ?? posMint(posStr(lst.mint));
-    rows.push({ section: 'staking', id: `${connectorId}-${posStr(lst.mint) ?? sym}`, connectorId, kind: 'stake', title: sym, headline: { label: 'Balance', value: `${posAmount(lstAmount)} ${sym}` }, details: [], cancel: { kind: 'sanctum_unstake_lst_to_sol', orderId: posStr(lst.mint) ?? '' } });
+    rows.push({ section: 'staking', id: `${connectorId}-${posStr(lst.mint) ?? sym}`, connectorId, kind: 'stake', title: sym, headline: { label: 'Balance', value: `${posAmount(lstAmount)} ${sym}` }, heroMint: posStr(lst.mint) ?? sym, details: [], cancel: { kind: 'sanctum_unstake_lst_to_sol', orderId: posStr(lst.mint) ?? '' } });
   }
   return rows;
 }
@@ -46997,7 +47037,7 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
         connectorRead('jupiter', 'trigger', { triggerOperation: 'orders', triggerState: 'open' }),
         connectorRead('jupiter', 'recurring', { recurringOperation: 'orders', recurringState: 'active', recurringType: 'time' }),
       ]);
-      if (trig === null && rec === null) throw new Error('signed-out');
+      if (trig === null && rec === null) throw new Error('unavailable');
       partial = [trig, rec].includes(null);
       const orderMints = [
         ...(trig ? posArray(((trig.result ?? trig) as Record<string, unknown>).orders) : []).map((o) => posStr(o.triggerMint) ?? posStr(o.outputMint)),
@@ -47007,12 +47047,12 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
       rows = [...parseLimitRows(trig, prices), ...parseDcaRows(rec, prices)];
     } else if (section === 'lending') {
       const res = await connectorRead('jupiter', 'earn');
-      if (res === null) throw new Error('signed-out');
+      if (res === null) throw new Error('unavailable');
       const prices = await posPrices(posArray(res.positions).map((p) => posStr(p.assetMint)));
       rows = parseLendRows(res, prices);
     } else if (section === 'borrowing') {
       const res = await connectorRead('jupiter', 'positions');
-      if (res === null) throw new Error('signed-out');
+      if (res === null) throw new Error('unavailable');
       rows = parseBorrowRows(res);
     } else if (section === 'staking') {
       const [m, j, s] = await settleReads([
@@ -47020,7 +47060,7 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
         connectorRead('jito', 'positions'),
         connectorRead('sanctum', 'positions'),
       ]);
-      if (m === null && j === null && s === null) throw new Error('signed-out');
+      if (m === null && j === null && s === null) throw new Error('unavailable');
       partial = [m, j, s].includes(null);
       rows = [...parseStakeRows('marinade', m), ...parseStakeRows('jito', j), ...parseStakeRows('sanctum', s)];
     } else if (section === 'liquidity') {
@@ -47029,7 +47069,7 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
         connectorRead('orca', 'positions'),
         connectorRead('raydium', 'positions'),
       ]);
-      if (me === null && o === null && ra === null) throw new Error('signed-out');
+      if (me === null && o === null && ra === null) throw new Error('unavailable');
       partial = [me, o, ra].includes(null);
       const lpMints: Array<string | undefined> = [];
       for (const lpRes of [me, o, ra]) {
@@ -47044,8 +47084,10 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
     // Discard if the cluster changed mid-flight (stale fetch).
     if (state.cluster !== cluster) return;
     state.positionsLive[section] = { rows, fetchedAt: Date.now(), loading: false, cluster, ...(partial ? { partial: true } : {}) };
-    // Only retire bridge records when live actually returned rows (live is populated + authoritative).
-    // If live is EMPTY, a just-opened position may still be indexing — don't expire it prematurely.
+    // Reconcile manage-pending records first (partial reduce keeps them, full close retires them),
+    // then retire stale seeded OPENs once live is populated (live is authoritative). If live is EMPTY,
+    // a just-opened position may still be indexing — don't expire it prematurely.
+    reconcileManagePendingForSection(section, cluster, rows, partial);
     if (rows.length > 0) expireStaleSeededForSection(section, cluster);
   } catch (e) {
     if (state.cluster !== cluster) return;
@@ -47053,7 +47095,7 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
       rows: state.positionsLive[section]?.rows ?? [],
       fetchedAt: Date.now(),
       loading: false,
-      error: e instanceof Error && e.message === 'signed-out' ? 'signed-out' : 'fetch-failed',
+      error: e instanceof Error && e.message === 'unavailable' ? 'unavailable' : 'fetch-failed',
       cluster,
     };
   }
@@ -47155,8 +47197,10 @@ function positionCardShell(opts: { id: string; head: string; summary: string; bo
 }
 
 function positionLiveCard(row: PositionLiveRow): string {
+  // Compact connector logo badge (matches the chat approval card); falls back to a text chip when
+  // the connector has no bundled logo.
   const chip =
-    connectorChip(row.connectorId, positionConnectorName(row.connectorId)) ||
+    chatActionConnectorIconHtml(row.connectorId, positionConnectorName(row.connectorId)) ||
     `<span class="positions-connector">${escapeHtml(positionConnectorName(row.connectorId))}</span>`;
   const detailRows = row.details
     .map(
@@ -47186,9 +47230,11 @@ function positionLiveCard(row: PositionLiveRow): string {
     .join('');
   const statusLabel = formatPositionStatus(row.status);
   const tone = positionStatusTone(row.status);
-  // The hero stat: large label-over-value block under the title (the number the user came to see).
+  // The hero stat: large label-over-value block under the title (the number the user came to see),
+  // with an inline token logo when the parser supplied a heroMint.
+  const heroLogo = row.heroMint ? tokenLogoChipHtml(row.heroMint) : '';
   const headline = row.headline
-    ? `<div class="positions-headline${row.headline.tone ? ' tone-' + row.headline.tone : ''}"><span class="positions-headline-label">${escapeHtml(positionDetailLabel(row.headline.label))}</span><span class="positions-headline-value">${escapeHtml(row.headline.value)}</span></div>`
+    ? `<div class="positions-headline${row.headline.tone ? ' tone-' + row.headline.tone : ''}"><span class="positions-headline-label">${escapeHtml(positionDetailLabel(row.headline.label))}</span><span class="positions-headline-row">${heroLogo}<span class="positions-headline-value">${escapeHtml(row.headline.value)}</span></span></div>`
     : '';
   return positionCardShell({
     id: row.id,
@@ -47197,7 +47243,7 @@ function positionLiveCard(row: PositionLiveRow): string {
         <span class="positions-badge">${escapeHtml(positionCategoryLabel(row.kind))}</span>
         ${chip}
         ${statusLabel ? `<span class="positions-status tone-${tone}">${escapeHtml(statusLabel)}</span>` : ''}`,
-    summary: `<span class="positions-title">${escapeHtml(row.title)}</span>${distance}`,
+    summary: `<span class="positions-title positions-title--bold">${escapeHtml(row.title)}</span>${distance}`,
     body: `${headline}${detailRows ? `<div class="positions-details">${detailRows}</div>` : ''}
       ${progress}`,
     actions: `${cancelBtn}${extrasBtns}`,
@@ -47274,10 +47320,11 @@ function applyActionCompletionSideEffects(actionId?: string): 'opened' | 'closed
     return 'opened';
   }
   if (isStatefulActionCategory(category)) {
-    closePositionsForManageAction(action, category as ActionCategory);
-    // Invalidate live cache so the just-cancelled/closed order doesn't linger within the 30s freshness
-    // window when the user returns to Positions (forces a fresh read on next view).
-    delete state.positionsLive[sectionForCategory(category as ActionCategory)];
+    // Mark the position manage-pending (keep it visible) and force an authoritative refetch — the
+    // live read decides whether it's partially reduced (stays) or fully closed (retired to Done).
+    // The withdraw/cancel RECEIPT still lands in Done via the normal completion funnel.
+    markManagePendingForAction(action, category as ActionCategory);
+    void fetchPositionCategory(sectionForCategory(category as ActionCategory), true);
     return 'closed';
   }
   return 'none';
@@ -64563,7 +64610,7 @@ function resetWalletConnection(): void {
   state.positions = [];
   state.positionsLive = {};
   state.positionsClosed = {};
-  state.positionsCategory = 'orders';
+  state.positionsCategory = 'all';
   state.positionsPrefetched = false;
   stopPositionsTicker();
   // Clear chat from memory on disconnect (on-disk per-wallet history is kept,
@@ -64970,22 +65017,99 @@ function positionCategoryLabel(category: ActionCategory): string {
   return found ? t(found.label) : t(String(category));
 }
 
+// A clean seeded-card title: reuse the connector name + category ("Jupiter Lend") when the
+// opening PreparedAction is no longer available to derive a richer title from.
+function positionCardSeedTitle(p: PositionRecord): string {
+  const conn = p.connector ? positionConnectorName(p.connector) : '';
+  const cat = positionCategoryLabel(p.category);
+  return conn ? `${conn} ${cat}` : cat;
+}
+
+// Hero (token logo + amount + category sub-label) derived from the seeded params when the
+// original PreparedAction is gone. Degrades to just the category label when no token/amount.
+function positionHeroFromSeed(p: PositionRecord): string {
+  const params = (p.params ?? {}) as Record<string, unknown>;
+  const str = (k: string): string =>
+    typeof params[k] === 'string' ? (params[k] as string) : typeof params[k] === 'number' ? String(params[k]) : '';
+  const token = str('token') || str('inputToken') || str('assetMint') || str('collateralMint') || str('lstMint');
+  const amount = str('amount') || str('inputAmount');
+  const sub = `<span class="chat-action-sub">${escapeHtml(positionCategoryLabel(p.category))}</span>`;
+  if (!token && !amount) return sub;
+  const leg = token
+    ? `<span class="chat-action-leg">${tokenLogoChipHtml(token)}${amount ? `<strong>${escapeHtml(formatDisplayAmountLabel(amount))}</strong>` : ''}</span>`
+    : `<span class="chat-action-leg"><strong>${escapeHtml(formatDisplayAmountLabel(amount))}</strong></span>`;
+  return `${leg}${sub}`;
+}
+
+// Maps a seeded (opening) position to its per-type MANAGE action so the fallback card can offer
+// the same one-tap Withdraw/Repay/Unstake/Remove/Cancel the live card does — routed through the
+// shared [data-position-cancel] → openManageForm handler. `orderId` carries the value for that
+// kind's id field (see MANAGE_ID_FIELD_BY_KIND); '' when the live id isn't known yet (the form
+// opens on the right sub-action and the user picks the order/amount — enabling PARTIAL withdraw).
+function positionSeedManage(p: PositionRecord): { kind: string; orderId: string; label: string } | undefined {
+  const conn = p.connector;
+  const params = (p.params ?? {}) as Record<string, unknown>;
+  const str = (k: string): string => (typeof params[k] === 'string' ? (params[k] as string) : '');
+  switch (p.category) {
+    case 'lend':
+      if (conn === 'jupiter') return { kind: 'jupiter_lend_earn_withdraw', orderId: str('assetMint'), label: t('Withdraw') };
+      break;
+    case 'borrow':
+      if (conn === 'jupiter') return { kind: 'jupiter_lend_borrow_repay', orderId: str('positionId'), label: t('Repay') };
+      break;
+    case 'stake':
+      if (conn === 'marinade') return { kind: 'marinade_liquid_unstake', orderId: '', label: t('Unstake') };
+      if (conn === 'jito') return { kind: 'jito_unstake_jitosol', orderId: '', label: t('Unstake') };
+      if (conn === 'sanctum') return { kind: 'sanctum_unstake_lst_to_sol', orderId: str('lstMint'), label: t('Unstake') };
+      break;
+    case 'lp':
+      if (conn === 'meteora') return { kind: 'meteora_remove_liquidity', orderId: str('positionAddress'), label: t('Remove') };
+      if (conn === 'orca') return { kind: 'orca_decrease_liquidity', orderId: str('positionMint'), label: t('Remove') };
+      if (conn === 'raydium') return { kind: 'raydium_remove_liquidity', orderId: str('positionMint'), label: t('Remove') };
+      break;
+    case 'limit':
+      if (conn === 'jupiter') return { kind: 'jupiter_trigger_cancel_order', orderId: str('orderId'), label: t('Cancel') };
+      break;
+    case 'dca':
+      if (conn === 'jupiter') return { kind: 'jupiter_recurring_cancel_order', orderId: str('orderId'), label: t('Cancel') };
+      break;
+  }
+  return undefined;
+}
+
 function positionCard(p: PositionRecord): string {
   const focused = state.lastPositionFocusId === p.id;
+  // Reuse the opening PreparedAction (id === position id) for a clean chat-style title + hero;
+  // fall back to seed-derived versions when it's no longer in localStorage.
+  const action = state.preparedActions.find((a) => a.id === p.id);
+  const connectorMeta = action
+    ? resolveConnectorMetaForAction(action.kind, action.params as Record<string, unknown>)
+    : { id: p.connector, name: p.connector ? positionConnectorName(p.connector) : undefined };
+  const title = action ? preparedActionCardTitle(action) : positionCardSeedTitle(p);
+  const hero = action ? chatActionHeroHtml(action) : positionHeroFromSeed(p);
+  const updating = p.manageRequestedAt
+    ? `<span class="positions-status tone-warn">${escapeHtml(t('Updating…'))}</span>`
+    : '';
   const explorer = p.txid
     ? `<a class="positions-tx" href="${escapeHtml(explorerUrl(p.txid, p.cluster))}" target="_blank" rel="noreferrer">${escapeHtml(t('View transaction'))}</a>`
+    : '';
+  const manage = positionSeedManage(p);
+  const manageBtn = manage
+    ? `<button class="utility positions-primary" data-position-cancel="${escapeHtml(p.id)}" data-position-cancel-kind="${escapeHtml(manage.kind)}" data-position-cancel-order-id="${escapeHtml(manage.orderId)}">${escapeHtml(manage.label)}</button>`
     : '';
   return positionCardShell({
     id: p.id,
     focused,
     head: `
         <span class="positions-badge">${escapeHtml(positionCategoryLabel(p.category))}</span>
+        ${chatActionConnectorIconHtml(connectorMeta?.id, connectorMeta?.name)}
+        ${updating}
         <span class="positions-opened">${escapeHtml(tf('Opened {when}', { when: formatDateTime(p.openedAt) }))}</span>`,
-    summary: `<span class="positions-title">${escapeHtml(p.summary || positionCategoryLabel(p.category))}</span>`,
+    summary: `<span class="positions-title positions-title--bold">${escapeHtml(title)}</span>`,
+    body: `<div class="positions-hero">${hero}</div>`,
     actions: `
-        ${explorer}
-        <button class="utility" data-position-manage="${escapeHtml(p.id)}">${escapeHtml(t('New action'))}</button>
-        <button class="utility" data-position-close="${escapeHtml(p.id)}">${escapeHtml(t('Move to Done'))}</button>`,
+        ${manageBtn}
+        ${explorer}`,
   });
 }
 
@@ -65016,21 +65140,63 @@ function positionsSectionCount(section: (typeof POSITIONS_SECTIONS)[number], ope
   return open.filter((p) => section.categories.includes(p.category)).length;
 }
 
-function positionsSelector(open: PositionRecord[]): string {
+// Total open across every real (non-perps) section — the count on the "All" filter.
+function positionsAllCount(open: PositionRecord[]): number {
+  return POSITIONS_SECTIONS.reduce((n, s) => (s.id === 'perps' ? n : n + positionsSectionCount(s, open)), 0);
+}
+
+// Count for a single filter (0 for 'all' or an unknown/perps id that isn't in POSITIONS_SECTIONS).
+function positionsFilterSectionCount(filter: PositionsFilterId, open: PositionRecord[]): number {
+  const section = POSITIONS_SECTIONS.find((s) => s.id === filter);
+  return section ? positionsSectionCount(section, open) : 0;
+}
+
+// The aggregate title/blurb for the "All" filter (not a real PositionSectionId).
+function positionsFilterTitle(id: PositionsFilterId): string {
+  return id === 'all' ? t('All positions') : positionsSectionTitle(id);
+}
+function positionsFilterBlurb(id: PositionsFilterId): string {
+  return id === 'all'
+    ? t('Every open position across orders, lending, borrowing, staking and liquidity.')
+    : positionsSectionBlurb(id);
+}
+
+function positionsSelector(open: PositionRecord[], mobile: boolean): string {
+  const allCount = positionsAllCount(open);
+  // Mobile app viewport: a single WebView-safe dropdown (defaults to All) instead of the
+  // horizontally-scrolling pill rail that never fit on a phone.
+  if (mobile) {
+    const options: SelectPickerOption[] = [
+      { value: 'all', label: allCount ? `${t('All')} (${allCount})` : t('All') },
+      ...POSITIONS_SECTIONS.filter((s) => s.id !== 'perps').map((s) => {
+        const count = positionsSectionCount(s, open);
+        return { value: s.id, label: count ? `${positionsSectionTitle(s.id)} (${count})` : positionsSectionTitle(s.id) };
+      }),
+    ];
+    return `<div class="positions-selector-mobile">${selectPicker({
+      value: state.positionsCategory,
+      options,
+      className: 'positions-section-picker',
+      attrs: { 'data-positions-section-select': true },
+      title: t('Filter positions'),
+    })}</div>`;
+  }
+  const allActive = state.positionsCategory === 'all';
+  const allPill = `<button class="positions-tab ${allActive ? 'active' : ''}" role="tab" aria-selected="${allActive ? 'true' : 'false'}" data-positions-tab="all">${escapeHtml(t('All'))}${allCount ? ` <span class="positions-tab-count">${allCount}</span>` : ''}</button>`;
   const tabs = POSITIONS_SECTIONS.map((section) => {
     const count = positionsSectionCount(section, open);
     const active = state.positionsCategory === section.id;
     const countPill = count ? ` <span class="positions-tab-count">${count}</span>` : '';
     return `<button class="positions-tab ${active ? 'active' : ''}" role="tab" aria-selected="${active ? 'true' : 'false'}" data-positions-tab="${escapeHtml(section.id)}">${escapeHtml(positionsSectionTitle(section.id))}${countPill}</button>`;
   }).join('');
-  return `<div class="positions-selector" role="tablist">${tabs}</div>`;
+  return `<div class="positions-selector" role="tablist">${allPill}${tabs}</div>`;
 }
 
 function positionsEmpty(): string {
   return `<p class="positions-empty">${escapeHtml(t('Nothing open here yet. Open one from New Request, sign it, and it lands here to monitor and manage.'))}</p>`;
 }
 
-function positionsRefreshButton(section: PositionSectionId, entry?: PositionsLiveEntry): string {
+function positionsRefreshButton(section: PositionsFilterId, entry?: PositionsLiveEntry): string {
   const when = entry && entry.fetchedAt ? formatRelativeTime(new Date(entry.fetchedAt).toISOString()) : '';
   // role=status/aria-live announces Refreshing…→Updated; data-positions-updated lets the 30s ticker
   // patch just this text node (no full re-render).
@@ -65067,38 +65233,37 @@ function ensurePositionsTicker(): void {
   }, 30_000);
 }
 
-function positionsPanel(): string {
-  const mobile = isMobileAppViewport();
-  ensurePositionsTicker();
-  const open = openPositions();
-  const section = POSITIONS_SECTIONS.find((s) => s.id === state.positionsCategory) ?? POSITIONS_SECTIONS[0]!;
-  const live = section.id !== 'perps';
-  if (live && state.address) {
-    const cur = state.positionsLive[section.id];
-    if (!cur || cur.cluster !== state.cluster) void fetchPositionCategory(section.id); // lazy: sets loading+cluster synchronously
-  }
-  // On first Positions open, eagerly fetch ALL live sections (parallel, non-blocking, freshness-guarded)
-  // so every selector count pill is accurate without the user visiting each tab.
-  if (state.address && !state.positionsPrefetched) {
-    state.positionsPrefetched = true;
-    for (const s of POSITIONS_SECTIONS) {
-      if (s.id !== 'perps') void fetchPositionCategory(s.id);
-    }
-  }
-  const rawEntry = state.positionsLive[section.id];
+// Renders ONE real section's { toolbar, body } (loading / live rows / empty+pending / error+
+// seeded). Shared by the single-section view AND the aggregated "All" view so the two branches
+// can't drift. `hasContent` = it has something to render (live rows or seeded cards) — used by
+// "All" to skip entirely-empty sections; `loading` = fetch in flight with nothing yet.
+function renderPositionsSection(
+  sectionId: PositionSectionId,
+  open: PositionRecord[],
+  opts: { showRefresh?: boolean } = {},
+): { toolbar: string; body: string; hasContent: boolean; loading: boolean } {
+  const sectionDef = POSITIONS_SECTIONS.find((s) => s.id === sectionId);
+  const categories = sectionDef?.categories ?? [];
+  const rawEntry = state.positionsLive[sectionId];
   const entry = rawEntry && rawEntry.cluster === state.cluster ? rawEntry : undefined;
-  const seededCards = open.filter((p) => section.categories.includes(p.category));
+  const seededCards = open.filter((p) => categories.includes(p.category));
+  const showRefresh = opts.showRefresh !== false;
 
   let toolbar = '';
   let body: string;
-  if (section.id === 'perps') {
-    body = `<p class="positions-empty">${escapeHtml(t('Perps positions are not available yet. Jupiter\'s perps API is still in progress.'))}</p>`;
-  } else if (!live) {
-    body = seededCards.length ? seededCards.map(positionCard).join('') : positionsEmpty();
-  } else if (entry?.loading && !entry.rows.length) {
-    body = `<p class="positions-empty">${escapeHtml(t('Loading your positions…'))}</p>`;
-  } else if (entry && !entry.error) {
-    toolbar = positionsRefreshButton(section.id, entry);
+  if (sectionId === 'perps') {
+    return {
+      toolbar: '',
+      body: `<p class="positions-empty">${escapeHtml(t('Perps positions are not available yet. Jupiter\'s perps API is still in progress.'))}</p>`,
+      hasContent: false,
+      loading: false,
+    };
+  }
+  if (entry?.loading && !entry.rows.length && !seededCards.length) {
+    return { toolbar: '', body: `<p class="positions-empty">${escapeHtml(t('Loading your positions…'))}</p>`, hasContent: false, loading: true };
+  }
+  if (entry && !entry.error) {
+    if (showRefresh) toolbar = positionsRefreshButton(sectionId, entry);
     const partialNote = entry.partial
       ? `<p class="positions-note">${escapeHtml(t('Some sources couldn’t be reached. Tap refresh to retry.'))}</p>`
       : '';
@@ -65113,19 +65278,93 @@ function positionsPanel(): string {
           pending.map(positionCard).join('')
         : partialNote + positionsEmpty();
     }
+    return { toolbar, body, hasContent: entry.rows.length > 0, loading: false };
+  }
+  // No live source reachable, or the read failed. A connected wallet is NEVER offered Sign-in:
+  // the public read fallback (connectorRead) means the only real cause here is a transient
+  // failure/offline, so the resolution is Refresh — show what was opened meanwhile.
+  if (showRefresh) toolbar = positionsRefreshButton(sectionId, entry);
+  const hint = t("Couldn't reach live data right now. Showing what you opened. Tap Refresh to retry.");
+  const showHint = seededCards.length > 0;
+  body = (showHint ? `<p class="positions-note">${escapeHtml(hint)}</p>` : '') + (seededCards.length ? seededCards.map(positionCard).join('') : positionsEmpty());
+  return { toolbar, body, hasContent: seededCards.length > 0, loading: false };
+}
+
+// A synthetic PositionsLiveEntry spanning every real section, so the "All" Refresh button shows
+// the freshest "Updated {when}" and disables while any section is loading.
+function positionsAllAggregateEntry(): PositionsLiveEntry {
+  const entries = POSITIONS_SECTIONS
+    .filter((s) => s.id !== 'perps')
+    .map((s) => state.positionsLive[s.id])
+    .filter((e): e is PositionsLiveEntry => Boolean(e) && e!.cluster === state.cluster);
+  return {
+    rows: [],
+    fetchedAt: entries.length ? Math.max(...entries.map((e) => e.fetchedAt)) : 0,
+    loading: entries.some((e) => e.loading),
+    cluster: state.cluster,
+  };
+}
+
+function positionsPanel(): string {
+  const mobile = isMobileAppViewport();
+  ensurePositionsTicker();
+  const open = openPositions();
+  const filter = state.positionsCategory;
+  const isAll = filter === 'all';
+
+  // Lazy-fetch: single section → fetch it; "All" → top up every section whose cache is
+  // missing/stale (sets loading+cluster synchronously so the first render shows a spinner).
+  if (state.address) {
+    if (isAll) {
+      for (const s of POSITIONS_SECTIONS) {
+        if (s.id === 'perps') continue;
+        const cur = state.positionsLive[s.id];
+        if (!cur || cur.cluster !== state.cluster) void fetchPositionCategory(s.id);
+      }
+    } else if (filter !== 'perps') {
+      const cur = state.positionsLive[filter];
+      if (!cur || cur.cluster !== state.cluster) void fetchPositionCategory(filter);
+    }
+  }
+  // On first Positions open, eagerly fetch ALL live sections (parallel, non-blocking, freshness-guarded)
+  // so every selector count pill is accurate without the user visiting each tab.
+  if (state.address && !state.positionsPrefetched) {
+    state.positionsPrefetched = true;
+    for (const s of POSITIONS_SECTIONS) {
+      if (s.id !== 'perps') void fetchPositionCategory(s.id);
+    }
+  }
+
+  const headTitle = positionsFilterTitle(filter);
+  const headBlurb = positionsFilterBlurb(filter);
+  let toolbar = '';
+  let body: string;
+
+  if (isAll) {
+    toolbar = positionsRefreshButton('all', positionsAllAggregateEntry());
+    const sections = POSITIONS_SECTIONS
+      .filter((s) => s.id !== 'perps')
+      .map((s) => ({ s, r: renderPositionsSection(s.id, open, { showRefresh: false }) }));
+    const withContent = sections.filter(({ r }) => r.hasContent);
+    if (withContent.length) {
+      // Grouped: each non-empty section gets its own labeled group so "All" reads as a
+      // structured list, not a flat pile.
+      body = withContent
+        .map(({ s, r }) => `
+          <div class="positions-group" data-positions-section="${escapeHtml(s.id)}">
+            <div class="positions-group-head"><strong>${escapeHtml(positionsSectionTitle(s.id))}</strong>${positionsSectionCount(s, open) ? `<span class="positions-tab-count">${positionsSectionCount(s, open)}</span>` : ''}</div>
+            ${r.body}
+          </div>`)
+        .join('');
+    } else if (sections.some(({ r }) => r.loading)) {
+      body = `<p class="positions-empty">${escapeHtml(t('Loading your positions…'))}</p>`;
+    } else {
+      body = positionsEmpty();
+    }
   } else {
-    const hint = entry?.error === 'signed-out'
-      ? t('Sign in to Agentic Cloud or connect a local bridge to see live position details.')
-      : t('Could not refresh live data. Showing what you opened. Tap refresh to retry.');
-    // When signed out, Refresh alone just re-fails — surface a working Sign-in button (reuses the global
-    // [data-cloud-action="sign-in"] → runCloudSignIn handler).
-    const signInRow = entry?.error === 'signed-out'
-      ? `<div class="positions-refresh-row"><button type="button" class="primary" data-cloud-action="sign-in" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Sign in'))}</button></div>`
-      : '';
-    toolbar = signInRow + positionsRefreshButton(section.id, entry);
-    // Only claim "showing what you opened" when a seeded fallback exists; else the empty copy is right.
-    const showHint = entry?.error === 'signed-out' || seededCards.length > 0;
-    body = (showHint ? `<p class="positions-note">${escapeHtml(hint)}</p>` : '') + (seededCards.length ? seededCards.map(positionCard).join('') : positionsEmpty());
+    const rendered = renderPositionsSection(filter, open);
+    toolbar = rendered.toolbar;
+    body = rendered.body;
   }
 
   return `
@@ -65133,14 +65372,16 @@ function positionsPanel(): string {
       <div class="signature-object-head">
         ${sectionTitleLine(t('Positions'), t('Monitor and manage what you have open: orders, lending, borrowing, staking, liquidity, perps. Manage actions return to Sign Approval.'))}
         <div class="generated-plans-toolbar signature-toolbar">
-          <span class="signature-state">${escapeHtml(tf('{n} open in {section}', { n: positionsSectionCount(section, open), section: positionsSectionTitle(section.id) }))}</span>
+          <span class="signature-state">${escapeHtml(isAll
+            ? tf('{n} open', { n: positionsAllCount(open) })
+            : tf('{n} open in {section}', { n: positionsFilterSectionCount(filter, open), section: positionsFilterTitle(filter) }))}</span>
         </div>
       </div>
-      ${positionsSelector(open)}
-      <div class="positions-section" data-positions-section="${escapeHtml(section.id)}" role="tabpanel" aria-label="${escapeHtml(positionsSectionTitle(section.id))}">
+      ${positionsSelector(open, mobile)}
+      <div class="positions-section" data-positions-section="${escapeHtml(filter)}" role="tabpanel" aria-label="${escapeHtml(headTitle)}">
         <div class="positions-section-head">
-          <strong>${escapeHtml(positionsSectionTitle(section.id))}</strong>
-          <span>${escapeHtml(positionsSectionBlurb(section.id))}</span>
+          <strong>${escapeHtml(headTitle)}</strong>
+          <span>${escapeHtml(headBlurb)}</span>
         </div>
         ${toolbar}
         <div class="positions-section-body">${body}</div>

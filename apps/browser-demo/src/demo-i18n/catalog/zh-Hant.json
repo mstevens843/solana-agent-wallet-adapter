@@ -1,6 +1,11 @@
 {
   "language": "zh-Hant",
   "entries": {
+    "All positions": "所有部位",
+    "Every open position across orders, lending, borrowing, staking and liquidity.": "涵蓋訂單、借出、借入、質押與流動性的所有未平倉部位。",
+    "Filter positions": "篩選部位",
+    "Couldn't reach live data right now. Showing what you opened. Tap Refresh to retry.": "暫時無法取得即時資料。顯示你已開立的內容。點按「重新整理」重試。",
+    "Updating…": "更新中…",
     "Back to demo": "返回示範",
     "Amount exceeds your balance.": "金額超過您的餘額。",
     "Enter an amount or shares.": "請輸入金額或份額。",

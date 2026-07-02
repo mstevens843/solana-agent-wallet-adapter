@@ -1,6 +1,11 @@
 {
   "language": "ko",
   "entries": {
+    "All positions": "모든 포지션",
+    "Every open position across orders, lending, borrowing, staking and liquidity.": "주문, 예치, 대출, 스테이킹, 유동성에 걸친 모든 미결제 포지션.",
+    "Filter positions": "포지션 필터",
+    "Couldn't reach live data right now. Showing what you opened. Tap Refresh to retry.": "지금은 실시간 데이터를 불러올 수 없습니다. 개설한 내역을 표시합니다. 새로고침을 눌러 다시 시도하세요.",
+    "Updating…": "업데이트 중…",
     "Back to demo": "데모로 돌아가기",
     "Amount exceeds your balance.": "금액이 잔액을 초과합니다.",
     "Enter an amount or shares.": "금액 또는 셰어를 입력하세요.",
