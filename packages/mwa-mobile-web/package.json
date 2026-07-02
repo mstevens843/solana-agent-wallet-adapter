@@ -26,11 +26,11 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@solana-mobile/wallet-standard-mobile": "^0.5.2",
-    "@wallet-standard/base": "^1.1.0"
+    "@solana-mobile/wallet-standard-mobile": "^0.5.3",
+    "@wallet-standard/base": "^1.1.1"
   },
   "devDependencies": {
     "typescript": "^5.6.0",
-    "vitest": "^2.1.0"
+    "vitest": "^4.1.9"
   }
 }
