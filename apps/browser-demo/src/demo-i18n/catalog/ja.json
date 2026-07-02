@@ -1,6 +1,12 @@
 {
   "language": "ja",
   "entries": {
+    "Limit order": "指値注文",
+    "Take-profit / Stop-loss": "利益確定 / 損切り",
+    "Auto-entry with exits": "自動エントリー＋自動決済",
+    "Swap automatically when a token reaches your target USD price. The amount received isn't guaranteed at trigger time.": "トークンが目標USD価格に達したら自動でスワップします。発動時の受取量は保証されません。",
+    "Set a take-profit and a stop-loss together — whichever fills first cancels the other (OCO).": "利益確定と損切りを同時に設定します。先に約定した方がもう一方を取り消します（OCO）。",
+    "Wait for an entry price, then automatically arm a paired take-profit and stop-loss (OTOCO).": "エントリー価格を待ってから、対になる利益確定と損切りを自動でセットします（OTOCO）。",
     "All positions": "すべてのポジション",
     "Every open position across orders, lending, borrowing, staking and liquidity.": "注文・貸出・借入・ステーキング・流動性にわたるすべての未決済ポジション。",
     "Filter positions": "ポジションを絞り込む",

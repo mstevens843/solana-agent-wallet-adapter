@@ -32705,16 +32705,23 @@ function firstFormForCategory(connector: ProtocolConnector, category: ActionCate
 function scopedSubActionOptions(group: ConnectorActionForm['subActions']): ConnectorSubAction[] {
   if (!group) return [];
   const cat = state.createActionCategory;
-  if (!cat) return group.options;
-  const scoped = group.options.filter((opt) => subActionCategory(opt) === cat);
-  return scoped.length > 0 ? scoped : group.options;
+  // Manage-only sub-actions (Jupiter Trigger vault/edit/cancel/withdraw) are hidden from the create
+  // menu — EXCEPT the one currently selected, so an Edit arriving via openManageForm still renders its
+  // picker coherently (field visibility is driven by the selected id independently).
+  const selectedId = state.templateFields[group.fieldId]?.trim() || '';
+  const menu = group.options.filter((opt) => !opt.hiddenFromCreateMenu || opt.id === selectedId);
+  if (!cat) return menu;
+  const scoped = menu.filter((opt) => subActionCategory(opt) === cat);
+  return scoped.length > 0 ? scoped : menu;
 }
 
 // Seed a connector form for a category + default its sub-action to one matching the category.
 function applyConnectorActionFormForCategory(form: ConnectorActionForm, category: ActionCategory): void {
   applyConnectorActionForm(form);
   if (form.subActions) {
-    const opt = form.subActions.options.find((o) => subActionCategory(o) === category);
+    // Prefer a VISIBLE creation option (skip hidden manage-only ones like Jupiter Trigger's
+    // register-vault, which would otherwise be the first 'limit' match and land the form on it).
+    const opt = form.subActions.options.find((o) => subActionCategory(o) === category && !o.hiddenFromCreateMenu);
     if (opt && state.templateFields[form.subActions.fieldId] !== opt.id) {
       state.templateFields[form.subActions.fieldId] = opt.id;
       render();
@@ -33874,6 +33881,9 @@ function connectorSubActionPicker(form: ConnectorActionForm): string {
   // Scope the visible sub-actions to the active create action (Jupiter Lend → earn options under
   // "Lend", borrow options under "Borrow"); '' (no scope) keeps all options (chat / legacy).
   const options = scopedSubActionOptions(group);
+  // One creation option (e.g. Jupiter DCA after its manage/deprecated actions are hidden) → no
+  // pointless picker; the sub-action's fields render directly (showWhen falls back to defaultId).
+  if (options.length <= 1) return '';
   const stored = state.templateFields[group.fieldId]?.trim() || '';
   const current = stored && options.some((option) => option.id === stored)
     ? stored
@@ -46879,8 +46889,18 @@ function parseLimitRows(res: Record<string, unknown> | null | undefined, prices:
     if (posStr(o.remainingInputAmount)) {
       details.push({ label: 'Size', value: `${posAmount(o.remainingInputAmount)} ${posSymbol(posStr(o.inputMint))}` });
     }
-    const limitExtras: Array<{ kind: string; label: string; orderId: string }> = [
-      { kind: 'jupiter_trigger_edit_order', label: t('Edit'), orderId },
+    // Prefill the Edit form from the live snapshot so the user tweaks from current values (guard each;
+    // keys match the edit sub-action's field ids so openManageForm lands them in state.templateFields).
+    const editFields: Record<string, string> = {};
+    const ot = posStr(o.orderType);
+    if (ot === 'single' || ot === 'oco' || ot === 'otoco') editFields.orderType = ot;
+    if (Number.isFinite(trigger) && trigger > 0) editFields.newTriggerPriceUsd = String(trigger);
+    const slp = posNum(o.slippageBps);
+    if (Number.isFinite(slp)) editFields.newSlippageBps = String(slp);
+    const exp = posStr(o.expiresAt);
+    if (exp) editFields.newExpiresAt = exp; // ISO; dateTimeInputValue reformats to datetime-local
+    const limitExtras: Array<{ kind: string; label: string; orderId: string; fields?: Record<string, string> }> = [
+      { kind: 'jupiter_trigger_edit_order', label: t('Edit'), orderId, ...(Object.keys(editFields).length ? { fields: editFields } : {}) },
     ];
     // Filled/cancelled/expired orders leave funds in the Jupiter vault — surface the reclaim path.
     if (o.withdrawable === true) limitExtras.push({ kind: 'jupiter_trigger_withdraw_order_funds', label: t('Withdraw funds'), orderId });

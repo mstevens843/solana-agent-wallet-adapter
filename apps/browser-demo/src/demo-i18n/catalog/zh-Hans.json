@@ -1,6 +1,12 @@
 {
   "language": "zh-Hans",
   "entries": {
+    "Limit order": "限价单",
+    "Take-profit / Stop-loss": "止盈 / 止损",
+    "Auto-entry with exits": "自动入场并设置出场",
+    "Swap automatically when a token reaches your target USD price. The amount received isn't guaranteed at trigger time.": "当代币达到你设定的美元目标价时自动兑换。触发时到手数量不保证。",
+    "Set a take-profit and a stop-loss together — whichever fills first cancels the other (OCO).": "同时设置止盈和止损——先成交的一个会取消另一个（OCO）。",
+    "Wait for an entry price, then automatically arm a paired take-profit and stop-loss (OTOCO).": "先等待入场价，然后自动设置配对的止盈和止损（OTOCO）。",
     "All positions": "所有仓位",
     "Every open position across orders, lending, borrowing, staking and liquidity.": "涵盖订单、借出、借入、质押和流动性的所有未平仓仓位。",
     "Filter positions": "筛选仓位",

@@ -1,6 +1,12 @@
 {
   "language": "ru",
   "entries": {
+    "Limit order": "Лимитный ордер",
+    "Take-profit / Stop-loss": "Тейк-профит / Стоп-лосс",
+    "Auto-entry with exits": "Автовход с выходами",
+    "Swap automatically when a token reaches your target USD price. The amount received isn't guaranteed at trigger time.": "Автоматически обменивает, когда токен достигает вашей целевой цены в USD. Полученная сумма не гарантируется в момент срабатывания.",
+    "Set a take-profit and a stop-loss together — whichever fills first cancels the other (OCO).": "Задайте тейк-профит и стоп-лосс вместе — что исполнится первым, отменяет второй (OCO).",
+    "Wait for an entry price, then automatically arm a paired take-profit and stop-loss (OTOCO).": "Ждёт цену входа, затем автоматически ставит парные тейк-профит и стоп-лосс (OTOCO).",
     "All positions": "Все позиции",
     "Every open position across orders, lending, borrowing, staking and liquidity.": "Все открытые позиции: ордера, кредитование, займы, стейкинг и ликвидность.",
     "Filter positions": "Фильтр позиций",

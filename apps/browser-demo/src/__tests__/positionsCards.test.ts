@@ -161,3 +161,40 @@ describe('positions i18n + css', () => {
     expect(stylesSource).toContain('.positions-group-head');
   });
 });
+
+describe('Jupiter limit position card: Edit prefill', () => {
+  it('parseLimitRows carries current order values into the Edit form', () => {
+    const limit = sourceBetween('function parseLimitRows', 'function parseDcaRows');
+    expect(limit).toContain("kind: 'jupiter_trigger_edit_order'");
+    expect(limit).toContain('editFields.orderType');
+    expect(limit).toContain('editFields.newTriggerPriceUsd');
+    expect(limit).toContain('editFields.newSlippageBps');
+    expect(limit).toContain('editFields.newExpiresAt');
+    expect(limit).toContain('fields: editFields');
+  });
+
+  it('adds the 3 plain-English order-type strings to every catalog', () => {
+    const keys = [
+      'Limit order',
+      'Take-profit / Stop-loss',
+      'Auto-entry with exits',
+      "Swap automatically when a token reaches your target USD price. The amount received isn't guaranteed at trigger time.",
+      'Set a take-profit and a stop-loss together — whichever fills first cancels the other (OCO).',
+      'Wait for an entry price, then automatically arm a paired take-profit and stop-loss (OTOCO).',
+    ];
+    for (const lang of CATALOG_LANGS) {
+      const entries = catalog(lang);
+      for (const key of keys) {
+        expect(entries[key], `${lang} missing "${key}"`).toBeTruthy();
+      }
+    }
+  });
+});
+
+describe('single-option sub-action dropdown is hidden', () => {
+  it('connectorSubActionPicker renders nothing when only one creation option remains (e.g. DCA)', () => {
+    const picker = sourceBetween('function connectorSubActionPicker', 'function connectorDraftStatusPanel');
+    expect(picker).toContain('const options = scopedSubActionOptions(group);');
+    expect(picker).toContain('if (options.length <= 1) return \'\';');
+  });
+});

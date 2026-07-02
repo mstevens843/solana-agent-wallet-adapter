@@ -301,13 +301,25 @@ describe('connector drafting helpers', () => {
     expect(trigger?.subActions?.display).toBe('select');
     expect(trigger?.subActions?.options.map((option) => option.label)).toEqual([
       'Set up order vault',
-      'Limit / stop order',
-      'TP/SL bracket (OCO)',
-      'Entry + TP/SL (OTOCO)',
+      'Limit order',
+      'Take-profit / Stop-loss',
+      'Auto-entry with exits',
       'Edit order trigger',
       'Cancel order',
       'Withdraw cancelled funds',
     ]);
+    // The create dropdown shows ONLY the 3 plain-English order types; vault/edit/cancel/withdraw are hidden.
+    const createMenu = trigger!.subActions!.options.filter((o) => !o.hiddenFromCreateMenu);
+    expect(createMenu.map((o) => o.label)).toEqual(['Limit order', 'Take-profit / Stop-loss', 'Auto-entry with exits']);
+    for (const id of ['register-vault', 'edit-trigger', 'cancel-order', 'withdraw-order-funds']) {
+      expect(trigger!.subActions!.options.find((o) => o.id === id)?.hiddenFromCreateMenu).toBe(true);
+    }
+    // The default sub-action stays a visible option.
+    expect(createMenu.some((o) => o.id === trigger!.subActions!.defaultId)).toBe(true);
+    // Hidden manage actions remain routable by actionType (openManageForm / auto-setup path).
+    const editForm = connectorActionFormByActionType('jupiter_trigger_edit_order');
+    expect(editForm?.id).toBe('jupiter:trigger-limit-orders');
+    expect(editForm?.subActions?.options.find((o) => o.actionType === 'jupiter_trigger_edit_order')?.id).toBe('edit-trigger');
 
     const recurring = connectorActionFormById('jupiter:recurring-dca');
     expect(recurring?.operationLabel).toBe('DCA orders');
@@ -318,6 +330,16 @@ describe('connector drafting helpers', () => {
       'Advanced: fund price order',
       'Advanced: withdraw price order',
     ]);
+    // The create dropdown shows ONLY the time-based create; Cancel + the deprecated price-order
+    // actions are hidden (Cancel lives on the Positions card; price orders are deprecated legacy).
+    const dcaCreateMenu = recurring!.subActions!.options.filter((o) => !o.hiddenFromCreateMenu);
+    expect(dcaCreateMenu.map((o) => o.label)).toEqual(['Create DCA order']);
+    for (const id of ['cancel-dca', 'deposit-deprecated-price-order', 'withdraw-deprecated-price-order']) {
+      expect(recurring!.subActions!.options.find((o) => o.id === id)?.hiddenFromCreateMenu).toBe(true);
+    }
+    expect(dcaCreateMenu.some((o) => o.id === recurring!.subActions!.defaultId)).toBe(true);
+    // Hidden DCA cancel remains routable by actionType (Positions card → openManageForm).
+    expect(connectorActionFormByActionType('jupiter_recurring_cancel_order')?.id).toBe('jupiter:recurring-dca');
 
     const perps = connectorActionFormById('jupiter:perps-status');
     expect(perps).toMatchObject({

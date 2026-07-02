@@ -386,14 +386,16 @@ describe('Jupiter Trigger single order prepare', () => {
     ).rejects.toMatchObject({ code: 'invalid_request' });
   });
 
-  it('rejects create order when vault is not registered', async () => {
+  it('drafts a setup-required order (does NOT throw) when the deposit craft is not yet possible', async () => {
+    // Vault/auth are now ensured automatically at execute time, so the FIRST order must still draft
+    // (be reviewable + signable) even though the deposit craft fails — not throw as it used to.
     const config = fakeConfig();
     authenticate(WALLET, config);
     const ctx = makeContext({ config });
     vi.stubGlobal('fetch', fakeFetch(() => ({ body: { registered: false } }), []));
-    await expect(jupiterTriggerSingleOrderAction.prepare(singleOrderInput(), ctx)).rejects.toMatchObject({
-      code: 'invalid_request',
-    });
+    const prepared = await jupiterTriggerSingleOrderAction.prepare(singleOrderInput(), ctx);
+    expect(prepared.preview).toMatchObject({ setupRequired: true, operation: 'single_order' });
+    expect(prepared.preview.transactionBase64).toBeUndefined();
   });
 
   it('stores transactionBase64, vault snapshot, and acceptance flags on prepare success', async () => {
@@ -425,7 +427,10 @@ describe('Jupiter Trigger single order prepare', () => {
     // never store JWT, signature, or apiKey
     expect(JSON.stringify(result.preview)).not.toContain('fake-jwt-token');
     expect(JSON.stringify(result.preview)).not.toContain('sk-test-jupiter');
-    expect(call).toBeGreaterThanOrEqual(2);
+    // Prepare now only crafts the deposit tx (auth + vault are ensured at execute time), so it no
+    // longer reads /vault — just the one /deposit/craft call.
+    expect(call).toBeGreaterThanOrEqual(1);
+    expect(result.preview).toMatchObject({ setupRequired: false });
   });
 });
 
@@ -484,6 +489,92 @@ describe('Jupiter Trigger single order execute', () => {
     await expect(jupiterTriggerSingleOrderAction.execute(stored, ctxDifferentWallet)).rejects.toMatchObject({
       code: 'unauthorized',
     });
+  });
+});
+
+describe('Jupiter Trigger auto-inline setup (ensureTriggerReady)', () => {
+  function autoSetupFetch(captured: CapturedRequest[], vaultRegistered = false): typeof fetch {
+    return fakeFetch((request) => {
+      const u = request.url;
+      if (u.endsWith('/auth/challenge')) return { body: { challenge: 'challenge-abc', transaction: 'challenge-tx', expiresAt: Date.now() + 5 * 60 * 1000 } };
+      // Far-future expiry: verifyChallenge subtracts a ~1h safety margin, so a near-term expiry would clamp to "already expired".
+      if (u.endsWith('/auth/verify')) return { body: { token: 'auto-jwt-token', expiresAt: Date.now() + 24 * 60 * 60 * 1000 } };
+      if (u.endsWith('/vault/register/submit')) return { body: { registered: true } };
+      if (u.endsWith('/vault/register')) return { body: { transaction: 'vault-register-tx', vault: { registered: false } } };
+      if (u.includes('/vault')) return { body: { registered: vaultRegistered } };
+      if (u.endsWith('/deposit/craft')) return { body: { transaction: 'deposit-tx', requestId: 'deposit-req' } };
+      if (u.endsWith('/orders/price')) return { body: { txSignature: 'order-txid', id: 'order-1' } };
+      return { body: {} };
+    }, captured);
+  }
+
+  it('on the first order: auto-auths (signMessage), auto-registers the vault (signTransaction), then places the order', async () => {
+    const config = fakeConfig();
+    // NOTE: no authenticate() — start with NO cached JWT and an unregistered vault.
+    const captured: CapturedRequest[] = [];
+    vi.stubGlobal('fetch', autoSetupFetch(captured, false));
+    const signMessage = vi.fn(async () => 'signed-auth-message');
+    const signTransaction = vi.fn(async () => 'signed-tx');
+    const ctx = makeContext({ config, signMessage, signTransaction });
+    const prepared = await jupiterTriggerSingleOrderAction.prepare(singleOrderInput(), ctx);
+    const stored = await ctx.store.addAction(prepared.addInput);
+    const executed = await jupiterTriggerSingleOrderAction.execute(stored, ctx);
+
+    expect(signMessage).toHaveBeenCalledTimes(1); // one-time auth
+    expect(signTransaction).toHaveBeenCalledWith('vault-register-tx', expect.stringContaining('vault')); // one-time vault
+    expect(signTransaction).toHaveBeenCalledWith('deposit-tx', expect.any(String)); // the order
+    expect(executed.txid).toBe('order-txid');
+    const hit = (suffix: string) => captured.some((c) => c.url.endsWith(suffix));
+    expect(hit('/auth/challenge')).toBe(true);
+    expect(hit('/auth/verify')).toBe(true);
+    expect(hit('/vault/register')).toBe(true);
+    expect(hit('/vault/register/submit')).toBe(true);
+    expect(hit('/orders/price')).toBe(true);
+  });
+
+  it('on a subsequent order (JWT cached + vault registered): signs ONLY the order — no auth or vault prompts', async () => {
+    const config = fakeConfig();
+    authenticate(WALLET, config); // JWT already cached
+    const captured: CapturedRequest[] = [];
+    vi.stubGlobal('fetch', autoSetupFetch(captured, true)); // vault already registered
+    const signMessage = vi.fn(async () => 'signed-auth-message');
+    const signTransaction = vi.fn(async () => 'signed-tx');
+    const ctx = makeContext({ config, signMessage, signTransaction });
+    const prepared = await jupiterTriggerSingleOrderAction.prepare(singleOrderInput(), ctx);
+    const stored = await ctx.store.addAction(prepared.addInput);
+    const executed = await jupiterTriggerSingleOrderAction.execute(stored, ctx);
+
+    expect(signMessage).not.toHaveBeenCalled(); // JWT cached → no re-auth
+    expect(signTransaction).toHaveBeenCalledTimes(1); // only the order
+    expect(signTransaction).toHaveBeenCalledWith('deposit-tx', expect.any(String));
+    expect(executed.txid).toBe('order-txid');
+    expect(captured.some((c) => c.url.endsWith('/auth/challenge'))).toBe(false);
+    expect(captured.some((c) => c.url.endsWith('/vault/register'))).toBe(false);
+  });
+
+  it('falls back to a transaction challenge when the wallet cannot sign messages', async () => {
+    const config = fakeConfig();
+    const captured: CapturedRequest[] = [];
+    vi.stubGlobal('fetch', autoSetupFetch(captured, true)); // registered vault so we isolate the auth path
+    const signMessage = vi.fn(async () => 'signed-auth-message');
+    const signTransaction = vi.fn(async () => 'signed-tx');
+    const ctx = makeContext({
+      config,
+      signMessage,
+      signTransaction,
+      backend: {
+        async getAddress() { return WALLET; },
+        async capabilities() { return { address: WALLET, supports: { signMessage: false } }; },
+      } as unknown as DAppAdapterContext['backend'],
+    });
+    const prepared = await jupiterTriggerSingleOrderAction.prepare(singleOrderInput(), ctx);
+    const stored = await ctx.store.addAction(prepared.addInput);
+    await jupiterTriggerSingleOrderAction.execute(stored, ctx);
+
+    expect(signMessage).not.toHaveBeenCalled(); // message signing unsupported → transaction challenge instead
+    const verify = captured.find((c) => c.url.endsWith('/auth/verify'));
+    expect(verify?.body).toMatchObject({ type: 'transaction' });
+    expect(verify?.body?.signedTransaction).toBeTruthy();
   });
 });
 

@@ -1,6 +1,12 @@
 {
   "language": "ko",
   "entries": {
+    "Limit order": "지정가 주문",
+    "Take-profit / Stop-loss": "익절 / 손절",
+    "Auto-entry with exits": "자동 진입 + 자동 청산",
+    "Swap automatically when a token reaches your target USD price. The amount received isn't guaranteed at trigger time.": "토큰이 목표 USD 가격에 도달하면 자동으로 스왑합니다. 트리거 시 받는 수량은 보장되지 않습니다.",
+    "Set a take-profit and a stop-loss together — whichever fills first cancels the other (OCO).": "익절과 손절을 함께 설정합니다. 먼저 체결된 쪽이 다른 쪽을 취소합니다(OCO).",
+    "Wait for an entry price, then automatically arm a paired take-profit and stop-loss (OTOCO).": "진입 가격을 기다린 뒤, 짝을 이룬 익절과 손절을 자동으로 설정합니다(OTOCO).",
     "All positions": "모든 포지션",
     "Every open position across orders, lending, borrowing, staking and liquidity.": "주문, 예치, 대출, 스테이킹, 유동성에 걸친 모든 미결제 포지션.",
     "Filter positions": "포지션 필터",

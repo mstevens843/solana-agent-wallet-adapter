@@ -20,11 +20,18 @@ import type {
 } from '../types.js';
 import { AdapterError } from '../types.js';
 
-import { jupiterFetchJson } from './client.js';
+import { jupiterApiHost, jupiterFetchJson } from './client.js';
 import { resolveTriggerFee } from './referral.js';
 import { JUPITER_ADAPTER_ID } from './constants.js';
-import { requireTriggerEnabled, requireValidJwt } from './triggerAuth.js';
-import { JUPITER_TRIGGER_PRODUCT } from './triggerConstants.js';
+import {
+  getCachedJwt,
+  jwtCacheKey,
+  requestChallenge,
+  requireTriggerEnabled,
+  requireValidJwt,
+  verifyChallenge,
+} from './triggerAuth.js';
+import { JUPITER_TRIGGER_PRODUCT, type JupiterTriggerChallengeType } from './triggerConstants.js';
 import { prepareRegisterVault, readVault } from './triggerVault.js';
 import { assertOrderCancellable, assertOrderWithdrawable, getOrder } from './triggerOrders.js';
 import {
@@ -167,10 +174,9 @@ export const singleOrderAction: AdapterAction<JupiterTriggerSingleOrderInput> = 
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
     requireTriggerEnabled(ctx.config);
     const walletAddress = await ctx.backend.getAddress();
-    requireValidJwt(walletAddress, ctx.config);
     const policy = getJupiterTriggerPolicy(ctx.config);
     validateSingleInput(input, policy);
-    await assertVaultRegistered(ctx, walletAddress);
+    // Auth + vault are ensured automatically at execute time (ensureTriggerReady). Draft without them.
     const inputAmount = await triggerOrderAmountRaw(input, ctx);
     const orderParams = {
       orderType: 'single',
@@ -184,7 +190,7 @@ export const singleOrderAction: AdapterAction<JupiterTriggerSingleOrderInput> = 
       slippageBps: input.slippageBps,
       expiresAt: expiresAtMs(input.expiresAt),
     };
-    const built = await craftDepositTransaction(ctx, 'single', orderParams, walletAddress);
+    const built = await craftDepositForPrepare(ctx, 'single', orderParams, walletAddress);
     const summary = describeSingleOrder(input);
     const params: Record<string, unknown> = baseTriggerParams({
       operation: 'single_order',
@@ -205,6 +211,7 @@ export const singleOrderAction: AdapterAction<JupiterTriggerSingleOrderInput> = 
       transactionBase64: built.transactionBase64,
       depositRequestId: built.requestId,
       vaultSnapshot: built.vaultSnapshot,
+      setupRequired: built.setupRequired,
       automationWarningAccepted: true,
       custodyWarningAccepted: true,
       warnings: triggerOrderCreateWarnings(),
@@ -215,7 +222,7 @@ export const singleOrderAction: AdapterAction<JupiterTriggerSingleOrderInput> = 
   async execute(action, ctx): Promise<AdapterExecuteResult> {
     requireTriggerEnabled(ctx.config);
     const walletAddress = await assertOwnership(action, ctx);
-    requireValidJwt(walletAddress, ctx.config);
+    await ensureTriggerReady(ctx, walletAddress);
     const orderParams = requireRecordParam(action, 'orderParams');
     const refreshed = await craftDepositTransaction(ctx, 'single', orderParams, walletAddress);
     const signed = await ctx.signTransaction(refreshed.transactionBase64, action.summary);
@@ -233,10 +240,9 @@ export const ocoOrderAction: AdapterAction<JupiterTriggerOcoOrderInput> = {
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
     requireTriggerEnabled(ctx.config);
     const walletAddress = await ctx.backend.getAddress();
-    requireValidJwt(walletAddress, ctx.config);
     const policy = getJupiterTriggerPolicy(ctx.config);
     validateOcoInput(input, policy);
-    await assertVaultRegistered(ctx, walletAddress);
+    // Auth + vault are ensured automatically at execute time (ensureTriggerReady). Draft without them.
     const inputAmount = await triggerOrderAmountRaw(input, ctx);
     const orderParams = {
       orderType: 'oco',
@@ -251,7 +257,7 @@ export const ocoOrderAction: AdapterAction<JupiterTriggerOcoOrderInput> = {
       slSlippageBps: input.stopLossSlippageBps,
       expiresAt: expiresAtMs(input.expiresAt),
     };
-    const built = await craftDepositTransaction(ctx, 'oco', orderParams, walletAddress);
+    const built = await craftDepositForPrepare(ctx, 'oco', orderParams, walletAddress);
     const summary = `OCO Jupiter Trigger order: TP ${input.takeProfitPriceUsd} USD / SL ${input.stopLossPriceUsd} USD${triggerSummarySuffix({
       includeCustody: true,
       includeAutomation: true,
@@ -277,6 +283,7 @@ export const ocoOrderAction: AdapterAction<JupiterTriggerOcoOrderInput> = {
       transactionBase64: built.transactionBase64,
       depositRequestId: built.requestId,
       vaultSnapshot: built.vaultSnapshot,
+      setupRequired: built.setupRequired,
       automationWarningAccepted: true,
       custodyWarningAccepted: true,
       warnings: triggerOrderCreateWarnings(),
@@ -287,7 +294,7 @@ export const ocoOrderAction: AdapterAction<JupiterTriggerOcoOrderInput> = {
   async execute(action, ctx): Promise<AdapterExecuteResult> {
     requireTriggerEnabled(ctx.config);
     const walletAddress = await assertOwnership(action, ctx);
-    requireValidJwt(walletAddress, ctx.config);
+    await ensureTriggerReady(ctx, walletAddress);
     const orderParams = requireRecordParam(action, 'orderParams');
     const refreshed = await craftDepositTransaction(ctx, 'oco', orderParams, walletAddress);
     const signed = await ctx.signTransaction(refreshed.transactionBase64, action.summary);
@@ -305,10 +312,9 @@ export const otocoOrderAction: AdapterAction<JupiterTriggerOtocoOrderInput> = {
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
     requireTriggerEnabled(ctx.config);
     const walletAddress = await ctx.backend.getAddress();
-    requireValidJwt(walletAddress, ctx.config);
     const policy = getJupiterTriggerPolicy(ctx.config);
     validateOtocoInput(input, policy);
-    await assertVaultRegistered(ctx, walletAddress);
+    // Auth + vault are ensured automatically at execute time (ensureTriggerReady). Draft without them.
     const inputAmount = await triggerOrderAmountRaw(input, ctx);
     const orderParams = {
       orderType: 'otoco',
@@ -326,7 +332,7 @@ export const otocoOrderAction: AdapterAction<JupiterTriggerOtocoOrderInput> = {
       slSlippageBps: input.stopLossSlippageBps,
       expiresAt: expiresAtMs(input.expiresAt),
     };
-    const built = await craftDepositTransaction(ctx, 'otoco', orderParams, walletAddress);
+    const built = await craftDepositForPrepare(ctx, 'otoco', orderParams, walletAddress);
     const summary = `OTOCO Jupiter Trigger order: entry ${input.entryCondition} ${input.entryPriceUsd} USD then TP/SL${triggerSummarySuffix({
       includeCustody: true,
       includeAutomation: true,
@@ -355,6 +361,7 @@ export const otocoOrderAction: AdapterAction<JupiterTriggerOtocoOrderInput> = {
       transactionBase64: built.transactionBase64,
       depositRequestId: built.requestId,
       vaultSnapshot: built.vaultSnapshot,
+      setupRequired: built.setupRequired,
       automationWarningAccepted: true,
       custodyWarningAccepted: true,
       warnings: triggerOrderCreateWarnings(),
@@ -365,7 +372,7 @@ export const otocoOrderAction: AdapterAction<JupiterTriggerOtocoOrderInput> = {
   async execute(action, ctx): Promise<AdapterExecuteResult> {
     requireTriggerEnabled(ctx.config);
     const walletAddress = await assertOwnership(action, ctx);
-    requireValidJwt(walletAddress, ctx.config);
+    await ensureTriggerReady(ctx, walletAddress);
     const orderParams = requireRecordParam(action, 'orderParams');
     const refreshed = await craftDepositTransaction(ctx, 'otoco', orderParams, walletAddress);
     const signed = await ctx.signTransaction(refreshed.transactionBase64, action.summary);
@@ -570,6 +577,29 @@ async function craftDepositTransaction(
   };
 }
 
+// Deposit craft for the PREPARE (draft) stage. On the first-ever order the wallet has no JWT/vault yet,
+// so craft throws — that's expected: ensureTriggerReady handles auth + vault at execute time (which
+// always re-crafts). Degrade to a setup-required draft (no prepared tx) instead of throwing, so the
+// order can still be reviewed and signed. Non-first orders craft normally and carry the preview tx.
+async function craftDepositForPrepare(
+  ctx: DAppAdapterContext,
+  orderSubType: 'single' | 'oco' | 'otoco',
+  orderParams: Record<string, unknown>,
+  walletAddress: string,
+): Promise<{ transactionBase64?: string; requestId: string; vaultSnapshot?: Record<string, unknown>; setupRequired: boolean }> {
+  try {
+    const built = await craftDepositTransaction(ctx, orderSubType, orderParams, walletAddress);
+    return {
+      transactionBase64: built.transactionBase64,
+      requestId: built.requestId,
+      ...(built.vaultSnapshot !== undefined && { vaultSnapshot: built.vaultSnapshot }),
+      setupRequired: false,
+    };
+  } catch {
+    return { requestId: '', setupRequired: true };
+  }
+}
+
 async function submitTriggerOrder(
   ctx: DAppAdapterContext,
   orderParams: Record<string, unknown>,
@@ -632,15 +662,75 @@ async function postSignedToTrigger(
   });
 }
 
-async function assertVaultRegistered(ctx: DAppAdapterContext, walletAddress: string): Promise<void> {
-  const vault = await readVault(ctx.config, { walletAddress });
-  if (!vault.registered) {
-    throw new AdapterError(
-      JUPITER_ADAPTER_ID,
-      'invalid_request',
-      'Jupiter Trigger vault is not registered. Prepare and approve solana_prepare_jupiter_trigger_register_vault first.',
-    );
+// Per-wallet coalescing so two orders approved back-to-back don't both try to auth + register the
+// vault (Jupiter register is also idempotent, but this avoids a redundant second prompt/round-trip).
+const triggerReadyInFlight = new Map<string, Promise<void>>();
+
+// One-time, idempotent setup that makes a wallet ready to place Trigger orders WITHOUT any manual
+// "Set Up Order Vault" / "Sign in to Jupiter" step. Ensures (1) a cached auth JWT by signing a
+// Jupiter challenge, then (2) the per-wallet Privy custody vault is registered. Each step is skipped
+// when already satisfied, so after the first order it is a no-op (JWT cached ~23h, vault forever).
+// Runs INSIDE execute(), where ctx.signMessage / ctx.signTransaction relay to the wallet as sequential
+// approvals — so the user just taps Approve and signs a short guided sequence the first time.
+async function ensureTriggerReady(ctx: DAppAdapterContext, walletAddress: string): Promise<void> {
+  const apiHost = jupiterApiHost(ctx.config, 'trigger');
+  const key = jwtCacheKey(walletAddress, ctx.config.cluster, apiHost);
+  const inFlight = triggerReadyInFlight.get(key);
+  if (inFlight) return inFlight;
+  const run = (async () => {
+    await ensureTriggerJwt(ctx, walletAddress, apiHost);
+    await ensureTriggerVault(ctx, walletAddress);
+  })();
+  triggerReadyInFlight.set(key, run);
+  try {
+    await run;
+  } finally {
+    triggerReadyInFlight.delete(key);
   }
+}
+
+// Don't re-prompt after the user explicitly declines a signature; do retry a transient/expired
+// challenge (the challenge has a short TTL and a slow signature can make verify reject).
+function triggerAuthRejected(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message.toLowerCase() : '';
+  return /reject|declin|denied|cancel/.test(msg);
+}
+
+async function ensureTriggerJwt(ctx: DAppAdapterContext, walletAddress: string, apiHost: string): Promise<void> {
+  if (getCachedJwt(walletAddress, ctx.config.cluster, apiHost)) return;
+  // Prefer a plain message signature (no fee, no simulate round-trip); fall back to a transaction
+  // challenge for wallets that can't sign messages (some hardware / manual-mobile backends).
+  const caps = await ctx.backend.capabilities();
+  const challengeType: JupiterTriggerChallengeType = caps.supports?.signMessage === false ? 'transaction' : 'message';
+  const summary = 'Enabling Jupiter limit orders (one-time)';
+  const authenticate = async (): Promise<void> => {
+    const challenge = await requestChallenge(ctx.config, { walletAddress, challengeType });
+    if (challengeType === 'message') {
+      const signature = await ctx.signMessage(challenge.challenge, summary);
+      await verifyChallenge(ctx.config, { walletAddress, challengeType, signature });
+    } else {
+      if (!challenge.transaction) {
+        throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'Jupiter Trigger auth challenge did not return a transaction to sign.');
+      }
+      const signedTransaction = await ctx.signTransaction(challenge.transaction, summary);
+      await verifyChallenge(ctx.config, { walletAddress, challengeType, signedTransaction });
+    }
+  };
+  try {
+    await authenticate();
+  } catch (err) {
+    if (triggerAuthRejected(err) || getCachedJwt(walletAddress, ctx.config.cluster, apiHost)) throw err;
+    await authenticate(); // one retry with a fresh challenge (covers TTL expiry between fetch + sign)
+  }
+}
+
+async function ensureTriggerVault(ctx: DAppAdapterContext, walletAddress: string): Promise<void> {
+  const vault = await readVault(ctx.config, { walletAddress });
+  if (vault.registered) return;
+  const built = await prepareRegisterVault(ctx.config, { walletAddress });
+  if (!built.transactionBase64) return; // Jupiter reports nothing to sign → already provisioned
+  const signed = await ctx.signTransaction(built.transactionBase64, 'Register order vault (one-time)');
+  await postSignedToTrigger(ctx, '/vault/register/submit', { walletAddress, signedTransaction: signed });
 }
 
 function baseTriggerParams(input: {

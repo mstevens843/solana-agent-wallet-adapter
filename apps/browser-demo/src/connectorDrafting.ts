@@ -22,6 +22,10 @@ export interface ConnectorSubAction {
   description: string;
   actionType: string;
   fields: AgentPlanTemplateField[];
+  // Manage-only sub-actions (e.g. Jupiter Trigger vault setup / edit / cancel / withdraw): still
+  // routable via openManageForm + the auto-setup path (lookups are by actionType/id), but hidden from
+  // the create dropdown so users only see order-CREATION choices.
+  hiddenFromCreateMenu?: boolean;
 }
 
 export interface ConnectorSubActionGroup {
@@ -2450,11 +2454,12 @@ function jupiterTriggerUnifiedForm(): ConnectorActionForm {
           description: 'Register the Jupiter Trigger vault required before creating limit orders.',
           actionType: 'jupiter_trigger_register_vault',
           fields: [formField('payer', 'Payer override')],
+          hiddenFromCreateMenu: true, // now automatic on the first order (ensureTriggerReady)
         },
         {
           id: 'single-limit-stop',
-          label: 'Limit / stop order',
-          description: 'Swap when a token crosses one USD price threshold. Output is not guaranteed at trigger time.',
+          label: 'Limit order',
+          description: 'Swap automatically when a token reaches your target USD price. The amount received isn\'t guaranteed at trigger time.',
           actionType: 'jupiter_trigger_single_order',
           fields: [
             inputMint,
@@ -2469,8 +2474,8 @@ function jupiterTriggerUnifiedForm(): ConnectorActionForm {
         },
         {
           id: 'oco-tpsl',
-          label: 'TP/SL bracket (OCO)',
-          description: 'Take-profit and stop-loss pair where one fill cancels the other.',
+          label: 'Take-profit / Stop-loss',
+          description: 'Set a take-profit and a stop-loss together — whichever fills first cancels the other (OCO).',
           actionType: 'jupiter_trigger_oco_order',
           fields: [
             inputMint,
@@ -2487,8 +2492,8 @@ function jupiterTriggerUnifiedForm(): ConnectorActionForm {
         },
         {
           id: 'otoco-entry-tpsl',
-          label: 'Entry + TP/SL (OTOCO)',
-          description: 'Entry trigger first, then automatically activates a TP/SL OCO bracket.',
+          label: 'Auto-entry with exits',
+          description: 'Wait for an entry price, then automatically arm a paired take-profit and stop-loss (OTOCO).',
           actionType: 'jupiter_trigger_otoco_order',
           fields: [
             inputMint,
@@ -2518,6 +2523,7 @@ function jupiterTriggerUnifiedForm(): ConnectorActionForm {
             formDateTimeField('newExpiresAt', 'New expiry'),
             formField('reason', 'Reason'),
           ],
+          hiddenFromCreateMenu: true, // manage action — reached from the Positions card (Edit), not create
         },
         {
           id: 'cancel-order',
@@ -2525,6 +2531,7 @@ function jupiterTriggerUnifiedForm(): ConnectorActionForm {
           description: 'Cancel an open or pending Trigger order. Withdraw funds separately if needed.',
           actionType: 'jupiter_trigger_cancel_order',
           fields: [formField('orderId', 'Order id', true), formField('reason', 'Reason')],
+          hiddenFromCreateMenu: true, // manage action — reached from the Positions card (Cancel), not create
         },
         {
           id: 'withdraw-order-funds',
@@ -2532,6 +2539,7 @@ function jupiterTriggerUnifiedForm(): ConnectorActionForm {
           description: 'Move cancelled or expired Trigger order funds from the vault back to the wallet.',
           actionType: 'jupiter_trigger_withdraw_order_funds',
           fields: [formField('orderId', 'Order id', true), formField('reason', 'Reason')],
+          hiddenFromCreateMenu: true, // manage action — reached from the Positions card (Withdraw funds), not create
         },
       ],
     },
@@ -2584,6 +2592,7 @@ function jupiterRecurringUnifiedForm(): ConnectorActionForm {
           description: 'Cancel a time-based Jupiter Recurring order and reclaim remaining funds.',
           actionType: 'jupiter_recurring_cancel_order',
           fields: [formField('orderId', 'Order id', true), formField('reason', 'Reason')],
+          hiddenFromCreateMenu: true, // manage action — reached from the Positions card (Cancel), not create
         },
         {
           id: 'deposit-deprecated-price-order',
@@ -2597,6 +2606,7 @@ function jupiterRecurringUnifiedForm(): ConnectorActionForm {
             formSelectField('inputOrOutput', 'Amount side', ['In', 'Out'], 'In'),
             deprecationAccepted,
           ],
+          hiddenFromCreateMenu: true, // deprecated price-based recurring (can't create new ones) — hidden from create
         },
         {
           id: 'withdraw-deprecated-price-order',
@@ -2610,6 +2620,7 @@ function jupiterRecurringUnifiedForm(): ConnectorActionForm {
             formSelectField('inputOrOutput', 'Amount side', ['In', 'Out'], 'In'),
             deprecationAccepted,
           ],
+          hiddenFromCreateMenu: true, // deprecated price-based recurring (can't create new ones) — hidden from create
         },
       ],
     },

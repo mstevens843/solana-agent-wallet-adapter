@@ -1,6 +1,12 @@
 {
   "language": "de",
   "entries": {
+    "Limit order": "Limit-Order",
+    "Take-profit / Stop-loss": "Take-Profit / Stop-Loss",
+    "Auto-entry with exits": "Auto-Einstieg mit Ausstiegen",
+    "Swap automatically when a token reaches your target USD price. The amount received isn't guaranteed at trigger time.": "Tauscht automatisch, sobald ein Token deinen USD-Zielpreis erreicht. Der erhaltene Betrag ist bei Auslösung nicht garantiert.",
+    "Set a take-profit and a stop-loss together — whichever fills first cancels the other (OCO).": "Setze Take-Profit und Stop-Loss zusammen — was zuerst ausgeführt wird, storniert das andere (OCO).",
+    "Wait for an entry price, then automatically arm a paired take-profit and stop-loss (OTOCO).": "Wartet auf einen Einstiegspreis und aktiviert dann automatisch ein gekoppeltes Take-Profit/Stop-Loss (OTOCO).",
     "All positions": "Alle Positionen",
     "Every open position across orders, lending, borrowing, staking and liquidity.": "Alle offenen Positionen aus Orders, Verleihen, Leihen, Staking und Liquidität.",
     "Filter positions": "Positionen filtern",
