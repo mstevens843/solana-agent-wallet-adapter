@@ -3251,7 +3251,12 @@ async function waitForHttp(url) {
 }
 
 async function waitForHostedAiStatus(url, options = {}) {
-  const deadline = Date.now() + 15_000;
+  // Cold-boot budget for the render-web server. 15s was too tight on a CPU-contended CI/deploy box
+  // (the build compiles ~40 tsc projects first, then a fresh node imports the full workflow +
+  // mcp-server + Solana SDK graph with pure-JS bigint) — that produced a false ECONNREFUSED timeout
+  // even though the server boots fine. 45s gives headroom without masking a real hang; overridable.
+  const timeoutMs = Number(process.env.AGENTIC_SMOKE_AI_STATUS_TIMEOUT_MS) || 45_000;
+  const deadline = Date.now() + timeoutMs;
   let lastError;
   while (Date.now() < deadline) {
     if (options.childProcess && options.childProcess.exitCode !== null) {
@@ -3439,7 +3444,9 @@ function isLocalBridgeConfigRequest(event) {
 function captureChildOutput(child) {
   let stdout = '';
   let stderr = '';
-  const append = (current, chunk) => `${current}${chunk}`.slice(-8_000);
+  // Keep a generous tail so a genuine startup crash (stack trace + preceding logs) isn't truncated
+  // out of the failure report; the whole child log is tiny in the healthy case.
+  const append = (current, chunk) => `${current}${chunk}`.slice(-65_536);
   child.stdout?.setEncoding('utf8');
   child.stderr?.setEncoding('utf8');
   child.stdout?.on('data', (chunk) => {
