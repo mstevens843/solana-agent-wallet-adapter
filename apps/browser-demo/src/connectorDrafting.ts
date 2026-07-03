@@ -2356,66 +2356,73 @@ function jupiterLendUnifiedForm(): ConnectorActionForm {
       options: [
         {
           id: 'earn-deposit',
-          label: 'Earn - deposit',
-          description: 'Supply tokens to a Jupiter Lend earn pool.',
+          label: 'Lend',
+          description: 'Supply tokens to a Jupiter Lend earn pool to earn yield.',
           actionType: 'jupiter_lend_earn_deposit',
           fields: [earnAsset, formField('amount', 'Amount', true)],
         },
         {
           id: 'earn-withdraw',
-          label: 'Earn - withdraw',
+          label: 'Withdraw',
           description: 'Redeem deposited tokens from a Jupiter Lend earn pool.',
           actionType: 'jupiter_lend_earn_withdraw',
           fields: [earnAsset, formField('amount', 'Amount'), formField('shares', 'Shares')],
+          hiddenFromCreateMenu: true, // manage action — reached from the Positions card (Withdraw), not create
         },
         {
           id: 'earn-mint',
-          label: 'Earn - mint shares',
+          label: 'Mint shares',
           description: 'Mint earn pool shares directly.',
           actionType: 'jupiter_lend_earn_mint',
           fields: [earnAsset, formField('amount', 'Amount', true)],
+          hiddenFromCreateMenu: true, // advanced share-denominated deposit (redundant with Lend) — hidden from create
         },
         {
           id: 'earn-redeem',
-          label: 'Earn - redeem shares',
+          label: 'Redeem shares',
           description: 'Redeem earn pool shares for the underlying asset.',
           actionType: 'jupiter_lend_earn_redeem',
           fields: [earnAsset, formField('shares', 'Shares', true)],
+          hiddenFromCreateMenu: true, // full-exit primitive — reached from the Positions card ("Withdraw all"), not create
         },
         {
           id: 'borrow-create',
-          label: 'Borrow - create position',
-          description: 'Open a new collateralized borrow position.',
+          label: 'Borrow',
+          description: 'Deposit collateral and receive borrowed funds in one approval.',
           actionType: 'jupiter_lend_borrow_create_position',
-          fields: [borrowVault],
+          fields: [borrowVault, formField('collateralAmount', 'Collateral', true), formField('borrowAmount', 'Borrow', true), minHealthRatioField()],
         },
         {
           id: 'borrow-deposit-collateral',
-          label: 'Borrow - deposit collateral',
+          label: 'Add collateral',
           description: 'Add collateral to an existing borrow position.',
           actionType: 'jupiter_lend_borrow_deposit_collateral',
           fields: [borrowVault, borrowPosition, formField('collateralAmount', 'Collateral amount', true)],
+          hiddenFromCreateMenu: true, // manage action — reached from the Positions card (Add collateral), not create
         },
         {
           id: 'borrow-borrow',
-          label: 'Borrow - draw',
+          label: 'Borrow more',
           description: 'Borrow against the position’s collateral.',
           actionType: 'jupiter_lend_borrow_borrow',
           fields: [borrowVault, borrowPosition, formField('borrowAmount', 'Borrow amount', true), minHealthRatioField()],
+          hiddenFromCreateMenu: true, // manage action — reached from the Positions card (Borrow more), not create
         },
         {
           id: 'borrow-repay',
-          label: 'Borrow - repay',
+          label: 'Repay',
           description: 'Repay outstanding debt on the position.',
           actionType: 'jupiter_lend_borrow_repay',
           fields: [borrowVault, borrowPosition, formField('amount', 'Repay amount', true)],
+          hiddenFromCreateMenu: true, // manage action — reached from the Positions card (Repay), not create
         },
         {
           id: 'borrow-withdraw-collateral',
-          label: 'Borrow - withdraw collateral',
+          label: 'Withdraw collateral',
           description: 'Withdraw collateral once health permits.',
           actionType: 'jupiter_lend_borrow_withdraw_collateral',
           fields: [borrowVault, borrowPosition, formField('amount', 'Withdraw amount', true), minHealthRatioField()],
+          hiddenFromCreateMenu: true, // manage action — reached from the Positions card (Withdraw collateral), not create
         },
       ],
     },
@@ -2548,8 +2555,10 @@ function jupiterTriggerUnifiedForm(): ConnectorActionForm {
 
 function jupiterRecurringUnifiedForm(): ConnectorActionForm {
   const memo = formField('memo', 'Reason');
+  // Neutral spend/receive labels read correctly in BOTH buy and sell directions — you always spend the
+  // input token and receive the output token, so "Buy token" was wrong for a sell.
   const inputMint = jupiterTokenField('inputMint', 'Spend token', true, JUPITER_FORM_TOKEN_MINTS.USDC);
-  const outputMint = jupiterTokenField('outputMint', 'Buy token', true, JUPITER_FORM_TOKEN_MINTS.SOL);
+  const outputMint = jupiterTokenField('outputMint', 'Receive token', true, JUPITER_FORM_TOKEN_MINTS.SOL);
   const automationAccepted = formSelectField('automationWarningAccepted', 'Jupiter automation acknowledged', ['true'], 'true');
   const deprecationAccepted = formSelectField('priceOrderDeprecationAccepted', 'Deprecated price-order warning acknowledged', ['true'], 'true');
   return {
@@ -2577,12 +2586,12 @@ function jupiterRecurringUnifiedForm(): ConnectorActionForm {
             formSelectField('dcaDirection', 'Direction', ['buy', 'sell'], 'buy', true),
             inputMint,
             outputMint,
-            formField('totalAmount', 'Total spend', true),
-            formField('numberOfOrders', 'How many buys', true),
-            formField('intervalSeconds', 'Every', true),
-            formDateTimeField('startAt', 'Start at'),
-            formField('minPrice', 'Minimum price'),
-            formField('maxPrice', 'Maximum price'),
+            formField('totalAmount', 'Total spend', true, { helperText: 'Total amount of the spend token to deploy across all orders.' }),
+            formField('numberOfOrders', 'Number of orders', true, { helperText: 'How many times to repeat the swap.', placeholder: 'e.g. 10' }),
+            formField('intervalSeconds', 'Repeat every (seconds)', true, { helperText: 'e.g. 3600 = hourly · 86400 = daily · 604800 = weekly', placeholder: '86400' }),
+            formDateTimeField('startAt', 'Start at', false, { helperText: 'Optional — defaults to now.' }),
+            formField('minPrice', 'Minimum price', false, { helperText: 'Optional — only fill when the price is at or above this.' }),
+            formField('maxPrice', 'Maximum price', false, { helperText: 'Optional — only fill when the price is at or below this.' }),
             automationAccepted,
           ],
         },
@@ -2963,7 +2972,13 @@ function connectorActionFields(actionKind: string): AgentPlanTemplateField[] {
     }
   } else if (actionKind.startsWith('jupiter_lend_borrow_')) {
     add(formField('vaultId', 'Vault id', true));
-    if (has('position', 'repay', 'withdraw')) add(formField('positionId', 'Position id'));
+    if (has('create_position')) {
+      // Unified open: deposit collateral + receive borrowed funds in one approval (no positionId — new position).
+      add(formField('collateralAmount', 'Collateral', true));
+      add(formField('borrowAmount', 'Borrow', true));
+    } else {
+      add(formField('positionId', 'Position id', true));
+    }
     if (has('deposit_collateral')) add(formField('collateralAmount', 'Collateral amount', true));
     if (actionKind.endsWith('_borrow')) add(formField('borrowAmount', 'Borrow amount', true));
     if (has('repay')) add(formField('amount', 'Repay amount', true));
@@ -2986,10 +3001,10 @@ function connectorActionFields(actionKind: string): AgentPlanTemplateField[] {
     if (has('create_time_order')) {
       add(formSelectField('dcaDirection', 'Direction', ['buy', 'sell'], 'buy', true));
       add(jupiterTokenField('inputMint', 'Spend token', true, JUPITER_FORM_TOKEN_MINTS.USDC));
-      add(jupiterTokenField('outputMint', 'Buy token', true, JUPITER_FORM_TOKEN_MINTS.SOL));
+      add(jupiterTokenField('outputMint', 'Receive token', true, JUPITER_FORM_TOKEN_MINTS.SOL));
       add(formField('totalAmount', 'Total spend', true));
-      add(formField('intervalSeconds', 'Every', true));
-      add(formField('numberOfOrders', 'How many buys'));
+      add(formField('intervalSeconds', 'Repeat every (seconds)', true));
+      add(formField('numberOfOrders', 'Number of orders'));
     }
   } else if (actionKind.startsWith('raydium_')) {
     add(formField('poolId', 'Pool id', true));

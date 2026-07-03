@@ -3,15 +3,19 @@ import { describe, expect, it } from 'vitest';
 import {
   aiReviewSetupTabForMobileRailOpen,
   computeMobileRailViewportVars,
+  decideChatAutoscroll,
   inferMobileRailFocusedKeyboardInset,
   mobileRailSheetRouteAllowed,
+  resolveChatKeyboardInset,
   shouldApplyMobileRailBodyDataset,
   shouldClearActiveMobileRailSheet,
   shouldCloseWorkspaceStorageSheetAfterCloudSignIn,
   shouldResetAiReviewSetupTabOnMobileRailOpen,
   shouldRefreshDeviceAgentStatusForMobileRailOpen,
   shouldSuppressMobileRailSheetEnterAnimation,
+  shouldWriteChatKeyboardInset,
 } from '../mobileRailSheetPolicy.js';
+import type { MobileRailViewportVars } from '../mobileRailSheetPolicy.js';
 
 describe('mobile rail sheet policy', () => {
   it('allows workspace mobile sheets on app and demo routes', () => {
@@ -485,5 +489,118 @@ describe('inferMobileRailFocusedKeyboardInset', () => {
     expect(inferMobileRailFocusedKeyboardInset(900)).toBe(378);
     expect(inferMobileRailFocusedKeyboardInset(375)).toBe(15);
     expect(inferMobileRailFocusedKeyboardInset(0)).toBe(0);
+  });
+});
+
+// Regression guards for the iOS Chat-tab jitter fix. computeMobileRailViewportVars feeds
+// resolveChatKeyboardInset, which feeds the idempotent --chat-keyboard-inset writer. If any of these
+// drift, the iOS surface-height feedback loop can revive.
+describe('computeMobileRailViewportVars is stable for identical input (idempotency)', () => {
+  it('returns an identical result for the same iOS visual-viewport read called repeatedly', () => {
+    const input = { viewportHeight: 480, viewportOffsetTop: 40, innerHeight: 800 };
+    const first = computeMobileRailViewportVars({ ...input });
+    for (let i = 0; i < 5; i += 1) {
+      expect(computeMobileRailViewportVars({ ...input })).toEqual(first);
+    }
+    // The value the idempotent writer relies on: a settled read never drifts frame-to-frame.
+    expect(first.keyboardInset).toBe(280);
+    expect(first.source).toBe('visual-viewport');
+  });
+});
+
+describe('resolveChatKeyboardInset', () => {
+  const vars = (over: Partial<MobileRailViewportVars>): MobileRailViewportVars => ({
+    vvh: 480, keyboardInset: 0, keyboardOpen: false, source: 'none', ...over,
+  });
+
+  it('passes through the visual-viewport / native inset that occludes the fixed composer', () => {
+    expect(resolveChatKeyboardInset(vars({ keyboardOpen: true, source: 'visual-viewport', keyboardInset: 320 }))).toBe(320);
+    expect(resolveChatKeyboardInset(vars({ keyboardOpen: true, source: 'native', keyboardInset: 300 }))).toBe(300);
+    expect(resolveChatKeyboardInset(vars({ keyboardOpen: true, source: 'focused-control-fallback', keyboardInset: 260 }))).toBe(260);
+  });
+
+  it('forces 0 for the Android layout-viewport-resize branch even if an inset is present', () => {
+    // The Android guard: adjustResize already shrank the layout viewport, so subtracting an inset
+    // from a shrunken 100dvh would double-count. Must resolve to 0 regardless of keyboardInset.
+    expect(resolveChatKeyboardInset(vars({ keyboardOpen: true, source: 'layout-viewport-resize', keyboardInset: 320 }))).toBe(0);
+  });
+
+  it('forces 0 when the keyboard is closed / idle', () => {
+    expect(resolveChatKeyboardInset(vars({ keyboardOpen: false, source: 'none', keyboardInset: 0 }))).toBe(0);
+  });
+});
+
+describe('shouldWriteChatKeyboardInset (idempotency gate — the primary jitter fuse)', () => {
+  it('skips sub-epsilon jitter so an iOS resize storm cannot feed the write→layout→scroll loop', () => {
+    expect(shouldWriteChatKeyboardInset(320, 321)).toBe(false);
+    expect(shouldWriteChatKeyboardInset(320, 319)).toBe(false);
+    expect(shouldWriteChatKeyboardInset(320, 320)).toBe(false);
+  });
+
+  it('commits a real change (>= epsilon) and always commits a full open/close (to/from 0)', () => {
+    expect(shouldWriteChatKeyboardInset(320, 322)).toBe(true);
+    expect(shouldWriteChatKeyboardInset(320, 0)).toBe(true);   // keyboard closed
+    expect(shouldWriteChatKeyboardInset(0, 320)).toBe(true);   // keyboard opened
+  });
+
+  it('always commits the very first write (previous < 0)', () => {
+    expect(shouldWriteChatKeyboardInset(-1, 0)).toBe(true);
+    expect(shouldWriteChatKeyboardInset(-1, 320)).toBe(true);
+  });
+
+  it('honors a custom epsilon', () => {
+    expect(shouldWriteChatKeyboardInset(300, 305, 10)).toBe(false);
+    expect(shouldWriteChatKeyboardInset(300, 311, 10)).toBe(true);
+  });
+});
+
+describe('decideChatAutoscroll (single source of truth for post-render chat snap)', () => {
+  it('snaps on a brand-new message in the same session', () => {
+    expect(decideChatAutoscroll({
+      sessionId: 'a', messageCount: 4, lastRenderedSessionId: 'a', lastRenderedMessageCount: 3, forceScrollBottom: false,
+    })).toEqual({ snapToBottom: true, nextSessionId: 'a', nextMessageCount: 4 });
+  });
+
+  it('snaps when the session changes (open a different chat / first open)', () => {
+    expect(decideChatAutoscroll({
+      sessionId: 'b', messageCount: 2, lastRenderedSessionId: 'a', lastRenderedMessageCount: 5, forceScrollBottom: false,
+    })).toEqual({ snapToBottom: true, nextSessionId: 'b', nextMessageCount: 2 });
+  });
+
+  it('snaps on an explicit force even with no new message', () => {
+    expect(decideChatAutoscroll({
+      sessionId: 'a', messageCount: 3, lastRenderedSessionId: 'a', lastRenderedMessageCount: 3, forceScrollBottom: true,
+    }).snapToBottom).toBe(true);
+  });
+
+  it('KEYSTONE: does NOT snap on an idle re-render (same session, same count, no force)', () => {
+    // If this ever flips to true, the 5s relay-presence timer (and every other idle render) will
+    // re-poke the transcript and the iOS chat jitter returns. Do not weaken.
+    expect(decideChatAutoscroll({
+      sessionId: 'a', messageCount: 3, lastRenderedSessionId: 'a', lastRenderedMessageCount: 3, forceScrollBottom: false,
+    }).snapToBottom).toBe(false);
+  });
+
+  it('does not snap when the message count decreases (e.g. a session prune)', () => {
+    expect(decideChatAutoscroll({
+      sessionId: 'a', messageCount: 2, lastRenderedSessionId: 'a', lastRenderedMessageCount: 4, forceScrollBottom: false,
+    }).snapToBottom).toBe(false);
+  });
+
+  it('treats a null session as no-snap and clears the bookkeeping id', () => {
+    expect(decideChatAutoscroll({
+      sessionId: null, messageCount: 0, lastRenderedSessionId: 'a', lastRenderedMessageCount: 3, forceScrollBottom: false,
+    })).toEqual({ snapToBottom: false, nextSessionId: '', nextMessageCount: 0 });
+  });
+
+  it('always updates bookkeeping to the current input, snap or not', () => {
+    const snap = decideChatAutoscroll({
+      sessionId: 'x', messageCount: 7, lastRenderedSessionId: 'w', lastRenderedMessageCount: 1, forceScrollBottom: false,
+    });
+    expect(snap).toMatchObject({ nextSessionId: 'x', nextMessageCount: 7 });
+    const idle = decideChatAutoscroll({
+      sessionId: 'x', messageCount: 7, lastRenderedSessionId: 'x', lastRenderedMessageCount: 7, forceScrollBottom: false,
+    });
+    expect(idle).toMatchObject({ nextSessionId: 'x', nextMessageCount: 7, snapToBottom: false });
   });
 });

@@ -2893,11 +2893,23 @@ export class AgentWalletActionService {
     }
     if (capability === 'earn') {
       if (input.walletAddress?.trim()) {
-        const earnings = await this.jupiterLendEarnPositions({
+        const positions = await this.jupiterLendEarnPositions({
           walletAddress: input.walletAddress,
           ...(input.reserveMint ? { assetMint: input.reserveMint } : {}),
         });
-        return { connector: connectorCapabilityView(connector, this.config), capability, ...earnings };
+        // Best-effort: fold accrued interest into the positions read so the Positions card can show an
+        // "Earned" row per asset. A failed earnings read must never break the positions list.
+        let earnings: unknown[] = [];
+        try {
+          const earned = await this.jupiterLendEarnEarnings({
+            walletAddress: input.walletAddress,
+            ...(input.reserveMint ? { assetMint: input.reserveMint } : {}),
+          });
+          if (Array.isArray(earned.earnings)) earnings = earned.earnings as unknown[];
+        } catch {
+          earnings = [];
+        }
+        return { connector: connectorCapabilityView(connector, this.config), capability, ...positions, earnings };
       }
       const reserveMint = input.reserveMint ?? input.mint;
       if (reserveMint?.trim()) {
@@ -2923,6 +2935,21 @@ export class AgentWalletActionService {
       return { connector: connectorCapabilityView(connector, this.config), capability, ...positions };
     }
     if (capability === 'borrow' || capability === 'withdraw' || capability === 'repay') {
+      // With an explicit vaultId this becomes the live loan-terms / projected-health preview the borrow
+      // create form renders (behind an "estimate" disclaimer). Without a vaultId we can't simulate, so
+      // we keep directing callers to the dedicated tool.
+      if (input.vaultId !== undefined && input.vaultId !== null && String(input.vaultId).trim() !== '') {
+        const preview = await this.jupiterLendBorrowHealthPreview({
+          vaultId: Number(input.vaultId),
+          ...(input.walletAddress ? { walletAddress: input.walletAddress } : {}),
+          ...(input.positionId !== undefined ? { positionId: Number(input.positionId) } : {}),
+          ...(input.collateralDelta ? { collateralDelta: String(input.collateralDelta) } : {}),
+          ...(input.debtDelta ? { debtDelta: String(input.debtDelta) } : {}),
+          ...(input.minHealthRatio !== undefined ? { minHealthRatio: Number(input.minHealthRatio) } : {}),
+          ...(input.maxLtvBps !== undefined ? { maxLtvBps: Number(input.maxLtvBps) } : {}),
+        });
+        return { connector: connectorCapabilityView(connector, this.config), capability, ...preview };
+      }
       throw new ProtocolError(
         'invalid_request',
         'Jupiter Borrow health preview needs an explicit vaultId. Call solana_jupiter_lend_borrow_health_preview.',

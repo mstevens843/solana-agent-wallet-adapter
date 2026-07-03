@@ -177,6 +177,66 @@ export function computeMobileRailViewportVars(input: MobileRailViewportInput): M
   return { vvh, keyboardInset, keyboardOpen: source !== 'none', source };
 }
 
+/**
+ * The px the Chat surface should subtract from 100dvh for the keyboard, given resolved viewport
+ * vars. Only `native` / `visual-viewport` sources actually occlude the fixed composer; the Android
+ * `layout-viewport-resize` branch (adjustResize) already shrank the layout viewport, and `none`
+ * (idle, keyboard closed) has nothing to subtract — both resolve to 0 so the surface never shrinks
+ * spuriously. Keeping this pure (not inline in main.ts) makes the Android/idle=0 guarantee testable.
+ */
+export function resolveChatKeyboardInset(vars: MobileRailViewportVars): number {
+  if (!vars.keyboardOpen) return 0;
+  if (vars.source === 'layout-viewport-resize') return 0;
+  return vars.keyboardInset;
+}
+
+/**
+ * Idempotency gate for the `--chat-keyboard-inset` writer. Returns false (skip the write) when the
+ * new inset is unchanged or within `epsilon` px of the last written value, so an iOS visualViewport
+ * resize/scroll storm can't feed a write→layout→scroll→write feedback loop (the historic chat
+ * jitter). A first write (`previous < 0`) and any transition to/from an exact 0 (keyboard fully
+ * open/close) always commit so the composer still snaps above the keyboard and settles on close.
+ */
+export function shouldWriteChatKeyboardInset(previous: number, next: number, epsilon = 2): boolean {
+  if (previous < 0) return true;
+  if (next === previous) return false;
+  if (next === 0 || previous === 0) return true;
+  return Math.abs(next - previous) >= epsilon;
+}
+
+export interface ChatAutoscrollInput {
+  sessionId: string | null;
+  messageCount: number;
+  lastRenderedSessionId: string;
+  lastRenderedMessageCount: number;
+  forceScrollBottom: boolean;
+}
+
+export interface ChatAutoscrollDecision {
+  snapToBottom: boolean;
+  nextSessionId: string;
+  nextMessageCount: number;
+}
+
+/**
+ * SINGLE source of truth for "should a post-render chat re-render pull the transcript to the
+ * bottom?". Both render paths (the morph fast-path and the full-render path) derive their decision
+ * here so they can never again diverge into the sync+rAF double-snap that thrashed iOS. Snap only
+ * on an explicit force, a brand-new message in the SAME session, or a session switch. An idle
+ * re-render (same session, same count, no force) must NOT snap — that is the property that keeps the
+ * 5s relay-presence timer and every other idle render from re-poking the transcript.
+ */
+export function decideChatAutoscroll(input: ChatAutoscrollInput): ChatAutoscrollDecision {
+  const sameSession = input.sessionId ? input.sessionId === input.lastRenderedSessionId : false;
+  const hasNewMessage = sameSession && input.messageCount > input.lastRenderedMessageCount;
+  const sessionChanged = Boolean(input.sessionId) && !sameSession;
+  return {
+    snapToBottom: input.forceScrollBottom || hasNewMessage || sessionChanged,
+    nextSessionId: input.sessionId ?? '',
+    nextMessageCount: input.messageCount,
+  };
+}
+
 export function inferMobileRailFocusedKeyboardInset(innerHeight: number): number {
   if (!Number.isFinite(innerHeight) || innerHeight <= 0) return 0;
   const height = Math.floor(innerHeight);

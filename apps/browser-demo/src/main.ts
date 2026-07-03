@@ -406,13 +406,16 @@ import {
 import {
   aiReviewSetupTabForMobileRailOpen,
   computeMobileRailViewportVars,
+  decideChatAutoscroll,
   inferMobileRailFocusedKeyboardInset,
+  resolveChatKeyboardInset,
   shouldApplyMobileRailBodyDataset,
   shouldClearActiveMobileRailSheet,
   shouldCloseWorkspaceStorageSheetAfterCloudSignIn,
   shouldResetAiReviewSetupTabOnMobileRailOpen,
   shouldRefreshDeviceAgentStatusForMobileRailOpen,
   shouldSuppressMobileRailSheetEnterAnimation,
+  shouldWriteChatKeyboardInset,
 } from './mobileRailSheetPolicy.js';
 import {
   phonePairingEnabled,
@@ -708,6 +711,11 @@ import {
   type ConnectorActionForm,
   type ConnectorSubAction,
 } from './connectorDrafting.js';
+import {
+  POSITION_BROWSE_TYPES,
+  manageProposalParams,
+  matchPositionBrowseType,
+} from './chatPositions.js';
 import {
   connectorOptionCacheKey,
   dependenciesSatisfied,
@@ -2891,6 +2899,9 @@ interface ChatMessage {
   // state.recurringPayments. The compact card is rendered live by id (regenerated on render),
   // so nothing heavy is persisted on the message — just the id.
   recurringCardId?: string;
+  // Live Active-Positions card: renders the current positions of one category (limit/dca/lend/…) from
+  // state.positionsLive, so the cards stay monitored and their manage actions run inline in chat.
+  positionsCard?: { category: ActionCategory };
   // Client-only deterministic Research card: compact read-only facts generated from
   // existing chat read tools. Never creates a PreparedAction or approval receipt.
   researchCard?: ChatResearchCard;
@@ -3631,6 +3642,10 @@ interface DemoState {
   chatComposerOpen: boolean;
   // Wallet Actions menu tab: 'primary' = everyday actions; 'advanced' = connector verbs (Lend/Limit/…).
   chatWalletActionTab: 'primary' | 'advanced';
+  // Armed after "View Active Positions" — the next typed position-type word renders live cards in chat.
+  chatPositionsBrowse: boolean;
+  // Pending amount-required manage action from a chat position card — the next numeric message is its amount.
+  chatManageAwait: { kind: string; orderId: string; fields: Record<string, string>; label: string } | null;
   chatResearchOpen: boolean;
   chatResearchTab: ChatResearchTab;
   chatResearchDraft: ChatResearchDraft | null;
@@ -4826,6 +4841,8 @@ const state: DemoState = {
   chatInitialized: false,
   chatComposerOpen: false,
   chatWalletActionTab: 'primary',
+  chatPositionsBrowse: false,
+  chatManageAwait: null,
   chatResearchOpen: false,
   chatResearchTab: 'token',
   chatResearchDraft: null,
@@ -10430,20 +10447,40 @@ function canMorphActiveTab(): boolean {
   return true;
 }
 
-// Single, conditional autoscroll after a morph. The morph preserved scrollTop, so we only pull
-// to the bottom for a genuinely new message / session change / explicit force — and exactly
-// once (one rAF, not the sync+rAF double-snap that made iOS thrash).
-function chatAfterMorphScroll(): void {
+// SINGLE source of truth for post-render chat autoscroll. Called by BOTH the morph fast path
+// (renderWorkspace) and the full-render path (restoreChatComposerAfterRender) — and nothing else —
+// so the two can never again diverge into the sync+rAF double-snap that thrashed iOS (regressions
+// #1–3). The snap decision lives in the pure decideChatAutoscroll(); there is exactly ONE deferred
+// snap here, and chatScrollToBottom() is itself instant+idempotent. `domRecreated` is true only for
+// the full path, whose innerHTML rebuild reset the transcript scrollTop to 0 — the morph path
+// preserves scrollTop and passes false. Enforced by chatRenderInvariants.test.ts.
+function applyChatAutoscrollAfterRender(domRecreated: boolean): void {
   const session = activeChatSession();
-  const count = session?.messages.length ?? 0;
-  const sameSession = session ? session.id === lastRenderedChatSessionId : false;
-  const hasNewMessage = sameSession && count > lastRenderedChatMsgCount;
-  const sessionChanged = Boolean(session) && !sameSession;
-  lastRenderedChatSessionId = session?.id ?? '';
-  lastRenderedChatMsgCount = count;
-  if (chatForceScrollBottom || hasNewMessage || sessionChanged) {
+  const decision = decideChatAutoscroll({
+    sessionId: session?.id ?? null,
+    messageCount: session?.messages.length ?? 0,
+    lastRenderedSessionId: lastRenderedChatSessionId,
+    lastRenderedMessageCount: lastRenderedChatMsgCount,
+    forceScrollBottom: chatForceScrollBottom,
+  });
+  lastRenderedChatSessionId = decision.nextSessionId;
+  lastRenderedChatMsgCount = decision.nextMessageCount;
+  if (decision.snapToBottom) {
     chatForceScrollBottom = false;
+    // Full path rebuilt innerHTML (scrollTop reset to 0): snap synchronously BEFORE paint so the
+    // transcript never flashes its top on entry. Instant (chatScrollToBottom forces
+    // scroll-behavior:auto), so this plus the deferred re-snap land at the same scrollTop and never
+    // animate-fight — that fight under scroll-behavior:smooth was the historic iOS jitter. The
+    // morph path preserves scrollTop, so it skips the sync snap.
+    if (domRecreated) chatScrollToBottom(true);
+    // Cards/quotes settle their height a frame after layout; re-snap once so the last message is
+    // fully in view even if a card grew. This is the ONLY deferred snap in the file.
     requestAnimationFrame(() => chatScrollToBottom(true));
+  } else if (domRecreated) {
+    // Full path with no new message: innerHTML was wiped → re-pin iff the user was at the bottom
+    // pre-render (chatScrollPinned, captured in captureChatComposerSnapshot). The morph path
+    // preserves scrollTop, so it passes false and does nothing here.
+    chatScrollToBottom(false);
   }
 }
 
@@ -10550,7 +10587,9 @@ function renderWorkspace(): void {
   }
 
   if (onChatTab) {
-    chatAfterMorphScroll();
+    // Morph path uses the SAME autoscroll helper as the full path — keep them unified; divergence
+    // here is the historic iOS-jitter regression root.
+    applyChatAutoscrollAfterRender(false);
     syncChatKeyboardInset();
   }
   updateTabTitleBadge();
@@ -22235,6 +22274,7 @@ function chatMessageHtml(msg: ChatMessage, sessionId: string): string {
         ${msg.txReceipt ? `<div class="chat-card">${txBlock(msg.txReceipt.txid, msg.txReceipt.cluster)}</div>` : ''}
         ${msg.receiveCard ? `<div class="chat-card">${chatReceiveCardHtml(msg.receiveCard.address)}</div>` : ''}
         ${msg.recurringCardId ? chatRecurringCardLookupHtml(msg.recurringCardId) : ''}
+        ${msg.positionsCard ? chatPositionsCardHtml(msg.positionsCard.category) : ''}
         ${msg.researchCard ? `<div class="chat-card">${chatResearchCardHtml(msg.researchCard)}</div>` : ''}
         ${msg.decisionCheckCard ? `<div class="chat-card">${chatDecisionCheckCardHtml(msg.decisionCheckCard)}</div>` : ''}
         ${chatMessageFooterHtml(msg)}
@@ -24518,12 +24558,15 @@ function chatComposerHtml(): string {
   // the "Wallet Actions" label rather than as an action card. Always shown — clicking it without
   // a connected wallet posts the connect-wallet chat message (chatRequireWalletOrNotify).
   const receivePill = `<button type="button" class="chat-receive-pill-btn" data-chat-receive aria-label="${escapeHtml(t('Receive'))}" title="${escapeHtml(t('Receive'))}">${copyButtonIcon()}<span class="chat-receive-pill-label">${escapeHtml(t('Receive'))}</span></button>`;
+  // Active Positions: opens the in-chat positions view (counts → type a type → live cards). Sits just
+  // left of Receive; short "Active Positions" pill on mobile, full "View Active Positions" on desktop.
+  const positionsPill = `<button type="button" class="chat-positions-pill-btn" data-chat-positions aria-label="${escapeHtml(t('View Active Positions'))}" title="${escapeHtml(t('View Active Positions'))}">${activePositionsIcon()}<span class="chat-positions-pill-label chat-positions-pill-label--full">${escapeHtml(t('View Active Positions'))}</span><span class="chat-positions-pill-label chat-positions-pill-label--mobile" aria-hidden="true">${escapeHtml(t('Active Positions'))}</span></button>`;
   const plusOpen = state.chatComposerOpen ? ' open' : '';
   const plusMenu = `
     <div class="chat-plus-menu${plusOpen}${state.chatWalletActionTab === 'advanced' ? ' is-advanced' : ''}" role="menu">
       <div class="chat-plus-head">
         <span class="chat-plus-group">${escapeHtml(t('Wallet Actions'))}</span>
-        ${receivePill}
+        <div class="chat-plus-head-actions">${positionsPill}${receivePill}</div>
       </div>
       ${chatWalletActionTabs()}
       <div class="chat-plus-list">${chatWalletActionList()}</div>
@@ -26001,11 +26044,22 @@ function chatIsPinnedToBottom(el: HTMLElement): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight < 48;
 }
 
+// Low-level post-render snap primitive. For POST-RENDER autoscroll, call
+// applyChatAutoscrollAfterRender() — do NOT call this directly from a render path.
 function chatScrollToBottom(force = false): void {
   const scroller = chatScroller();
   if (!scroller) return;
   if (force || chatScrollPinned) {
+    // Instant, idempotent snap: temporarily override .chat-transcript's scroll-behavior:smooth so
+    // the assignment JUMPS instead of starting a CSS animation. Two snaps in quick succession then
+    // land at the SAME scrollTop with nothing to animate or interrupt — the iOS "double-snap"
+    // thrash is structurally impossible regardless of how many render paths fire. Streaming
+    // token-follow (chatAutoScrollNow) and the pill (chatJumpToBottom) use their own writes and
+    // keep their smooth feel.
+    const previousBehavior = scroller.style.scrollBehavior;
+    scroller.style.scrollBehavior = 'auto';
     scroller.scrollTop = scroller.scrollHeight;
+    scroller.style.scrollBehavior = previousBehavior;
   }
 }
 
@@ -26363,6 +26417,34 @@ async function submitChatMessage(text: string): Promise<void> {
     if (await tryConsumeHeldChatAction(content)) {
       chatSubmitPending = false;
       return;
+    }
+
+    // Awaiting the amount for a chat position manage action (Repay / partial Withdraw). A valid number
+    // consumes it and prepares the action; anything else abandons the prompt and flows normally.
+    if (state.chatManageAwait) {
+      const pend = state.chatManageAwait;
+      const normalized = content.replace(',', '.');
+      if (/^\d+(?:\.\d+)?$/.test(normalized) && Number(normalized) > 0) {
+        state.chatManageAwait = null;
+        const session = ensureActiveChatSession();
+        appendChatMessage(session.id, { id: newId('chat-msg'), role: 'user', content, createdAt: new Date().toISOString(), status: 'done' });
+        clearChatComposerDraft();
+        chatManagePositionAction(pend.kind, pend.orderId, pend.fields, normalized);
+        chatSubmitPending = false;
+        return;
+      }
+      state.chatManageAwait = null;
+    }
+
+    // Active Positions browse mode: a bare type word ("dca", "lend", …) renders live cards in chat
+    // instead of going to the AI. Exact-match only, so ordinary prompts fall through unchanged.
+    if (state.chatPositionsBrowse) {
+      const browseCategory = matchPositionBrowseType(content);
+      if (browseCategory) {
+        await handleChatPositionBrowseType(content, browseCategory);
+        chatSubmitPending = false;
+        return;
+      }
     }
 
     // Decision Check is a 2-step flow. Step 1: capture the conditions (mode on, not yet armed).
@@ -27066,6 +27148,150 @@ function tryDeterministicWalletAction(content: string): boolean {
   const assistantId = appendAssistant(t('Prepared this action. Review the card below, then tap Sign or type "sign".'), { proposal: mapped });
   try { promoteChatProposalToPreparedAction(session.id, assistantId); } catch { /* leave pending; card shows Prepare */ }
   return finish();
+}
+
+// ============================================================================
+// In-chat Active Positions — view / monitor / manage live positions from Chat.
+// ============================================================================
+
+// Live rows for a category from the Positions-tab live cache (so chat cards stay monitored).
+function chatPositionRowsForCategory(category: ActionCategory): PositionLiveRow[] {
+  const entry = state.positionsLive[sectionForCategory(category)];
+  if (!entry || entry.cluster !== state.cluster) return [];
+  return entry.rows.filter((r) => r.kind === category);
+}
+
+// Line-broken "Limit orders: 2 / DCA: 1" — only types with open positions.
+function chatPositionsCountLines(): string[] {
+  const lines: string[] = [];
+  for (const spec of POSITION_BROWSE_TYPES) {
+    const n = chatPositionRowsForCategory(spec.category).length;
+    if (n > 0) lines.push(tf('{label}: {n}', { label: t(spec.countLabel), n: String(n) }));
+  }
+  return lines;
+}
+
+// "View Active Positions" → fetch every browsable section, post the structured count summary, and arm
+// browse mode so the next typed type word renders live cards.
+async function handleChatViewPositions(): Promise<void> {
+  state.chatComposerOpen = false;
+  const session = ensureActiveChatSession();
+  const sections = [...new Set(POSITION_BROWSE_TYPES.map((s) => sectionForCategory(s.category)))];
+  await Promise.all(sections.map((s) => fetchPositionCategory(s, true).catch(() => {})));
+  const lines = chatPositionsCountLines();
+  const body = lines.length === 0
+    ? t('You have no active positions right now.')
+    : `${t('You have:')}\n${lines.join('\n')}\n\n${t('Type a position type (limit, dca, lend, borrow, stake, lp) to see the cards.')}`;
+  state.chatPositionsBrowse = lines.length > 0;
+  appendChatMessage(session.id, { id: newId('chat-msg'), role: 'assistant', content: body, createdAt: new Date().toISOString(), status: 'done' });
+  chatForceScrollBottom = true;
+  saveChatHistoryState();
+  render();
+}
+
+// A typed position-type word (while browse is armed) → post the user line + a live positions card.
+async function handleChatPositionBrowseType(content: string, category: ActionCategory): Promise<void> {
+  const session = ensureActiveChatSession();
+  appendChatMessage(session.id, { id: newId('chat-msg'), role: 'user', content, createdAt: new Date().toISOString(), status: 'done' });
+  clearChatComposerDraft();
+  await fetchPositionCategory(sectionForCategory(category), true).catch(() => {});
+  const rows = chatPositionRowsForCategory(category);
+  appendChatMessage(session.id, rows.length
+    ? { id: newId('chat-msg'), role: 'assistant', status: 'done', createdAt: new Date().toISOString(), content: '', positionsCard: { category } }
+    : { id: newId('chat-msg'), role: 'assistant', status: 'done', createdAt: new Date().toISOString(), content: t('No active positions of that type right now.') });
+  chatForceScrollBottom = true;
+  saveChatHistoryState();
+  render();
+}
+
+// Live positions of one category rendered as clean chat cards (swap-card visual language).
+function chatPositionsCardHtml(category: ActionCategory): string {
+  const rows = chatPositionRowsForCategory(category);
+  if (!rows.length) {
+    return `<div class="chat-card"><p class="chat-position-empty">${escapeHtml(t('These positions are no longer active.'))}</p></div>`;
+  }
+  return `<div class="chat-card chat-positions-card">${rows.map(chatPositionCard).join('')}</div>`;
+}
+
+function chatPositionCard(row: PositionLiveRow): string {
+  const connName = positionConnectorName(row.connectorId);
+  const icon = chatActionConnectorIconHtml(row.connectorId, connName);
+  const statusLabel = formatPositionStatus(row.status);
+  const tone = positionStatusTone(row.status);
+  const heroLogo = row.heroMint ? tokenLogoChipHtml(row.heroMint) : '';
+  const hero = row.headline
+    ? `<div class="chat-position-hero"><span class="chat-position-hero-label">${escapeHtml(positionDetailLabel(row.headline.label))}</span><span class="chat-position-hero-row">${heroLogo}<strong>${escapeHtml(row.headline.value)}</strong></span></div>`
+    : '';
+  const metrics = row.details.slice(0, 3)
+    .map((d) => `<span class="chat-position-metric${d.tone ? ' tone-' + d.tone : ''}"><em>${escapeHtml(positionDetailLabel(d.label))}</em><strong>${escapeHtml(d.value)}</strong></span>`)
+    .join('');
+  return `
+    <article class="chat-action-card chat-position-card" data-chat-position-id="${escapeHtml(row.id)}">
+      <div class="chat-action-head">
+        <span class="positions-badge">${escapeHtml(positionCategoryLabel(row.kind))}</span>
+        ${icon}
+        <strong class="chat-action-title">${escapeHtml(row.title)}</strong>
+        ${statusLabel ? `<span class="positions-status tone-${tone}">${escapeHtml(statusLabel)}</span>` : ''}
+      </div>
+      ${hero}
+      ${metrics ? `<div class="chat-position-metrics">${metrics}</div>` : ''}
+      ${chatPositionManageControls(row)}
+    </article>`;
+}
+
+// Manage actions we surface inline in chat. Edit (needs a price editor) is intentionally left to the
+// Positions tab. The "no-amount" set closes/cancels in one tap; everything else prompts for an amount.
+const CHAT_MANAGE_SKIP_KINDS = new Set<string>(['jupiter_trigger_edit_order']);
+const CHAT_MANAGE_NO_AMOUNT_KINDS = new Set<string>([
+  'jupiter_trigger_cancel_order',
+  'jupiter_trigger_withdraw_order_funds',
+  'jupiter_recurring_cancel_order',
+  'jupiter_lend_earn_redeem', // "Withdraw all" — shares are prefilled in fields
+]);
+function chatManageNeedsAmount(kind: string): boolean {
+  return !CHAT_MANAGE_NO_AMOUNT_KINDS.has(kind);
+}
+function chatManageDefaultLabel(kind: ActionCategory): string {
+  return kind === 'lend' ? t('Withdraw') : kind === 'borrow' ? t('Repay') : kind === 'stake' ? t('Unstake') : kind === 'lp' ? t('Remove') : t('Cancel');
+}
+
+function chatPositionManageControls(row: PositionLiveRow): string {
+  const buttons: string[] = [];
+  const add = (kind: string, orderId: string, label: string, fields?: Record<string, string>): void => {
+    if (CHAT_MANAGE_SKIP_KINDS.has(kind) || !orderId) return;
+    const attrs = `data-chat-pos-manage data-cpm-kind="${escapeHtml(kind)}" data-cpm-order-id="${escapeHtml(orderId)}" data-cpm-label="${escapeHtml(label)}" data-cpm-amount="${chatManageNeedsAmount(kind) ? '1' : '0'}"${fields ? ` data-cpm-fields='${escapeHtml(JSON.stringify(fields))}'` : ''}`;
+    buttons.push(`<button type="button" class="utility chat-position-action" ${attrs}>${escapeHtml(label)}</button>`);
+  };
+  if (row.cancel) add(row.cancel.kind, row.cancel.orderId, row.cancel.label ?? chatManageDefaultLabel(row.kind), row.cancel.fields);
+  for (const e of row.extras ?? []) add(e.kind, e.orderId, e.label, e.fields);
+  return buttons.length ? `<div class="chat-action-controls chat-position-controls">${buttons.join('')}</div>` : '';
+}
+
+// Build the chat action proposal for a manage action and promote it to the standard inline approval
+// card — reusing the whole chat action → sign → auto-success-message pipeline.
+function chatManagePositionAction(kind: string, orderId: string, fields: Record<string, string>, amount?: string): void {
+  const session = ensureActiveChatSession();
+  const params = manageProposalParams(MANAGE_ID_FIELD_BY_KIND[kind] ?? 'orderId', orderId, fields, amount);
+  const assistantId = newId('chat-msg');
+  appendChatMessage(session.id, {
+    id: assistantId, role: 'assistant', status: 'done', createdAt: new Date().toISOString(),
+    content: t('Prepared this action. Review the card below, then tap Approve or type "sign".'),
+    proposal: { kind: kind as PreparedActionKind, summary: chatManageSummary(kind), params },
+  });
+  try { promoteChatProposalToPreparedAction(session.id, assistantId); } catch { /* leave pending; card shows Prepare */ }
+  chatForceScrollBottom = true;
+  saveChatHistoryState();
+  render();
+}
+
+function chatManageSummary(kind: string): string {
+  if (kind === 'jupiter_trigger_cancel_order') return t('Cancel limit order');
+  if (kind === 'jupiter_recurring_cancel_order') return t('Cancel DCA order');
+  if (kind === 'jupiter_trigger_withdraw_order_funds') return t('Withdraw order funds');
+  if (kind === 'jupiter_lend_earn_withdraw' || kind === 'jupiter_lend_earn_redeem') return t('Withdraw from Jupiter Lend');
+  if (kind === 'jupiter_lend_borrow_repay') return t('Repay Jupiter Borrow');
+  if (kind === 'jupiter_lend_borrow_withdraw_collateral') return t('Withdraw collateral');
+  return t('Manage position');
 }
 
 type ChatResearchParse =
@@ -28582,6 +28808,16 @@ function isChatOriginatedAction(action: { id: string; chatOriginated?: boolean }
 // actionOpensPosition (NOT raw category) so a stateful close/manage action — which lands in Done,
 // not Positions — is worded correctly. Open positions (lend/borrow/limit/dca/stake/lp/perps) point
 // at Positions; everything terminal (swap/send/proof/nft/...) points at Done.
+// Friendly past-tense confirmation for a close/cancel manage action (null → use the generic line).
+function chatManageDoneLine(kind: string): string | null {
+  switch (kind) {
+    case 'jupiter_trigger_cancel_order': return t('Limit order canceled.');
+    case 'jupiter_recurring_cancel_order': return t('DCA order canceled.');
+    case 'jupiter_trigger_withdraw_order_funds': return t('Order funds withdrawn.');
+    default: return null;
+  }
+}
+
 function chatActionDestinationLine(action: PreparedAction): string {
   const category = ACTION_TYPE_CATEGORY[action.kind];
   if (actionOpensPosition(action.kind, category)) {
@@ -28589,6 +28825,8 @@ function chatActionDestinationLine(action: PreparedAction): string {
       ? t('It is now active. Track it in Positions. The Solscan link is saved in Done.')
       : t('It is now active. Track it in Positions. Receipt saved in Done.');
   }
+  const managedLine = chatManageDoneLine(action.kind);
+  if (managedLine) return `${managedLine} ${t('Receipt saved in Done.')}`;
   if (isStatefulActionCategory(category)) {
     return action.txid
       ? t('Position updated. Solscan link saved in Done.')
@@ -28721,28 +28959,15 @@ function restoreChatComposerAfterRender(): void {
     }
   }
   chatForceFocus = false;
-  // The surface is recreated each render; re-apply the keyboard inset to the new node.
+  // The chat surface reads --chat-keyboard-inset from :root (inherited), so this re-sync only
+  // commits a write when the keyboard metric actually changed (idempotent) — it never re-pokes the
+  // surface height on an idle re-render.
   syncChatKeyboardInset();
-  // Detect a NEW message since the last render of this session (covers every append path: send,
-  // post-approval confirmation/receipt, cloud sync). A new message always pulls the view to the
-  // bottom, even if the user had scrolled up — universal across web/desktop/Android/iOS.
-  const session = activeChatSession();
-  const count = session?.messages.length ?? 0;
-  const sameSession = session ? session.id === lastRenderedChatSessionId : false;
-  const hasNewMessage = sameSession && count > lastRenderedChatMsgCount;
-  // Opening a different session (or the chat for the first time) lands at its latest message.
-  const sessionChanged = Boolean(session) && !sameSession;
-  lastRenderedChatSessionId = session?.id ?? '';
-  lastRenderedChatMsgCount = count;
-  if (chatForceScrollBottom || hasNewMessage || sessionChanged) {
-    chatForceScrollBottom = false;
-    chatScrollToBottom(true);
-    // Cards/quotes settle their height after layout; re-snap on the next frame so the last message
-    // is fully in view (the initial snap can land short when a card grows).
-    requestAnimationFrame(() => chatScrollToBottom(true));
-  } else {
-    chatScrollToBottom(false);
-  }
+  // Full-render path: autoscroll is delegated to the shared applyChatAutoscrollAfterRender() — the
+  // SINGLE source of truth used by the morph path too. Do NOT re-add a sync+rAF double snap or any
+  // inline scrollTop here: that fought .chat-transcript{scroll-behavior:smooth} and caused the iOS
+  // chat jitter (regressions #1–3). Enforced by chatRenderInvariants.test.ts.
+  applyChatAutoscrollAfterRender(true);
 }
 
 function resetChatActionBuilder(): void {
@@ -29203,6 +29428,33 @@ function bindChat(): void {
     event.stopPropagation();
     handleChatReceiveAction();
   });
+  bindOnce(document.querySelector<HTMLButtonElement>('[data-chat-positions]'), 'click', (event) => {
+    event.stopPropagation();
+    void handleChatViewPositions();
+  });
+  // Manage action on a chat position card: amount-less → prepare inline now; amount-required → prompt
+  // for the amount via the next numeric chat message.
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-pos-manage]')) {
+    bindOnce(button, 'click', (event) => {
+      event.stopPropagation();
+      const kind = button.dataset.cpmKind ?? '';
+      const orderId = button.dataset.cpmOrderId ?? '';
+      const label = button.dataset.cpmLabel ?? '';
+      if (!kind || !orderId) return;
+      let fields: Record<string, string> = {};
+      if (button.dataset.cpmFields) { try { fields = JSON.parse(button.dataset.cpmFields) as Record<string, string>; } catch { fields = {}; } }
+      if (button.dataset.cpmAmount === '1') {
+        state.chatManageAwait = { kind, orderId, fields, label };
+        const session = ensureActiveChatSession();
+        appendChatMessage(session.id, { id: newId('chat-msg'), role: 'assistant', status: 'done', createdAt: new Date().toISOString(), content: t('Type the amount, then send.') });
+        chatForceScrollBottom = true;
+        saveChatHistoryState();
+        render();
+      } else {
+        chatManagePositionAction(kind, orderId, fields);
+      }
+    });
+  }
   // --- Chip builder: explicit click -> state -> render (WebView-safe) ---------
   for (const chip of document.querySelectorAll<HTMLButtonElement>('[data-chat-chip]')) {
     bindOnce(chip, 'click', (event) => {
@@ -30002,10 +30254,15 @@ function bindChat(): void {
   }
   if (!chatViewportListenersBound) {
     chatViewportListenersBound = true;
-    // Keep the composer above the keyboard: re-measure on viewport/keyboard changes
-    // and when the composer gains focus (native keyboards settle over ~300ms).
+    // Keep the composer above the keyboard: re-measure on viewport/keyboard changes and when the
+    // composer gains focus (native keyboards settle over ~300ms).
+    // Bind keyboard open/close detection to 'resize' ONLY. Do NOT bind syncChatKeyboardInset to
+    // visualViewport 'scroll': iOS fires it continuously during smooth transcript scroll + the
+    // keyboard slide — including the pans our own scrollTop writes cause — which was the feedback
+    // loop's re-entry edge and the historic chat jitter. Focus transitions are covered by the
+    // scheduleChatKeyboardSyncs() settle schedule; an offsetTop-only pan is exactly the iOS scroll
+    // noise we want to ignore.
     window.visualViewport?.addEventListener('resize', syncChatKeyboardInset);
-    window.visualViewport?.addEventListener('scroll', syncChatKeyboardInset);
     window.addEventListener('resize', syncChatKeyboardInset);
     document.addEventListener('focusin', (event) => {
       if (event.target instanceof HTMLElement && event.target.matches('[data-chat-input]')) {
@@ -32709,6 +32966,13 @@ function scopedSubActionOptions(group: ConnectorActionForm['subActions']): Conne
   // menu — EXCEPT the one currently selected, so an Edit arriving via openManageForm still renders its
   // picker coherently (field visibility is driven by the selected id independently).
   const selectedId = state.templateFields[group.fieldId]?.trim() || '';
+  // Manage context: when the selected sub-action is a hidden manage-only action (reached via
+  // openManageForm from a Positions card — Repay / Withdraw / Cancel / Edit / Withdraw all), show ONLY
+  // that action so the picker collapses (connectorSubActionPicker hides at <=1) instead of also
+  // offering the create option ("Borrow" alongside "Repay", "Lend" alongside "Withdraw"). Field
+  // visibility is driven by the selected id independently, so the manage form still renders correctly.
+  const selectedOpt = selectedId ? group.options.find((opt) => opt.id === selectedId) : undefined;
+  if (selectedOpt?.hiddenFromCreateMenu) return [selectedOpt];
   const menu = group.options.filter((opt) => !opt.hiddenFromCreateMenu || opt.id === selectedId);
   if (!cat) return menu;
   const scoped = menu.filter((opt) => subActionCategory(opt) === cat);
@@ -33322,11 +33586,103 @@ function plannerFieldsHtml(template: AgentPlanTemplate): string {
     })
     .filter((field): field is RenderedPlannerField => Boolean(field));
 
-  if (!isMobileAppViewport()) {
-    return fields.map((field) => field.html).join('');
-  }
+  const body = !isMobileAppViewport()
+    ? fields.map((field) => field.html).join('')
+    : mobilePlannerFieldRows(template, fields);
+  // The borrow "open a loan" flow appends a live loan-terms estimate below its fields; every other form
+  // gets '' (the panel gates itself on subAction === 'borrow-create' with all amounts present).
+  return `${body}${borrowTermsPanelHtml()}`;
+}
 
-  return mobilePlannerFieldRows(template, fields);
+// ---- Jupiter Borrow loan-terms estimate (create-form panel) ------------------------------------
+// A live projected-health / LTV preview for the borrow open-loan form, fed by the un-gated borrow
+// health preview read. Fully additive + fail-safe: any miss/error renders nothing and never blocks the
+// form. Numbers stay behind an "estimate" disclaimer until the health math is verified on a live vault.
+interface BorrowTermsPreview {
+  healthText?: string;
+  liquidationStatus?: string;
+  projectedLtvPct?: number;
+  maxLtvPct?: number;
+  blocked: boolean;
+  warnings: string[];
+}
+interface BorrowTermsEntry { loading: boolean; fetchedAt: number; data?: BorrowTermsPreview; error?: string }
+const borrowTermsCache = new Map<string, BorrowTermsEntry>();
+
+function extractBorrowTermsPreview(raw: Record<string, unknown>): BorrowTermsPreview | undefined {
+  const preview = asRecord(raw.preview);
+  if (!preview) return undefined;
+  const after = asRecord(preview.after);
+  const projectedLtvBps = numberField(preview.projectedLtvBps);
+  const maxLtvBps = numberField(preview.maxLtvBps);
+  const warnings = Array.isArray(preview.warnings)
+    ? preview.warnings.filter((w): w is string => typeof w === 'string')
+    : [];
+  return {
+    ...(after && typeof after.healthRatioText === 'string' ? { healthText: after.healthRatioText } : {}),
+    ...(after && typeof after.liquidationStatus === 'string' ? { liquidationStatus: after.liquidationStatus } : {}),
+    ...(projectedLtvBps !== undefined ? { projectedLtvPct: projectedLtvBps / 100 } : {}),
+    ...(maxLtvBps !== undefined ? { maxLtvPct: maxLtvBps / 100 } : {}),
+    blocked: preview.blocked === true,
+    warnings,
+  };
+}
+
+async function requestBorrowTerms(sig: string, params: { vaultId: number; collateralDelta: string; debtDelta: string }): Promise<void> {
+  const existing = borrowTermsCache.get(sig);
+  if (existing?.loading) return;
+  borrowTermsCache.set(sig, { loading: true, fetchedAt: Date.now(), ...(existing?.data ? { data: existing.data } : {}) });
+  try {
+    const raw = await connectorRead('jupiter', 'borrow', {
+      vaultId: params.vaultId,
+      collateralDelta: params.collateralDelta,
+      debtDelta: params.debtDelta,
+    });
+    const data = raw ? extractBorrowTermsPreview(raw) : undefined;
+    borrowTermsCache.set(sig, { loading: false, fetchedAt: Date.now(), ...(data ? { data } : {}) });
+  } catch (err) {
+    borrowTermsCache.set(sig, { loading: false, fetchedAt: Date.now(), error: err instanceof Error ? err.message : String(err) });
+  } finally {
+    render();
+  }
+}
+
+function borrowTermsTone(status?: string): 'good' | 'warn' | 'bad' | undefined {
+  return status === 'safe' ? 'good' : status === 'at_risk' ? 'warn' : status === 'liquidatable' || status === 'liquidated' ? 'bad' : undefined;
+}
+
+function borrowTermsTile(label: string, value: string, tone?: 'good' | 'warn' | 'bad'): string {
+  return `<div class="borrow-terms-tile${tone ? ' tone-' + tone : ''}"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`;
+}
+
+function borrowTermsPanelHtml(): string {
+  const f = state.templateFields;
+  if (f.subAction !== 'borrow-create') return '';
+  const vaultRaw = (f.vaultId ?? '').trim();
+  const collateral = (f.collateralAmount ?? '').trim();
+  const borrow = (f.borrowAmount ?? '').trim();
+  const vaultId = Number(vaultRaw);
+  if (!vaultRaw || !Number.isFinite(vaultId) || !collateral || !borrow) return '';
+  if (!(Number(collateral) > 0) || !(Number(borrow) > 0)) return '';
+  const sig = `${vaultRaw}|${collateral}|${borrow}`;
+  const entry = borrowTermsCache.get(sig);
+  if (!entry) void requestBorrowTerms(sig, { vaultId, collateralDelta: collateral, debtDelta: borrow });
+  const badge = `<span class="borrow-terms-badge">${escapeHtml(t('Estimate — verifying'))}</span>`;
+  const head = `<div class="borrow-terms-head"><strong>${escapeHtml(t('Loan terms'))}</strong>${badge}</div>`;
+  if (!entry || entry.loading) {
+    return `<div class="borrow-terms-estimate">${head}<p class="borrow-terms-loading">${escapeHtml(t('Estimating…'))}</p></div>`;
+  }
+  const data = entry.data;
+  if (!data) return ''; // error or no preview → stay invisible rather than show a broken panel
+  const tiles: string[] = [];
+  if (data.healthText) tiles.push(borrowTermsTile(t('Projected health'), data.healthText, borrowTermsTone(data.liquidationStatus)));
+  if (data.projectedLtvPct !== undefined) tiles.push(borrowTermsTile(t('Projected LTV'), `${data.projectedLtvPct.toFixed(1)}%`));
+  if (data.maxLtvPct !== undefined) tiles.push(borrowTermsTile(t('Max LTV'), `${data.maxLtvPct.toFixed(1)}%`));
+  if (!tiles.length) return '';
+  const warn = data.blocked && data.warnings.length
+    ? `<ul class="borrow-terms-warnings">${data.warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join('')}</ul>`
+    : '';
+  return `<div class="borrow-terms-estimate${data.blocked ? ' is-blocked' : ''}">${head}<div class="borrow-terms-grid">${tiles.join('')}</div>${warn}</div>`;
 }
 
 function mobilePlannerFieldRows(template: AgentPlanTemplate, fields: RenderedPlannerField[]): string {
@@ -35720,6 +36076,7 @@ function applyPairedRelayPresence(online: boolean): void {
 // iOS relay presence is an async HTTP probe (fetch), so it can't be read synchronously during render.
 // Keep relayStatusCache fed by a throttled background probe and return the last known value.
 let iosRelayPresenceInFlight = false;
+let iosRelayPresenceLastOnline: boolean | null = null; // null until first resolve → first probe renders once
 function refreshIosRelayPresence(): boolean {
   const now = Date.now();
   if ((!relayStatusCache || now - relayStatusCache.at > 4000) && !iosRelayPresenceInFlight) {
@@ -35732,10 +36089,18 @@ function refreshIosRelayPresence(): boolean {
       } catch {
         online = false;
       } finally {
+        // Capture BEFORE applyPairedRelayPresence (it may push the disconnect toast).
+        const toastsBefore = state.toasts.length;
+        const prevOnline = iosRelayPresenceLastOnline;
         relayStatusCache = { online, at: Date.now() };
         applyPairedRelayPresence(online);
         iosRelayPresenceInFlight = false;
-        render();
+        iosRelayPresenceLastOnline = online;
+        // MUST stay a scroll/inset no-op on the Chat tab: an idle paired-bridge probe reading the
+        // same value every 5s no longer forces a render → no morph → no keyboard-inset re-poke →
+        // the iOS chat jitter loop has no heartbeat to run on. The online chip flip and the
+        // disconnect toast still repaint (they change `online` or `state.toasts.length`).
+        if (online !== prevOnline || state.toasts.length !== toastsBefore) render();
       }
     })();
   }
@@ -41399,6 +41764,13 @@ function handleWorkspaceTabEntry(tab: ActiveTab, previous: ActiveTab): void {
 }
 
 function resetNativeAppTabScroll(tab: ActiveTab, previous: ActiveTab): void {
+  // The Chat tab OWNS its own scroll: applyChatAutoscrollAfterRender() snaps the transcript to the
+  // BOTTOM. A competing post-render outer scroll-to-TOP here (now + across the next 2 rAF frames,
+  // resetNativeAppPanelScroll) races that inner snap frame-by-frame — the visible entry fight. The
+  // pre-render outer reset (see the [data-tab] handlers, before the chat DOM exists) already lands
+  // the surface at the top, so chat needs no post-render outer reset. Do NOT extend this to touch
+  // [data-chat-scroll].
+  if (tab === 'chat') return;
   if (!shouldResetNativeAppTabScroll(tab, previous)) return;
   resetNativeAppPanelScroll(tab);
 }
@@ -42637,17 +43009,29 @@ function scheduleMobileRailViewportSyncs(): void {
   }
 }
 
-// Keep the Chat composer above the on-screen keyboard. Reuses the same keyboard
-// metrics as the mobile rail sheet and sets --chat-keyboard-inset on the chat
-// surface: ~0 when the WebView resizes (interactive-widget), the keyboard height
-// in overlay mode. The surface height subtracts max(dock, keyboard) in CSS.
-function syncChatKeyboardInset(): void {
+// Keep the Chat composer above the on-screen keyboard. Reuses the same keyboard metrics as the
+// mobile rail sheet and sets --chat-keyboard-inset: ~0 when the WebView resizes (interactive-widget,
+// Android) and the keyboard height in overlay mode (iOS). The surface height subtracts
+// max(dock, keyboard) in CSS.
+//
+// PRIMARY iOS JITTER FUSE (do not weaken — see chatRenderInvariants.test.ts):
+//   1) The var is written to :root (document.documentElement), NOT the per-render .chat-surface
+//      node. It inherits into the surface's calc(), so an idempotent-skipped write can never leave
+//      a freshly-rendered surface node with a missing var — and the writer no longer needs to fire
+//      after every render for correctness.
+//   2) The write is IDEMPOTENT (shouldWriteChatKeyboardInset): an iOS visualViewport resize storm
+//      that reports sub-2px jitter no longer re-writes the var → the surface height stops changing
+//      → the sticky composer stops moving → no new viewport event → the feedback loop can't sustain.
+//   3) resolveChatKeyboardInset forces 0 for the Android layout-viewport-resize branch and idle.
+const CHAT_KEYBOARD_INSET_EPSILON_PX = 2;
+let lastChatKeyboardInsetPx = -1; // -1 → first write always commits
+function applyChatKeyboardInset(): void {
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
-  const surface = document.querySelector<HTMLElement>('.chat-surface');
-  if (!surface) return;
+  const root = document.documentElement;
+  if (!root) return;
   recordMobileRailStableViewportHeight();
   const viewport = window.visualViewport;
-  const { keyboardInset } = computeMobileRailViewportVars({
+  const vars = computeMobileRailViewportVars({
     viewportHeight: viewport?.height,
     viewportOffsetTop: viewport?.offsetTop,
     innerHeight: window.innerHeight,
@@ -42656,7 +43040,26 @@ function syncChatKeyboardInset(): void {
     nativeKeyboardVisible: nativeKeyboardVisible || virtualKeyboardVisible,
     focusedControlFallbackInset: 0,
   });
-  surface.style.setProperty('--chat-keyboard-inset', `${keyboardInset}px`);
+  const inset = resolveChatKeyboardInset(vars);
+  if (!shouldWriteChatKeyboardInset(lastChatKeyboardInsetPx, inset, CHAT_KEYBOARD_INSET_EPSILON_PX)) return;
+  lastChatKeyboardInsetPx = inset;
+  root.style.setProperty('--chat-keyboard-inset', `${inset}px`);
+}
+
+// rAF-coalesced public entry for every caller (event listeners, focus-settle schedule, render
+// paths, native/virtual keyboard bridges): collapse an event storm to one measure+write per frame
+// so we never read-then-write layout mid-event.
+let chatKeyboardInsetRaf = 0;
+function syncChatKeyboardInset(): void {
+  if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
+    applyChatKeyboardInset();
+    return;
+  }
+  if (chatKeyboardInsetRaf) return;
+  chatKeyboardInsetRaf = window.requestAnimationFrame(() => {
+    chatKeyboardInsetRaf = 0;
+    applyChatKeyboardInset();
+  });
 }
 
 let chatKeyboardSyncTimers: number[] = [];
@@ -46876,43 +47279,74 @@ function parseLimitRows(res: Record<string, unknown> | null | undefined, prices:
   if (!orders.length) return [];
   return orders.map((o) => {
     const orderId = posStr(o.orderId) ?? '';
+    const ot = posStr(o.orderType); // 'single' | 'oco' | 'otoco'
+    const isMultiLeg = ot === 'oco' || ot === 'otoco';
     const trigger = posNum(o.triggerPriceUsd);
+    const tp = posNum(o.takeProfitPriceUsd);
+    const sl = posNum(o.stopLossPriceUsd);
     const tMint = posStr(o.triggerMint) ?? posStr(o.outputMint);
     const cur = tMint ? prices.get(tMint)?.priceUsd : undefined;
-    let distancePct: number | null = null;
-    if (Number.isFinite(trigger) && trigger > 0 && typeof cur === 'number') {
-      distancePct = ((trigger - cur) / trigger) * 100;
-    }
+    // Price rows depend on order type: single has one trigger; OCO brackets a Take-profit + Stop-loss;
+    // OTOCO adds an Entry (the trigger) that opens the TP/SL bracket. Reading only triggerPriceUsd (as
+    // before) left OCO/OTOCO cards blank — the server normalizes tp/sl per order.
     const details: PositionDetail[] = [];
-    if (Number.isFinite(trigger)) details.push({ label: 'Trigger price', value: posUsd(trigger) });
+    if (ot === 'oco') {
+      if (Number.isFinite(tp)) details.push({ label: 'Take-profit', value: posUsd(tp) });
+      if (Number.isFinite(sl)) details.push({ label: 'Stop-loss', value: posUsd(sl) });
+    } else if (ot === 'otoco') {
+      if (Number.isFinite(trigger)) details.push({ label: 'Entry price', value: posUsd(trigger) });
+      if (Number.isFinite(tp)) details.push({ label: 'Take-profit', value: posUsd(tp) });
+      if (Number.isFinite(sl)) details.push({ label: 'Stop-loss', value: posUsd(sl) });
+    } else if (Number.isFinite(trigger)) {
+      details.push({ label: 'Trigger price', value: posUsd(trigger) });
+    }
     if (typeof cur === 'number') details.push({ label: 'Current price', value: posUsd(cur) });
     if (posStr(o.remainingInputAmount)) {
       details.push({ label: 'Size', value: `${posAmount(o.remainingInputAmount)} ${posSymbol(posStr(o.inputMint))}` });
     }
-    // Prefill the Edit form from the live snapshot so the user tweaks from current values (guard each;
-    // keys match the edit sub-action's field ids so openManageForm lands them in state.templateFields).
-    const editFields: Record<string, string> = {};
-    const ot = posStr(o.orderType);
-    if (ot === 'single' || ot === 'oco' || ot === 'otoco') editFields.orderType = ot;
-    if (Number.isFinite(trigger) && trigger > 0) editFields.newTriggerPriceUsd = String(trigger);
-    const slp = posNum(o.slippageBps);
-    if (Number.isFinite(slp)) editFields.newSlippageBps = String(slp);
-    const exp = posStr(o.expiresAt);
-    if (exp) editFields.newExpiresAt = exp; // ISO; dateTimeInputValue reformats to datetime-local
-    const limitExtras: Array<{ kind: string; label: string; orderId: string; fields?: Record<string, string> }> = [
-      { kind: 'jupiter_trigger_edit_order', label: t('Edit'), orderId, ...(Object.keys(editFields).length ? { fields: editFields } : {}) },
-    ];
+    // Distance-from-trigger only makes sense against a single trigger price; multi-leg orders have two
+    // targets, so we don't show a single (misleading) distance for them.
+    let distancePct: number | null = null;
+    if (!isMultiLeg && Number.isFinite(trigger) && trigger > 0 && typeof cur === 'number') {
+      distancePct = ((trigger - cur) / trigger) * 100;
+    }
+    const limitExtras: Array<{ kind: string; label: string; orderId: string; fields?: Record<string, string> }> = [];
+    // Edit is only wired for single-trigger orders — the adapter's PATCH edits one triggerPriceUsd (+
+    // slippage/expiry) and cannot express TP/SL. So we don't offer a broken Edit on OCO/OTOCO; those are
+    // managed by Cancel + recreate.
+    if (!isMultiLeg) {
+      const editFields: Record<string, string> = {};
+      if (ot) editFields.orderType = ot;
+      if (Number.isFinite(trigger) && trigger > 0) editFields.newTriggerPriceUsd = String(trigger);
+      const slp = posNum(o.slippageBps);
+      if (Number.isFinite(slp)) editFields.newSlippageBps = String(slp);
+      const exp = posStr(o.expiresAt);
+      if (exp) editFields.newExpiresAt = exp; // ISO; dateTimeInputValue reformats to datetime-local
+      limitExtras.push({ kind: 'jupiter_trigger_edit_order', label: t('Edit'), orderId, ...(Object.keys(editFields).length ? { fields: editFields } : {}) });
+    }
     // Filled/cancelled/expired orders leave funds in the Jupiter vault — surface the reclaim path.
     if (o.withdrawable === true) limitExtras.push({ kind: 'jupiter_trigger_withdraw_order_funds', label: t('Withdraw funds'), orderId });
-    const { headline, rest } = extractHeadline(details, 'Trigger price');
+    const headlineLabel = ot === 'oco' ? 'Take-profit' : ot === 'otoco' ? 'Entry price' : 'Trigger price';
+    const { headline, rest } = extractHeadline(details, headlineLabel);
     return {
       section: 'orders', id: orderId, connectorId: 'jupiter', kind: 'limit',
       title: `${posSymbol(posStr(o.inputMint))} → ${posSymbol(posStr(o.outputMint))}`,
       status: posStr(o.state), headline, details: rest, distancePct,
       cancel: o.cancellable ? { kind: 'jupiter_trigger_cancel_order', orderId } : undefined,
-      extras: limitExtras,
+      extras: limitExtras.length ? limitExtras : undefined,
     };
   });
+}
+
+// Human cadence for a DCA order ("Every 1 day"), reusing the recurring-payment interval keys so no new
+// i18n is needed. DCA intervals are clean multiples in practice; the dominant unit reads well.
+function formatDcaInterval(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '';
+  const { days, hours, minutes } = intervalSecondsToParts(String(Math.round(seconds)));
+  if (days > 0) return tf('Every {n} day', { n: String(days) });
+  if (hours > 0) return tf('Every {n} hr', { n: String(hours) });
+  if (minutes > 0) return tf('Every {n} min', { n: String(minutes) });
+  return tf('Every {n} min', { n: String(Math.max(1, Math.round(seconds / 60))) });
 }
 
 function parseDcaRows(res: Record<string, unknown> | null | undefined, prices: Map<string, WalletBalancePriceInfo>): PositionLiveRow[] {
@@ -46927,16 +47361,20 @@ function parseDcaRows(res: Record<string, unknown> | null | undefined, prices: M
     const perCycle = posNum(o.amountPerCycle);
     const inMint = posStr(o.inputMint);
     const inPrice = inMint ? prices.get(inMint)?.priceUsd : undefined;
+    // Order the details so the top three (shown inline before "More details") are the ones that matter
+    // most for a running DCA: how much is left, when it fills next, and how often. Spend totals fold away.
     const details: PositionDetail[] = [];
     if (posStr(o.amountPerCycle)) details.push({ label: 'Per cycle', value: `${posAmount(o.amountPerCycle)} ${posSymbol(inMint)}` });
+    if (total > 0) details.push({ label: 'Remaining', value: tf('{n} cycles', { n: String(Math.max(0, total - executed)) }) });
+    if (posStr(o.nextExecutionAt)) details.push({ label: 'Next fill', value: formatDateTime(posStr(o.nextExecutionAt)!) });
+    const interval = formatDcaInterval(posNum(o.intervalSeconds, 0));
+    if (interval) details.push({ label: 'Interval', value: interval });
     if (Number.isFinite(perCycle) && typeof inPrice === 'number' && executed > 0) {
       details.push({ label: 'Spent', value: posUsd(perCycle * executed * inPrice) });
     }
-    if (total > 0) details.push({ label: 'Remaining', value: tf('{n} cycles', { n: String(Math.max(0, total - executed)) }) });
     if (Number.isFinite(perCycle) && total > 0 && typeof inPrice === 'number') {
       details.push({ label: 'Total budget', value: posUsd(perCycle * total * inPrice) });
     }
-    if (posStr(o.nextExecutionAt)) details.push({ label: 'Next fill', value: formatDateTime(posStr(o.nextExecutionAt)!) });
     const { headline, rest } = extractHeadline(details, 'Per cycle');
     return {
       section: 'orders', id: orderId, connectorId: 'jupiter', kind: 'dca',
@@ -46952,22 +47390,40 @@ function parseLendRows(res: Record<string, unknown> | null | undefined, prices: 
   if (!res) return [];
   const positions = posArray(res.positions);
   if (!positions.length) return [];
+  // Accrued interest per asset — the server merges the earnings read into the earn positions read
+  // best-effort; when it fails there's simply no earnings array and the "Earned" row is omitted.
+  const earnedByMint = new Map<string, string>();
+  for (const e of posArray(res.earnings)) {
+    const mint = posStr(e.assetMint);
+    const earned = posStr(e.totalEarnings);
+    if (mint && earned) earnedByMint.set(mint, earned);
+  }
   return positions.map((p) => {
     const supplied = posNum(p.underlyingAmount);
     const price = posStr(p.assetMint) ? prices.get(posStr(p.assetMint)!)?.priceUsd : undefined;
     const sym = posStr(p.tokenSymbol) ?? posMint(posStr(p.assetMint));
+    const assetMint = posStr(p.assetMint) ?? '';
     const details: PositionDetail[] = [];
     if (posStr(p.underlyingAmount)) details.push({ label: 'Supplied', value: `${posAmount(p.underlyingAmount)} ${sym}` });
     if (Number.isFinite(supplied) && typeof price === 'number') details.push({ label: 'Value', value: posUsd(supplied * price) });
+    // Interest earned to date (positive → green). totalEarnings is already a human-decimal amount.
+    const earned = assetMint ? earnedByMint.get(assetMint) : undefined;
+    if (earned && posNum(earned) > 0) details.push({ label: 'Earned', value: `${posAmount(earned)} ${sym}`, tone: 'good' });
     if (typeof p.apy === 'number') details.push({ label: 'APY', value: `${(p.apy as number).toFixed(2)}%`, tone: p.apy >= 0 ? 'good' : 'warn' });
-    const assetMint = posStr(p.assetMint) ?? '';
     const { headline, rest } = extractHeadline(details, 'Value');
+    // "Withdraw all" is the full exit: redeem every share receipt (principal + accrued interest).
+    // Prefill the full share balance so it's one-tap; if the snapshot lacks shares, fall back to an
+    // empty form (user enters the amount) rather than sending an empty redeem.
+    const shares = posStr(p.shares);
+    const withdrawAll = assetMint
+      ? { kind: 'jupiter_lend_earn_redeem' as const, label: t('Withdraw all'), orderId: assetMint, ...(shares ? { fields: { shares } } : {}) }
+      : undefined;
     return {
       section: 'lending', id: posStr(p.shareMint) ?? posStr(p.assetMint) ?? sym, connectorId: 'jupiter', kind: 'lend',
       title: `${sym} supplied`, status: 'earning', headline, heroMint: assetMint || sym, details: rest,
       cancel: { kind: 'jupiter_lend_earn_withdraw', orderId: assetMint },
-      // Withdraw is partial (by amount); Redeem-all is the clean full-exit by shares.
-      extras: assetMint ? [{ kind: 'jupiter_lend_earn_redeem', label: t('Redeem all'), orderId: assetMint }] : undefined,
+      // Withdraw is partial (by amount); "Withdraw all" is the clean full exit by redeeming all shares.
+      extras: withdrawAll ? [withdrawAll] : undefined,
     };
   });
 }
@@ -47302,18 +47758,28 @@ function positionCardShell(opts: { id: string; head: string; summary: string; bo
   `;
 }
 
+// How many detail tiles stay inline under the hero before the rest fold into "More details".
+// Parsers push details in priority order, so the first few are the ones that matter most.
+const PRIMARY_DETAIL_COUNT = 3;
+
 function positionLiveCard(row: PositionLiveRow): string {
   // Compact connector logo badge (matches the chat approval card); falls back to a text chip when
   // the connector has no bundled logo.
   const chip =
     chatActionConnectorIconHtml(row.connectorId, positionConnectorName(row.connectorId)) ||
     `<span class="positions-connector">${escapeHtml(positionConnectorName(row.connectorId))}</span>`;
-  const detailRows = row.details
-    .map(
-      (d) =>
-        `<div class="positions-detail ${d.tone ? 'tone-' + d.tone : ''}"><dt>${escapeHtml(positionDetailLabel(d.label))}</dt><dd>${escapeHtml(d.value)}</dd></div>`,
-    )
-    .join('');
+  // Concise-by-default: the hero + the top few metrics stay inline; anything past that folds into an
+  // expandable "More details" disclosure so cards don't get tall/crowded (esp. on mobile). The
+  // <details> is non-template-driven, so installWebViewControlDelegates persists its open state per
+  // card (keyed off the card's data-position-id) and drives the summary tap on WebViews.
+  const detailTile = (d: PositionDetail): string =>
+    `<div class="positions-detail ${d.tone ? 'tone-' + d.tone : ''}"><dt>${escapeHtml(positionDetailLabel(d.label))}</dt><dd>${escapeHtml(d.value)}</dd></div>`;
+  const primaryDetails = row.details.slice(0, PRIMARY_DETAIL_COUNT);
+  const overflowDetails = row.details.slice(PRIMARY_DETAIL_COUNT);
+  const primaryGrid = primaryDetails.length ? `<div class="positions-details">${primaryDetails.map(detailTile).join('')}</div>` : '';
+  const moreGrid = overflowDetails.length
+    ? `<details class="positions-more"><summary class="positions-more-summary">${escapeHtml(t('More details'))}</summary><div class="positions-details">${overflowDetails.map(detailTile).join('')}</div></details>`
+    : '';
   const distance =
     typeof row.distancePct === 'number'
       ? `<span class="positions-distance" title="${escapeHtml(t('Distance between the current price and the trigger price'))}">${Math.abs(row.distancePct).toFixed(1)}% ${escapeHtml(row.distancePct >= 0 ? t('below trigger') : t('above trigger'))}</span>`
@@ -47350,7 +47816,7 @@ function positionLiveCard(row: PositionLiveRow): string {
         ${chip}
         ${statusLabel ? `<span class="positions-status tone-${tone}">${escapeHtml(statusLabel)}</span>` : ''}`,
     summary: `<span class="positions-title positions-title--bold">${escapeHtml(row.title)}</span>${distance}`,
-    body: `${headline}${detailRows ? `<div class="positions-details">${detailRows}</div>` : ''}
+    body: `${headline}${primaryGrid}${moreGrid}
       ${progress}`,
     actions: `${cancelBtn}${extrasBtns}`,
   });
@@ -47358,6 +47824,14 @@ function positionLiveCard(row: PositionLiveRow): string {
 
 // The form field that identifies WHAT to manage, per manage-action kind (default 'orderId').
 const MANAGE_ID_FIELD_BY_KIND: Record<string, string> = {
+  // Jupiter Trigger (limit) + Recurring (DCA) manage the order by its orderId — explicit so the
+  // routing is intentional rather than relying on the 'orderId' default below.
+  jupiter_trigger_cancel_order: 'orderId',
+  jupiter_trigger_edit_order: 'orderId',
+  jupiter_trigger_withdraw_order_funds: 'orderId',
+  jupiter_recurring_cancel_order: 'orderId',
+  jupiter_recurring_deposit_price_order: 'orderId',
+  jupiter_recurring_withdraw_price_order: 'orderId',
   jupiter_lend_earn_withdraw: 'assetMint',
   jupiter_lend_earn_redeem: 'assetMint',
   jupiter_lend_borrow_repay: 'positionId',
@@ -61207,6 +61681,10 @@ function startRelayPresenceWatch(): void {
     relayStatusCache = null; // force a fresh native read each tick
     const before = state.toasts.length;
     refreshRelayPresence();
+    // This 5s idle tick MUST stay a scroll/inset no-op on the Chat tab. On iOS refreshRelayPresence
+    // is async and repaints itself only on a real change (see refreshIosRelayPresence); here we only
+    // repaint if a toast appeared. Do not add an unconditional render — it re-pokes the chat
+    // keyboard-inset every 5s and revives the iOS jitter loop.
     if (state.toasts.length !== before) render(); // surface the toast immediately
   }, 5_000);
 }
@@ -66287,6 +66765,7 @@ function preparedActionCard(action: PreparedAction): string {
         ${inboxAcpOutboundCartBlock(action)}
         ${inboxAp2InboundRequestBlock(action)}
         ${preSignReviewBlock(action)}
+        ${preparedActionAdapterWarningsBlock(action)}
         ${inboxApprovalNote(action)}
         ${preparedActionAgentReviewStrip(action)}
         ${agentOverrideStrip(action.agentOverride)}
@@ -67686,6 +68165,11 @@ function copyButtonIcon(): string {
   return '<svg class="wallet-action-copy-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 7h10v13H8V7Zm2 2v9h6V9h-6Z"></path><path d="M5 4h10v2H7v10H5V4Z"></path></svg>';
 }
 
+// Stacked-rows glyph for the Active Positions pill (reads as a list of open positions).
+function activePositionsIcon(): string {
+  return '<svg class="chat-positions-pill-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="4" rx="1"></rect><rect x="3" y="10" width="18" height="4" rx="1"></rect><rect x="3" y="16" width="18" height="4" rx="1"></rect></svg>';
+}
+
 function inboxApprovalSummaryGrid(action: PreparedAction): string {
   if (isSignProofAction(action)) {
     // A proof signs a message; there is no token/recipient/amount. The statement
@@ -67837,6 +68321,26 @@ function preSignReviewBlock(action: PreparedAction): string {
   if (hasPendingExecutionLedgerEntry(action)) return '';
   if (action.txStatus === 'pending' && action.txid) return '';
   return policyWarningsStrip(action);
+}
+
+// Plain-English risk disclaimers the connector adapter attaches to the prepared action
+// (params.warnings) — e.g. Jupiter Trigger custody/automation/output-not-guaranteed, Jupiter
+// Recurring automation + 0.1% fee. Surfaced prominently on the Check/Sign card so the user sees them
+// before signing, independent of execution path. Read-only render of already-computed strings.
+function preparedActionAdapterWarningsBlock(action: PreparedAction): string {
+  const raw = (action.params as Record<string, unknown> | undefined)?.warnings;
+  const warnings = Array.isArray(raw)
+    ? raw.filter((w): w is string => typeof w === 'string' && w.trim().length > 0)
+    : [];
+  if (warnings.length === 0) return '';
+  return `
+    <section class="approval-adapter-warnings" aria-label="${escapeHtml(t('Before you sign'))}">
+      <strong class="approval-adapter-warnings-title">${escapeHtml(t('Before you sign'))}</strong>
+      <ul class="policy-warnings-strip">
+        ${warnings.map((message) => `<li class="policy-warning warn"><span>${escapeHtml(message)}</span></li>`).join('')}
+      </ul>
+    </section>
+  `;
 }
 
 type ShieldWarning = { type: string; message: string; severity: string };
@@ -75060,6 +75564,13 @@ function normalizeChatMessage(raw: unknown): ChatMessage | null {
     message.recurringCardId = input.recurringCardId;
   } else {
     delete (message as { recurringCardId?: unknown }).recurringCardId;
+  }
+  // positionsCard carries only a category; the cards themselves render from live positions state.
+  const posCard = input.positionsCard as { category?: unknown } | undefined;
+  if (posCard && typeof posCard === 'object' && typeof posCard.category === 'string') {
+    message.positionsCard = { category: posCard.category as ActionCategory };
+  } else {
+    delete (message as { positionsCard?: unknown }).positionsCard;
   }
   const researchCard = normalizeChatResearchCard(input.researchCard);
   if (researchCard) {

@@ -283,6 +283,50 @@ describe('connector drafting helpers', () => {
     expect(form?.subActions?.display).toBe('select');
   });
 
+  it('exposes a unified "Borrow" create option and hides the borrow manage sub-actions from create', () => {
+    const form = connectorActionFormById('jupiter:lend-flow');
+    const borrowCreate = form!.subActions!.options.find((o) => o.id === 'borrow-create');
+    expect(borrowCreate?.label).toBe('Borrow');
+    // Unified open bundles collateral + borrow in one form (the adapter's create_position accepts both).
+    const fieldIds = borrowCreate!.fields.map((f) => f.id);
+    expect(fieldIds).toContain('collateralAmount');
+    expect(fieldIds).toContain('borrowAmount');
+    expect(borrowCreate?.hiddenFromCreateMenu).toBeFalsy();
+    // The manage actions are hidden from create (they live on the Positions borrow card).
+    for (const id of ['borrow-deposit-collateral', 'borrow-borrow', 'borrow-repay', 'borrow-withdraw-collateral']) {
+      expect(form!.subActions!.options.find((o) => o.id === id)?.hiddenFromCreateMenu, id).toBe(true);
+    }
+    // Hidden manage actions stay routable by actionType (Positions card → openManageForm).
+    expect(connectorActionFormByActionType('jupiter_lend_borrow_repay')?.id).toBe('jupiter:lend-flow');
+  });
+
+  it('exposes a single "Lend" earn create option and hides withdraw/mint/redeem from create', () => {
+    const form = connectorActionFormById('jupiter:lend-flow');
+    const earnDeposit = form!.subActions!.options.find((o) => o.id === 'earn-deposit');
+    expect(earnDeposit?.label).toBe('Lend');
+    expect(earnDeposit?.hiddenFromCreateMenu).toBeFalsy();
+    // Withdraw lives on the Positions card; mint/redeem are advanced share-denominated duplicates.
+    for (const id of ['earn-withdraw', 'earn-mint', 'earn-redeem']) {
+      expect(form!.subActions!.options.find((o) => o.id === id)?.hiddenFromCreateMenu, id).toBe(true);
+    }
+    // Hidden actions stay routable by actionType (Positions card → openManageForm: Withdraw / Withdraw all).
+    expect(connectorActionFormByActionType('jupiter_lend_earn_withdraw')?.id).toBe('jupiter:lend-flow');
+    expect(connectorActionFormByActionType('jupiter_lend_earn_redeem')?.id).toBe('jupiter:lend-flow');
+  });
+
+  it('gives the hidden lend/borrow manage sub-actions plain-English labels', () => {
+    const form = connectorActionFormById('jupiter:lend-flow');
+    const labelOf = (id: string) => form!.subActions!.options.find((o) => o.id === id)?.label;
+    // No verbose "Earn - …" / "Borrow - …" prefixes can leak into any surface.
+    expect(labelOf('earn-withdraw')).toBe('Withdraw');
+    expect(labelOf('earn-mint')).toBe('Mint shares');
+    expect(labelOf('earn-redeem')).toBe('Redeem shares');
+    expect(labelOf('borrow-repay')).toBe('Repay');
+    expect(labelOf('borrow-withdraw-collateral')).toBe('Withdraw collateral');
+    expect(labelOf('borrow-deposit-collateral')).toBe('Add collateral');
+    expect(labelOf('borrow-borrow')).toBe('Borrow more');
+  });
+
   it('groups Jupiter Trigger, DCA, and Perps into user-friendly connector templates', () => {
     const jupiter = PROTOCOL_CONNECTORS.find((connector) => connector.id === 'jupiter')!;
     const forms = connectorActionFormsForConnector(jupiter);
@@ -382,12 +426,12 @@ describe('connector drafting helpers', () => {
       defaultValue: USDC_MINT,
     });
     expect(recurringFields.find((field) => field.id === 'outputMint')).toMatchObject({
-      label: 'Buy token',
+      label: 'Receive token',
       type: 'select',
       defaultValue: WSOL_MINT,
     });
     expect(recurringFields.map((field) => field.id)).not.toContain('maxFeeBps');
-    expect(recurringFields.find((field) => field.id === 'intervalSeconds')?.label).toBe('Every');
+    expect(recurringFields.find((field) => field.id === 'intervalSeconds')?.label).toBe('Repeat every (seconds)');
   });
 
   it('normalizes Jupiter connector token labels and symbols to executable mints', () => {

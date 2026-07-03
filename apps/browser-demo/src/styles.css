@@ -29692,6 +29692,54 @@ button.danger:hover:not(:disabled) {
   flex-direction: column;
   gap: 6px;
 }
+.approval-adapter-warnings { margin: 8px 0 2px; }
+.approval-adapter-warnings-title {
+  color: #f5c451;
+  display: block;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.approval-adapter-warnings .policy-warnings-strip { margin-top: 6px; }
+.borrow-terms-estimate {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(224, 230, 226, 0.1);
+  border-radius: 10px;
+  margin-top: 10px;
+  padding: 10px 12px;
+}
+.borrow-terms-estimate.is-blocked { border-color: rgba(240, 114, 107, 0.4); }
+.borrow-terms-head { align-items: center; display: flex; gap: 8px; justify-content: space-between; margin-bottom: 8px; }
+.borrow-terms-head strong { font-size: 0.82rem; }
+.borrow-terms-badge {
+  background: rgba(245, 196, 81, 0.16);
+  border-radius: 999px;
+  color: #f5c451;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 2px 8px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.borrow-terms-loading { color: var(--muted); font-size: 0.8rem; margin: 0; }
+.borrow-terms-grid { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+.borrow-terms-tile {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(224, 230, 226, 0.08);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px;
+}
+.borrow-terms-tile dt { color: var(--muted); font-size: 0.62rem; letter-spacing: 0.03em; text-transform: uppercase; }
+.borrow-terms-tile dd { color: var(--text); font-size: 0.9rem; font-weight: 600; margin: 0; }
+.borrow-terms-tile.tone-good dd { color: var(--accent, #3ddc97); }
+.borrow-terms-tile.tone-warn dd { color: #f5c451; }
+.borrow-terms-tile.tone-bad dd { color: #f0726b; }
+.borrow-terms-warnings { color: #f0726b; font-size: 0.76rem; margin: 8px 0 0; padding-left: 16px; }
 
 .policy-warning {
   padding: 8px 12px;
@@ -36255,6 +36303,23 @@ button.danger:hover:not(:disabled) {
 .chat-action-controls .primary {
   flex: 1 1 auto;
 }
+/* In-chat Active Positions cards (share the .chat-action-card chrome). */
+.chat-positions-card { display: grid; gap: 10px; }
+.chat-position-card .positions-badge { flex: 0 0 auto; }
+.chat-position-hero { display: flex; flex-direction: column; gap: 2px; }
+.chat-position-hero-label { color: var(--muted); font-size: 0.64rem; letter-spacing: 0.03em; text-transform: uppercase; }
+.chat-position-hero-row { align-items: center; display: flex; gap: 6px; }
+.chat-position-hero-row strong { font-size: 1.02rem; font-weight: 800; }
+.chat-position-metrics { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.chat-position-metric { display: inline-flex; flex-direction: column; gap: 1px; }
+.chat-position-metric em { color: var(--muted); font-size: 0.62rem; font-style: normal; letter-spacing: 0.03em; text-transform: uppercase; }
+.chat-position-metric strong { font-size: 0.84rem; font-weight: 700; }
+.chat-position-metric.tone-good strong { color: var(--accent, #3ddc97); }
+.chat-position-metric.tone-warn strong { color: #f5c451; }
+.chat-position-metric.tone-bad strong { color: #f0726b; }
+.chat-position-controls { flex-wrap: wrap; }
+.chat-position-action { flex: 0 0 auto; }
+.chat-position-empty { color: var(--muted); font-size: 0.84rem; margin: 0; }
 /* "⋯" overflow popover (Archive / Deny / Delete) — closes on the next morph. */
 .chat-action-menu {
   flex: 0 0 auto;
@@ -36928,6 +36993,30 @@ button.danger:hover:not(:disabled) {
 .chat-receive-pill-btn svg { width: 13px; height: 13px; }
 .chat-receive-pill-btn .wallet-action-copy-icon { fill: var(--accent); }
 .chat-receive-pill-label { font-size: 0.74rem; font-weight: 700; letter-spacing: 0.02em; }
+/* The Active Positions pill sits with Receive in a right-aligned group. */
+.chat-plus-head-actions { align-items: center; display: flex; flex: 0 0 auto; gap: 8px; }
+.chat-positions-pill-btn {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 5px;
+  line-height: 1;
+  padding: 5px 10px;
+  white-space: nowrap;
+}
+.chat-positions-pill-btn:hover { border-color: var(--accent); }
+.chat-positions-pill-icon { color: var(--accent); height: 13px; width: 13px; }
+.chat-positions-pill-label { font-size: 0.74rem; font-weight: 700; letter-spacing: 0.02em; }
+.chat-positions-pill-label--mobile { display: none; }
+@media (max-width: 900px) {
+  .chat-positions-pill-label--full { display: none; }
+  .chat-positions-pill-label--mobile { display: inline; }
+}
 
 /* --- Chat "Pending Approvals" dropdown (web header pill + mobile actions-row control) --- */
 .chat-pending { position: relative; flex: 0 0 auto; }
@@ -39206,6 +39295,23 @@ button.danger:hover:not(:disabled) {
 .positions-detail.tone-good dd { color: var(--accent, #3ddc97); }
 .positions-detail.tone-warn dd { color: #f5c451; }
 .positions-detail.tone-bad dd { color: #f0726b; }
+.positions-more { margin: 0; }
+.positions-more > .positions-details { margin-top: 8px; }
+.positions-more-summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  list-style: none;
+  padding: 2px 0;
+  user-select: none;
+  width: fit-content;
+}
+.positions-more-summary::-webkit-details-marker { display: none; }
+.positions-more-summary::after { content: " ▾"; font-size: 0.6rem; opacity: 0.7; }
+.positions-more[open] > .positions-more-summary::after { content: " ▴"; }
+.positions-more-summary:hover { color: var(--text); }
 .positions-progress { align-items: center; display: flex; gap: 8px; }
 .positions-progress-track { background: rgba(224, 230, 226, 0.12); border-radius: 999px; flex: 1; height: 6px; overflow: hidden; }
 .positions-progress-fill { background: var(--accent, #3ddc97); border-radius: 999px; display: block; height: 100%; }

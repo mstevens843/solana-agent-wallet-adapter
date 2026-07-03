@@ -193,6 +193,14 @@ export interface ConnectorFactReadInput {
   project0Account?: string;
   operation?: 'deposit' | 'withdraw' | 'borrow' | 'repay';
   vaultAddress?: string;
+  // Jupiter Lend borrow health preview (create-form loan-terms estimate): a vaultId turns the borrow
+  // capability read into a live projected-health preview instead of the "needs vaultId" rejection.
+  vaultId?: number;
+  positionId?: number;
+  collateralDelta?: string;
+  debtDelta?: string;
+  minHealthRatio?: number;
+  maxLtvBps?: number;
   subAccountId?: number;
   jitoOperation?: 'stake_sol' | 'deposit_stake_account' | 'unstake_jitosol' | 'withdraw_sol';
   marinadeOperation?: 'liquid_stake' | 'liquid_unstake' | 'delayed_unstake' | 'claim_delayed_unstake';

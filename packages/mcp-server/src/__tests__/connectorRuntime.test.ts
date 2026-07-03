@@ -836,7 +836,14 @@ describe('AgentWalletActionService connector runtime', () => {
   });
 
   it('returns deterministic missing-capability errors for unavailable connectors', async () => {
-    const service = newService();
+    // Force the REST lend client (SDK disabled) so the borrow positions read is genuinely unavailable
+    // and returns a deterministic capability error rather than attempting a live SDK/RPC read.
+    const service = new AgentWalletActionService({
+      backend: createMockBackend(),
+      config: { ...fakeConfig(), connectors: { jupiter: { useSdk: false } } } as AgentWalletConfig,
+      connection: fakeConnection(),
+      preparedActions: inMemoryStore(),
+    });
 
     await service.connectorReadFacts({
       connectorId: 'jupiter',
@@ -850,6 +857,64 @@ describe('AgentWalletActionService connector runtime', () => {
         expect(err instanceof Error ? err.message : String(err)).toContain('positions');
       },
     );
+  });
+
+  it('merges Jupiter Lend Earn accrued interest into the positions read', async () => {
+    const service = newService();
+    vi.spyOn(service, 'jupiterLendEarnPositions').mockResolvedValue({
+      walletAddress: 'wallet',
+      cluster: 'mainnet-beta',
+      positions: [{ assetMint: 'USDC', underlyingAmount: '100' }],
+      facts: [],
+    });
+    const earnings = [{ assetMint: 'USDC', totalEarnings: '2.5', decimals: 6 }];
+    vi.spyOn(service, 'jupiterLendEarnEarnings').mockResolvedValue({ earnings } as unknown as Record<string, unknown>);
+
+    const result = await service.connectorReadFacts({ connectorId: 'jupiter', capability: 'earn', walletAddress: 'wallet' });
+
+    expect(result.positions).toBeDefined();
+    expect(result.earnings).toEqual(earnings);
+  });
+
+  it('keeps the earn positions read working when the earnings read fails', async () => {
+    const service = newService();
+    vi.spyOn(service, 'jupiterLendEarnPositions').mockResolvedValue({
+      walletAddress: 'wallet',
+      cluster: 'mainnet-beta',
+      positions: [{ assetMint: 'USDC', underlyingAmount: '100' }],
+      facts: [],
+    });
+    vi.spyOn(service, 'jupiterLendEarnEarnings').mockRejectedValue(new Error('earnings endpoint down'));
+
+    const result = await service.connectorReadFacts({ connectorId: 'jupiter', capability: 'earn', walletAddress: 'wallet' });
+
+    // Positions still returned; earnings degrades to an empty array rather than throwing.
+    expect(result.positions).toBeDefined();
+    expect(result.earnings).toEqual([]);
+  });
+
+  it('returns a Jupiter borrow health preview when a vaultId is supplied', async () => {
+    const service = newService();
+    const preview = { after: { healthRatioText: '1.85', liquidationStatus: 'safe' }, blocked: false, warnings: [], projectedLtvBps: 6200, maxLtvBps: 8000 };
+    const spy = vi.spyOn(service, 'jupiterLendBorrowHealthPreview').mockResolvedValue({ preview, facts: [] } as unknown as Record<string, unknown>);
+
+    const result = await service.connectorReadFacts({
+      connectorId: 'jupiter',
+      capability: 'borrow',
+      vaultId: 3,
+      collateralDelta: '5',
+      debtDelta: '2',
+    });
+
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ vaultId: 3, collateralDelta: '5', debtDelta: '2' }));
+    expect(result.preview).toEqual(preview);
+  });
+
+  it('still rejects a Jupiter borrow health preview with no vaultId', async () => {
+    const service = newService();
+    await expect(
+      service.connectorReadFacts({ connectorId: 'jupiter', capability: 'borrow' }),
+    ).rejects.toMatchObject({ message: expect.stringContaining('vaultId') });
   });
 
   it('executes Blink prepared actions through wallet signing and RPC broadcast', async () => {

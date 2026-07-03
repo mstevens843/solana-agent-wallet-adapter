@@ -36,7 +36,7 @@ export const VOLATILE_DISCLOSURE_CLASS_TOKENS = new Set<string>([
 ]);
 
 const DISCLOSURE_RECORD_ANCHOR =
-  '[data-generated-plan-id],[data-action-id],[data-recurring-id],[data-audit-record-id]';
+  '[data-generated-plan-id],[data-action-id],[data-recurring-id],[data-audit-record-id],[data-position-id]';
 
 // --- Pure logic (unit-tested) ----------------------------------------------
 
@@ -99,6 +99,7 @@ export function disclosureRecordId(el: Element): string {
     ?? record.dataset.actionId
     ?? record.dataset.recurringId
     ?? record.dataset.auditRecordId
+    ?? record.dataset.positionId
     ?? ''
   );
 }

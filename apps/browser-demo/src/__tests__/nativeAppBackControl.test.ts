@@ -57,7 +57,7 @@ describe('native /app top navigation', () => {
   });
 
   it('keeps the Chat morph fast path scoped to /app Chat updates', () => {
-    const canMorphActiveTab = sourceBetween('function canMorphActiveTab', '// Single, conditional autoscroll after a morph.');
+    const canMorphActiveTab = sourceBetween('function canMorphActiveTab', 'function applyChatAutoscrollAfterRender');
 
     expect(canMorphActiveTab).toContain("currentRoute() !== '/app'");
     expect(canMorphActiveTab).toContain("state.activeTab !== 'chat'");
