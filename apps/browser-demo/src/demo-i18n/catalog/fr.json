@@ -5660,6 +5660,20 @@
     "Manage position": "Gérer la position",
     "Limit order canceled.": "Ordre limite annulé.",
     "DCA order canceled.": "Ordre DCA annulé.",
-    "Order funds withdrawn.": "Fonds de l'ordre retirés."
+    "Order funds withdrawn.": "Fonds de l'ordre retirés.",
+    "Type the new trigger price, then send.": "Saisissez le nouveau prix de déclenchement, puis envoyez.",
+    "Type the amount to borrow, then send.": "Saisissez le montant à emprunter, puis envoyez.",
+    "Type the collateral amount, then send.": "Saisissez le montant de la garantie, puis envoyez.",
+    "Order price updated.": "Prix de l'ordre mis à jour.",
+    "Withdrawal submitted.": "Retrait soumis.",
+    "Repayment submitted.": "Remboursement soumis.",
+    "Collateral added.": "Garantie ajoutée.",
+    "Collateral withdrawn.": "Garantie retirée.",
+    "Borrow submitted.": "Emprunt soumis.",
+    "Unstake submitted.": "Retrait du staking soumis.",
+    "Liquidity removed.": "Liquidité retirée.",
+    "Position closed.": "Position fermée.",
+    "Fees collected.": "Frais collectés.",
+    "Rewards claimed.": "Récompenses réclamées."
   }
 }

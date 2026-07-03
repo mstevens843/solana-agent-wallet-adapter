@@ -21375,6 +21375,15 @@ button.danger:hover:not(:disabled) {
   min-height: 40px;
 }
 
+/* Checkboxes must stay 18x18 — the 40px min-height above (meant for text inputs/selects) was
+   stretching the appearance:none checkbox into a tall black box (e.g. the Recipients "Mine" field).
+   Higher specificity ((0,4,1) > (0,3,1)) so it wins regardless of source order. */
+.route-app .field.compact input[type="checkbox"] {
+  min-height: 18px;
+  height: 18px;
+  width: 18px;
+}
+
 .route-app .planner-prompt textarea {
   min-height: 66px;
 }
@@ -28032,6 +28041,39 @@ button.danger:hover:not(:disabled) {
   color: rgba(196, 205, 202, 0.68);
   font-size: 0.76rem;
   font-style: normal;
+}
+
+/* Recipient rule editor layout. Force a single column so NAME and ADDRESS each get their own
+   full-width row — this kills the Paste-button bleed that appears on native webviews reporting a
+   CSS width >= 900px (where the max-width:899px collapse never fires; the mobile content is chosen
+   by isMobileAppViewport(), not by width). Scoped to the .recipient-rule-form modifier so the four
+   sibling preference forms keep their shared 2-column grid. Higher specificity ((0,3,0)) than the
+   shared .preferences-page .recipient-save-form 2-col rule ((0,2,0)). */
+.preferences-page .recipient-save-form.recipient-rule-form {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* LIST (~75%) shares its row with the compact MINE checkbox (~25%), using the space that was
+   previously empty next to the half-width dropdown. */
+.recipient-list-mine-row {
+  display: flex;
+  gap: 10px;
+  align-items: start;
+}
+
+.recipient-list-mine-row .recipient-list-field {
+  flex: 3 1 0;
+  min-width: 0;
+}
+
+.recipient-list-mine-row .recipient-mine-field {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* The "My own wallet…" hint now sits below the List/Mine row as a full-width helper line. */
+.recipient-rule-form .recipient-mine-hint {
+  margin-top: -2px;
 }
 
 .preferences-page .agent-empty,
@@ -36320,6 +36362,27 @@ button.danger:hover:not(:disabled) {
 .chat-position-controls { flex-wrap: wrap; }
 .chat-position-action { flex: 0 0 auto; }
 .chat-position-empty { color: var(--muted); font-size: 0.84rem; margin: 0; }
+.chat-position-distance { color: var(--accent, #3ddc97); font-size: 0.76rem; font-weight: 600; }
+.chat-position-progress { align-items: center; display: flex; gap: 8px; }
+.chat-position-progress-track { background: rgba(224, 230, 226, 0.12); border-radius: 999px; flex: 1; height: 5px; overflow: hidden; }
+.chat-position-progress-fill { background: var(--accent, #3ddc97); border-radius: 999px; display: block; height: 100%; }
+.chat-position-progress-label { color: var(--muted); font-size: 0.72rem; font-weight: 600; }
+.chat-position-more { margin: 0; }
+.chat-position-more > .chat-position-metrics { margin-top: 6px; }
+.chat-position-more-summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 600;
+  list-style: none;
+  user-select: none;
+  width: fit-content;
+}
+.chat-position-more-summary::-webkit-details-marker { display: none; }
+.chat-position-more-summary::after { content: " ▾"; font-size: 0.6rem; opacity: 0.7; }
+.chat-position-more[open] > .chat-position-more-summary::after { content: " ▴"; }
+.chat-position-card-tone-warn { border-left: 2px solid #f5c451; }
+.chat-position-card-tone-bad { border-left: 2px solid #f0726b; }
 /* "⋯" overflow popover (Archive / Deny / Delete) — closes on the next morph. */
 .chat-action-menu {
   flex: 0 0 auto;

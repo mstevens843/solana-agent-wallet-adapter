@@ -5660,6 +5660,20 @@
     "Manage position": "포지션 관리",
     "Limit order canceled.": "지정가 주문이 취소되었습니다.",
     "DCA order canceled.": "DCA 주문이 취소되었습니다.",
-    "Order funds withdrawn.": "주문 자금을 출금했습니다."
+    "Order funds withdrawn.": "주문 자금을 출금했습니다.",
+    "Type the new trigger price, then send.": "새 트리거 가격을 입력한 후 전송하세요.",
+    "Type the amount to borrow, then send.": "빌릴 금액을 입력한 후 전송하세요.",
+    "Type the collateral amount, then send.": "담보 금액을 입력한 후 전송하세요.",
+    "Order price updated.": "주문 가격이 업데이트되었습니다.",
+    "Withdrawal submitted.": "출금이 제출되었습니다.",
+    "Repayment submitted.": "상환이 제출되었습니다.",
+    "Collateral added.": "담보가 추가되었습니다.",
+    "Collateral withdrawn.": "담보가 인출되었습니다.",
+    "Borrow submitted.": "대출이 제출되었습니다.",
+    "Unstake submitted.": "언스테이크가 제출되었습니다.",
+    "Liquidity removed.": "유동성이 제거되었습니다.",
+    "Position closed.": "포지션이 종료되었습니다.",
+    "Fees collected.": "수수료가 수령되었습니다.",
+    "Rewards claimed.": "보상을 수령했습니다."
   }
 }

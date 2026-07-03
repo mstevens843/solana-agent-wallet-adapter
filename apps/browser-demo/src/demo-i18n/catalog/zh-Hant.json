@@ -5660,6 +5660,20 @@
     "Manage position": "管理倉位",
     "Limit order canceled.": "限價單已取消。",
     "DCA order canceled.": "DCA 訂單已取消。",
-    "Order funds withdrawn.": "訂單資金已提取。"
+    "Order funds withdrawn.": "訂單資金已提取。",
+    "Type the new trigger price, then send.": "輸入新的觸發價格後發送。",
+    "Type the amount to borrow, then send.": "輸入借款金額後發送。",
+    "Type the collateral amount, then send.": "輸入抵押品金額後發送。",
+    "Order price updated.": "訂單價格已更新。",
+    "Withdrawal submitted.": "提領已提交。",
+    "Repayment submitted.": "還款已提交。",
+    "Collateral added.": "已新增抵押品。",
+    "Collateral withdrawn.": "已提取抵押品。",
+    "Borrow submitted.": "借款已提交。",
+    "Unstake submitted.": "解質押已提交。",
+    "Liquidity removed.": "已移除流動性。",
+    "Position closed.": "倉位已關閉。",
+    "Fees collected.": "已領取手續費。",
+    "Rewards claimed.": "已領取獎勵。"
   }
 }

@@ -713,7 +713,9 @@ import {
 } from './connectorDrafting.js';
 import {
   POSITION_BROWSE_TYPES,
+  chatManageNeedsPrompt,
   manageProposalParams,
+  manageValueField,
   matchPositionBrowseType,
 } from './chatPositions.js';
 import {
@@ -17382,7 +17384,7 @@ function recipientRulesPanel(): string {
           ${recipientToggleButton('allowListEnabled', t('Allow list'), rules.allowListEnabled, t('Require trusted recipients'))}
           ${recipientToggleButton('blockListEnabled', t('Block list'), rules.blockListEnabled, t('Reject blocked recipients'))}
         </div>
-        <div class="recipient-save-form">
+        <div class="recipient-save-form recipient-rule-form">
           <label class="field compact">
             <span>${t('Name')}</span>
             <input data-recipient-field="name" value="${escapeHtml(state.recipientDraft.name)}" placeholder="${escapeHtml(t('Jeremy'))}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
@@ -17393,16 +17395,23 @@ function recipientRulesPanel(): string {
             ${recipientPasteInputWrap(`<input data-recipient-field="address" value="${escapeHtml(state.recipientDraft.address)}" placeholder="${escapeHtml(t('Solana address'))}" autocomplete="off" spellcheck="false" ${state.busy ? 'disabled' : ''} />`, state.busy)}
             ${recipientFieldError('address')}
           </label>
-          <label class="field compact">
-            <span>${t('List')}</span>
-            ${selectPicker({
-              id: 'recipientDraftPolicy',
-              value: state.recipientDraft.policy,
-              attrs: { 'data-recipient-field': 'policy' },
-              disabled: state.busy,
-              options: recipientPolicyOptions(),
-            })}
-          </label>
+          <div class="recipient-list-mine-row">
+            <label class="field compact recipient-list-field">
+              <span>${t('List')}</span>
+              ${selectPicker({
+                id: 'recipientDraftPolicy',
+                value: state.recipientDraft.policy,
+                attrs: { 'data-recipient-field': 'policy' },
+                disabled: state.busy,
+                options: recipientPolicyOptions(),
+              })}
+            </label>
+            <label class="field compact recipient-mine-field">
+              <span>${t('Mine')}</span>
+              <input type="checkbox" data-recipient-field="isMine" ${state.recipientDraft.isMine ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
+            </label>
+          </div>
+          <em class="recipient-mine-hint">${t('My own wallet - pre-sign shows "→ your wallet"')}</em>
           <label class="field compact recipient-note-field">
             <span>${t('Note')}</span>
             <input data-recipient-field="note" value="${escapeHtml(state.recipientDraft.note)}" placeholder="${escapeHtml(t('Invoice, contractor, savings'))}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
@@ -17410,11 +17419,6 @@ function recipientRulesPanel(): string {
           <label class="field compact recipient-tags-field">
             <span>${t('Tags')}</span>
             <input data-recipient-field="tags" value="${escapeHtml(state.recipientDraft.tags)}" placeholder="${escapeHtml(t('team, exchange (comma separated)'))}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
-          </label>
-          <label class="field compact recipient-mine-field">
-            <span>${t('Mine')}</span>
-            <input type="checkbox" data-recipient-field="isMine" ${state.recipientDraft.isMine ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
-            <em class="recipient-mine-hint">${t('My own wallet - pre-sign shows "→ your wallet"')}</em>
           </label>
           <div class="recipient-save-actions">
             <button type="button" class="primary" data-recipient-action="save" ${state.busy ? 'disabled' : ''}>${t('Save')}</button>
@@ -20016,6 +20020,12 @@ function activePanel(): string {
     case 'preferences':
       return preferencesPanel();
     case 'addressBook':
+      // The Address Book tab is hidden from the nav (see ADDRESS_BOOK_TAB_HIDDEN); redirect a
+      // persisted/stale activeTab to the command center rather than render the stranded panel.
+      if (ADDRESS_BOOK_TAB_HIDDEN) {
+        state.activeTab = 'overview';
+        return commandCenterPanel();
+      }
       return addressBookPanel();
     default: {
       // Layer 1 tab fallthrough. If the activeTab id matches a registered tab
@@ -27222,44 +27232,57 @@ function chatPositionCard(row: PositionLiveRow): string {
   const hero = row.headline
     ? `<div class="chat-position-hero"><span class="chat-position-hero-label">${escapeHtml(positionDetailLabel(row.headline.label))}</span><span class="chat-position-hero-row">${heroLogo}<strong>${escapeHtml(row.headline.value)}</strong></span></div>`
     : '';
-  const metrics = row.details.slice(0, 3)
-    .map((d) => `<span class="chat-position-metric${d.tone ? ' tone-' + d.tone : ''}"><em>${escapeHtml(positionDetailLabel(d.label))}</em><strong>${escapeHtml(d.value)}</strong></span>`)
-    .join('');
+  const metricTile = (d: PositionDetail): string =>
+    `<span class="chat-position-metric${d.tone ? ' tone-' + d.tone : ''}"><em>${escapeHtml(positionDetailLabel(d.label))}</em><strong>${escapeHtml(d.value)}</strong></span>`;
+  // First few metrics inline; the rest fold into "More details" (matches the Positions-tab card).
+  const primaryMetrics = row.details.slice(0, PRIMARY_DETAIL_COUNT);
+  const overflowMetrics = row.details.slice(PRIMARY_DETAIL_COUNT);
+  const primaryHtml = primaryMetrics.length ? `<div class="chat-position-metrics">${primaryMetrics.map(metricTile).join('')}</div>` : '';
+  const moreHtml = overflowMetrics.length
+    ? `<details class="chat-position-more"><summary class="chat-position-more-summary">${escapeHtml(t('More details'))}</summary><div class="chat-position-metrics">${overflowMetrics.map(metricTile).join('')}</div></details>`
+    : '';
+  // Limit orders: distance from trigger. DCA: cycles-done progress bar.
+  const distance = typeof row.distancePct === 'number'
+    ? `<span class="chat-position-distance">${Math.abs(row.distancePct).toFixed(1)}% ${escapeHtml(row.distancePct >= 0 ? t('below trigger') : t('above trigger'))}</span>`
+    : '';
+  const progress = row.progress && row.progress.total > 0
+    ? `<div class="chat-position-progress"><span class="chat-position-progress-track"><span class="chat-position-progress-fill" style="width:${Math.min(100, Math.round((row.progress.current / row.progress.total) * 100))}%"></span></span><span class="chat-position-progress-label">${row.progress.current}/${row.progress.total}</span></div>`
+    : '';
+  const toneClass = tone === 'warn' || tone === 'bad' ? ` chat-position-card-tone-${tone}` : '';
   return `
-    <article class="chat-action-card chat-position-card" data-chat-position-id="${escapeHtml(row.id)}">
+    <article class="chat-action-card chat-position-card${toneClass}" data-chat-position-id="${escapeHtml(row.id)}">
       <div class="chat-action-head">
         <span class="positions-badge">${escapeHtml(positionCategoryLabel(row.kind))}</span>
         ${icon}
         <strong class="chat-action-title">${escapeHtml(row.title)}</strong>
         ${statusLabel ? `<span class="positions-status tone-${tone}">${escapeHtml(statusLabel)}</span>` : ''}
       </div>
-      ${hero}
-      ${metrics ? `<div class="chat-position-metrics">${metrics}</div>` : ''}
+      ${hero}${distance}
+      ${primaryHtml}${moreHtml}${progress}
       ${chatPositionManageControls(row)}
     </article>`;
 }
 
 // Manage actions we surface inline in chat. Edit (needs a price editor) is intentionally left to the
 // Positions tab. The "no-amount" set closes/cancels in one tap; everything else prompts for an amount.
-const CHAT_MANAGE_SKIP_KINDS = new Set<string>(['jupiter_trigger_edit_order']);
-const CHAT_MANAGE_NO_AMOUNT_KINDS = new Set<string>([
-  'jupiter_trigger_cancel_order',
-  'jupiter_trigger_withdraw_order_funds',
-  'jupiter_recurring_cancel_order',
-  'jupiter_lend_earn_redeem', // "Withdraw all" — shares are prefilled in fields
-]);
-function chatManageNeedsAmount(kind: string): boolean {
-  return !CHAT_MANAGE_NO_AMOUNT_KINDS.has(kind);
-}
 function chatManageDefaultLabel(kind: ActionCategory): string {
   return kind === 'lend' ? t('Withdraw') : kind === 'borrow' ? t('Repay') : kind === 'stake' ? t('Unstake') : kind === 'lp' ? t('Remove') : t('Cancel');
+}
+
+// Action-appropriate prompt copy for the amount/value a manage action needs.
+function chatManageValuePromptLine(kind: string): string {
+  if (kind === 'jupiter_trigger_edit_order') return t('Type the new trigger price, then send.');
+  if (kind === 'jupiter_lend_borrow_borrow') return t('Type the amount to borrow, then send.');
+  if (kind === 'jupiter_lend_borrow_deposit_collateral') return t('Type the collateral amount, then send.');
+  return t('Type the amount, then send.');
 }
 
 function chatPositionManageControls(row: PositionLiveRow): string {
   const buttons: string[] = [];
   const add = (kind: string, orderId: string, label: string, fields?: Record<string, string>): void => {
-    if (CHAT_MANAGE_SKIP_KINDS.has(kind) || !orderId) return;
-    const attrs = `data-chat-pos-manage data-cpm-kind="${escapeHtml(kind)}" data-cpm-order-id="${escapeHtml(orderId)}" data-cpm-label="${escapeHtml(label)}" data-cpm-amount="${chatManageNeedsAmount(kind) ? '1' : '0'}"${fields ? ` data-cpm-fields='${escapeHtml(JSON.stringify(fields))}'` : ''}`;
+    // Some actions (marinade/jito unstake) carry no orderId — they act on a prefilled amount in fields.
+    if (!orderId && !(fields && Object.keys(fields).length)) return;
+    const attrs = `data-chat-pos-manage data-cpm-kind="${escapeHtml(kind)}" data-cpm-order-id="${escapeHtml(orderId)}" data-cpm-label="${escapeHtml(label)}" data-cpm-amount="${chatManageNeedsPrompt(kind) ? '1' : '0'}"${fields ? ` data-cpm-fields='${escapeHtml(JSON.stringify(fields))}'` : ''}`;
     buttons.push(`<button type="button" class="utility chat-position-action" ${attrs}>${escapeHtml(label)}</button>`);
   };
   if (row.cancel) add(row.cancel.kind, row.cancel.orderId, row.cancel.label ?? chatManageDefaultLabel(row.kind), row.cancel.fields);
@@ -27269,9 +27292,9 @@ function chatPositionManageControls(row: PositionLiveRow): string {
 
 // Build the chat action proposal for a manage action and promote it to the standard inline approval
 // card — reusing the whole chat action → sign → auto-success-message pipeline.
-function chatManagePositionAction(kind: string, orderId: string, fields: Record<string, string>, amount?: string): void {
+function chatManagePositionAction(kind: string, orderId: string, fields: Record<string, string>, value?: string): void {
   const session = ensureActiveChatSession();
-  const params = manageProposalParams(MANAGE_ID_FIELD_BY_KIND[kind] ?? 'orderId', orderId, fields, amount);
+  const params = manageProposalParams(MANAGE_ID_FIELD_BY_KIND[kind] ?? 'orderId', orderId, fields, value, manageValueField(kind));
   const assistantId = newId('chat-msg');
   appendChatMessage(session.id, {
     id: assistantId, role: 'assistant', status: 'done', createdAt: new Date().toISOString(),
@@ -28808,12 +28831,32 @@ function isChatOriginatedAction(action: { id: string; chatOriginated?: boolean }
 // actionOpensPosition (NOT raw category) so a stateful close/manage action — which lands in Done,
 // not Positions — is worded correctly. Open positions (lend/borrow/limit/dca/stake/lp/perps) point
 // at Positions; everything terminal (swap/send/proof/nft/...) points at Done.
-// Friendly past-tense confirmation for a close/cancel manage action (null → use the generic line).
+// Friendly past-tense confirmation for a manage action (null → use the generic stateful line).
 function chatManageDoneLine(kind: string): string | null {
   switch (kind) {
     case 'jupiter_trigger_cancel_order': return t('Limit order canceled.');
     case 'jupiter_recurring_cancel_order': return t('DCA order canceled.');
     case 'jupiter_trigger_withdraw_order_funds': return t('Order funds withdrawn.');
+    case 'jupiter_trigger_edit_order': return t('Order price updated.');
+    case 'jupiter_lend_earn_withdraw':
+    case 'jupiter_lend_earn_redeem': return t('Withdrawal submitted.');
+    case 'jupiter_lend_borrow_repay': return t('Repayment submitted.');
+    case 'jupiter_lend_borrow_deposit_collateral': return t('Collateral added.');
+    case 'jupiter_lend_borrow_withdraw_collateral': return t('Collateral withdrawn.');
+    case 'jupiter_lend_borrow_borrow': return t('Borrow submitted.');
+    case 'marinade_liquid_unstake':
+    case 'marinade_delayed_unstake':
+    case 'jito_unstake_jitosol':
+    case 'sanctum_unstake_lst_to_sol': return t('Unstake submitted.');
+    case 'meteora_remove_liquidity':
+    case 'orca_decrease_liquidity':
+    case 'raydium_remove_liquidity': return t('Liquidity removed.');
+    case 'meteora_close_position': return t('Position closed.');
+    case 'meteora_claim_fees':
+    case 'orca_collect_fees':
+    case 'raydium_collect_fees': return t('Fees collected.');
+    case 'meteora_claim_rewards':
+    case 'orca_collect_rewards': return t('Rewards claimed.');
     default: return null;
   }
 }
@@ -29440,13 +29483,15 @@ function bindChat(): void {
       const kind = button.dataset.cpmKind ?? '';
       const orderId = button.dataset.cpmOrderId ?? '';
       const label = button.dataset.cpmLabel ?? '';
-      if (!kind || !orderId) return;
+      if (!kind) return;
       let fields: Record<string, string> = {};
       if (button.dataset.cpmFields) { try { fields = JSON.parse(button.dataset.cpmFields) as Record<string, string>; } catch { fields = {}; } }
+      // Some actions (marinade/jito unstake) have no orderId — they act on a prefilled amount in fields.
+      if (!orderId && !Object.keys(fields).length) return;
       if (button.dataset.cpmAmount === '1') {
         state.chatManageAwait = { kind, orderId, fields, label };
         const session = ensureActiveChatSession();
-        appendChatMessage(session.id, { id: newId('chat-msg'), role: 'assistant', status: 'done', createdAt: new Date().toISOString(), content: t('Type the amount, then send.') });
+        appendChatMessage(session.id, { id: newId('chat-msg'), role: 'assistant', status: 'done', createdAt: new Date().toISOString(), content: chatManageValuePromptLine(kind) });
         chatForceScrollBottom = true;
         saveChatHistoryState();
         render();
@@ -35208,7 +35253,7 @@ function recipientSavedMenuHtml(key: string): string {
     return `
       <div class="recipient-saved-menu recipient-saved-empty" data-recipient-saved-menu="${escapeHtml(key)}">
         <p>${escapeHtml(t('No saved recipients yet.'))}</p>
-        <button type="button" class="recipient-saved-open-book" data-tab="addressBook">${escapeHtml(t('Open Address Book'))}</button>
+        ${ADDRESS_BOOK_TAB_HIDDEN ? '' : `<button type="button" class="recipient-saved-open-book" data-tab="addressBook">${escapeHtml(t('Open Address Book'))}</button>`}
       </div>`;
   }
   const rows = recipients.map((recipient) => {
@@ -65981,8 +66026,17 @@ const REQUIRED_MORE_SURFACES: Record<string, { label: string; render: () => stri
   positions: { label: 'Positions', render: positionsPanel },
 };
 
+// TEMP: the Address Book tab was added by mistake; recipient management already lives under
+// Preferences → Rules → Recipients. Flip to false to restore the tab (it's only hidden from the
+// nav — addressBookPanel() and the workspaceMore arrays are untouched).
+const ADDRESS_BOOK_TAB_HIDDEN = true;
+
+function hideAddressBookMenuItem(items: WorkspaceMoreMenuItem[]): WorkspaceMoreMenuItem[] {
+  return ADDRESS_BOOK_TAB_HIDDEN ? items.filter((item) => item.id !== 'addressBook') : items;
+}
+
 function moreMenuItems(): WorkspaceMoreMenuItem[] {
-  const items = workspaceMoreMenuItems(listDevTabs());
+  const items = hideAddressBookMenuItem(workspaceMoreMenuItems(listDevTabs()));
   // When Chat is hidden on this surface, Repeat Payments returns to the top bar,
   // so drop it from the More menu to avoid duplicating it.
   return chatTabHidden() ? items.filter((item) => item.id !== 'schedule') : items;
@@ -65991,7 +66045,7 @@ function moreMenuItems(): WorkspaceMoreMenuItem[] {
 function mobileMoreMenuItems(): WorkspaceMoreMenuItem[] {
   // Chat now lives in the mobile dock on every surface (web + native), so it is
   // no longer prepended into the More menu.
-  const items = mobileWorkspaceMoreMenuItems(listDevTabs());
+  const items = hideAddressBookMenuItem(mobileWorkspaceMoreMenuItems(listDevTabs()));
   // When Chat is hidden on this surface, Done returns to the bottom dock, so drop
   // it from the More menu to avoid duplicating it.
   return chatTabHidden() ? items.filter((item) => item.id !== 'completed') : items;

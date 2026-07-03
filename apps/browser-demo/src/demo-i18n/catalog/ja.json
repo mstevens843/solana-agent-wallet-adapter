@@ -5660,6 +5660,20 @@
     "Manage position": "ポジションを管理",
     "Limit order canceled.": "指値注文をキャンセルしました。",
     "DCA order canceled.": "DCA注文をキャンセルしました。",
-    "Order funds withdrawn.": "注文の資金を引き出しました。"
+    "Order funds withdrawn.": "注文の資金を引き出しました。",
+    "Type the new trigger price, then send.": "新しいトリガー価格を入力して送信してください。",
+    "Type the amount to borrow, then send.": "借りる金額を入力して送信してください。",
+    "Type the collateral amount, then send.": "担保額を入力して送信してください。",
+    "Order price updated.": "注文価格を更新しました。",
+    "Withdrawal submitted.": "出金を送信しました。",
+    "Repayment submitted.": "返済を送信しました。",
+    "Collateral added.": "担保を追加しました。",
+    "Collateral withdrawn.": "担保を引き出しました。",
+    "Borrow submitted.": "借入を送信しました。",
+    "Unstake submitted.": "アンステークを送信しました。",
+    "Liquidity removed.": "流動性を削除しました。",
+    "Position closed.": "ポジションをクローズしました。",
+    "Fees collected.": "手数料を回収しました。",
+    "Rewards claimed.": "報酬を請求しました。"
   }
 }

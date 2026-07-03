@@ -5660,6 +5660,20 @@
     "Manage position": "Управление позицией",
     "Limit order canceled.": "Лимитный ордер отменён.",
     "DCA order canceled.": "DCA-ордер отменён.",
-    "Order funds withdrawn.": "Средства ордера выведены."
+    "Order funds withdrawn.": "Средства ордера выведены.",
+    "Type the new trigger price, then send.": "Введите новую цену срабатывания и отправьте.",
+    "Type the amount to borrow, then send.": "Введите сумму займа и отправьте.",
+    "Type the collateral amount, then send.": "Введите сумму залога и отправьте.",
+    "Order price updated.": "Цена ордера обновлена.",
+    "Withdrawal submitted.": "Вывод отправлен.",
+    "Repayment submitted.": "Погашение отправлено.",
+    "Collateral added.": "Залог добавлен.",
+    "Collateral withdrawn.": "Залог выведен.",
+    "Borrow submitted.": "Заём отправлен.",
+    "Unstake submitted.": "Анстейк отправлен.",
+    "Liquidity removed.": "Ликвидность выведена.",
+    "Position closed.": "Позиция закрыта.",
+    "Fees collected.": "Комиссии собраны.",
+    "Rewards claimed.": "Награды получены."
   }
 }

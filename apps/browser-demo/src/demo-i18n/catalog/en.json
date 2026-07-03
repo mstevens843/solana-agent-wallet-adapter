@@ -5660,6 +5660,20 @@
     "Manage position": "Manage position",
     "Limit order canceled.": "Limit order canceled.",
     "DCA order canceled.": "DCA order canceled.",
-    "Order funds withdrawn.": "Order funds withdrawn."
+    "Order funds withdrawn.": "Order funds withdrawn.",
+    "Type the new trigger price, then send.": "Type the new trigger price, then send.",
+    "Type the amount to borrow, then send.": "Type the amount to borrow, then send.",
+    "Type the collateral amount, then send.": "Type the collateral amount, then send.",
+    "Order price updated.": "Order price updated.",
+    "Withdrawal submitted.": "Withdrawal submitted.",
+    "Repayment submitted.": "Repayment submitted.",
+    "Collateral added.": "Collateral added.",
+    "Collateral withdrawn.": "Collateral withdrawn.",
+    "Borrow submitted.": "Borrow submitted.",
+    "Unstake submitted.": "Unstake submitted.",
+    "Liquidity removed.": "Liquidity removed.",
+    "Position closed.": "Position closed.",
+    "Fees collected.": "Fees collected.",
+    "Rewards claimed.": "Rewards claimed."
   }
 }
