@@ -32431,6 +32431,16 @@ button.danger:hover:not(:disabled) {
     line-height: 1;
   }
 
+  /* A plain field's header (just a label) is shorter than a token/amount field's header (which carries the
+     List/Mint or $/Token pills, min-height 22px). Reserve the same header height on plain fields so, when a
+     plain field is paired side-by-side with a token/amount field, both inputs sit on a shared baseline. */
+  .route-app .mobile-planner-fields .field.compact > span,
+  .route-app .mobile-planner-fields .planner-field > span:not(.token-choice-head) {
+    display: flex;
+    align-items: center;
+    min-height: 22px;
+  }
+
   .route-app .mobile-planner-fields .planner-field input,
   .route-app .mobile-planner-fields .planner-field textarea,
   .route-app .mobile-planner-fields .planner-field select,

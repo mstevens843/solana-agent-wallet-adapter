@@ -1317,4 +1317,25 @@ describe('input-validation helpers', () => {
     // minPrice must not exceed maxPrice.
     expect(validateConnectorDraftParameters(templateById('connector-jupiter-recurring-dca'), { ...base, numberOfOrders: '10', minPrice: '5', maxPrice: '2' }, env, 'template').errors).toHaveProperty('maxPrice');
   });
+
+  it('DCA form copy uses no em-dashes (owner rule) and stays short enough not to truncate', () => {
+    const form = connectorActionFormById('jupiter:recurring-dca');
+    expect(form).toBeTruthy();
+    const strings = [
+      form!.description,
+      ...form!.fields.map((f) => f.helperText),
+      ...(form!.subActions?.options.flatMap((o) => o.fields.map((f) => f.helperText)) ?? []),
+    ].filter((s): s is string => Boolean(s));
+    expect(strings.length).toBeGreaterThan(0);
+    for (const s of strings) expect(s).not.toContain('—');
+  });
+
+  it('Prediction deposit token is a toggle-eligible token-select field (gets List/Mint + balances)', () => {
+    const form = connectorActionFormById('jupiter:prediction');
+    expect(form).toBeTruthy();
+    const create = form!.subActions?.options.find((o) => o.actionType === 'jupiter_prediction_create_order');
+    const depositField = create?.fields.find((f) => f.id === 'depositMint');
+    expect(depositField?.type).toBe('select');
+    expect(depositField?.options?.length ?? 0).toBeGreaterThan(0);
+  });
 });

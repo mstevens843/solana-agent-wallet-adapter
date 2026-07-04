@@ -21889,7 +21889,7 @@ function visibleActionCategory(category: ActionCategory): boolean {
 const CHAT_ADVANCED_ACTIONS: Array<{ id: ActionCategory; eyebrow: string; title: string; description: string }> = [
   { id: 'lend', eyebrow: 'Earn', title: 'Lend', description: 'Earn yield on a connected lending protocol.' },
   { id: 'limit', eyebrow: 'Trading', title: 'Limit / TP-SL', description: 'Set a limit order or take-profit / stop-loss.' },
-  { id: 'dca', eyebrow: 'Trading', title: 'DCA', description: 'Dollar-cost average into a token on a set schedule.' },
+  { id: 'dca', eyebrow: 'Trading', title: 'DCA', description: 'Dollar-cost average on a set schedule.' },
   { id: 'borrow', eyebrow: 'Borrow', title: 'Borrow', description: 'Borrow against collateral on a lending protocol.' },
   { id: 'lp', eyebrow: 'Liquidity', title: 'Liquidity', description: 'Provide or manage liquidity in a connected pool.' },
   { id: 'stake', eyebrow: 'Earn', title: 'Stake', description: 'Stake SOL or LSTs on a connected protocol.' },
@@ -34440,7 +34440,7 @@ function isJupiterDcaCreateTemplate(): boolean {
 // order stays cancelable from Positions. Reuses .template-description styling (no new CSS).
 function dcaAutomationNoteHtml(): string {
   if (!isJupiterDcaCreateTemplate()) return '';
-  return `<p class="template-description dca-automation-note">${escapeHtml(t('Fills run automatically through Jupiter — each posts a receipt in Done, and you can cancel anytime from Positions.'))}</p>`;
+  return `<p class="template-description dca-automation-note">${escapeHtml(t('Each fill posts a receipt to Done; cancel anytime from Positions.'))}</p>`;
 }
 
 function jupiterDcaDirection(): 'buy' | 'sell' {
@@ -35448,7 +35448,7 @@ function slippagePercentInputToBps(value: string): string {
 
 function isTokenSelectField(fieldDef: AgentPlanTemplateField): boolean {
   return fieldDef.type === 'select' &&
-    ['token', 'inputToken', 'outputToken', 'inputMint', 'outputMint', 'triggerMint'].includes(fieldDef.id) &&
+    ['token', 'inputToken', 'outputToken', 'inputMint', 'outputMint', 'triggerMint', 'depositMint'].includes(fieldDef.id) &&
     Boolean(fieldDef.options?.length);
 }
 
@@ -35462,23 +35462,67 @@ function templateAmountModeFor(fieldId: string): ChatAmountMode {
 }
 // The wallet balance asset for the template's spend token (inputToken for swaps, token for single-token
 // actions, inputMint for connector forms). Returns null if no canonical spend field resolves.
+// The asset a connector DISPOSE action deploys (deposit / repay / spend / sell), keyed by the resolved
+// actionType → the field that carries it. Populated ONLY for dispose actions, so withdraw / borrow / redeem /
+// receive resolve to null and never get a wallet balance or %-of-balance quick-fill.
+const DISPOSE_SPEND_ASSET_FIELD: Record<string, string> = {
+  jupiter_trigger_single_order: 'inputMint',
+  jupiter_trigger_oco_order: 'inputMint',
+  jupiter_trigger_otoco_order: 'inputMint',
+  jupiter_recurring_create_time_order: 'inputMint',
+  jupiter_lend_earn_deposit: 'assetMint',
+  jupiter_lend_earn_mint: 'assetMint',
+  kamino_deposit: 'token',
+  save_deposit: 'token',
+  save_repay: 'token',
+  marginfi_deposit: 'bankAddress',
+  marginfi_repay: 'bankAddress',
+  project0_deposit: 'bankAddress',
+  project0_repay: 'bankAddress',
+};
+
+// Resolve a template field's value to the wallet asset the user holds. A cascading provider option stores a
+// symbol or a bank/reserve address (not always a mint), so try its cached option's mint/symbol before the raw.
+function plannerFieldWalletAsset(fieldId: string): WalletBalanceAsset | null {
+  const raw = templateFieldValue(fieldId);
+  if (!raw) return null;
+  const fieldDef = selectedTemplate().fields.find((f) => f.id === fieldId);
+  const candidates: string[] = [];
+  if (fieldDef?.type === 'cascading-select') {
+    const option = cascadingFieldCachedOption(fieldDef, raw);
+    if (option?.meta?.mint) candidates.push(option.meta.mint);
+    if (option?.meta?.symbol) candidates.push(option.meta.symbol);
+  }
+  candidates.push(raw);
+  for (const candidate of candidates) {
+    const resolved = resolveChatToken(candidate);
+    if ('error' in resolved) continue;
+    const asset = resolved.asset ?? chatSnapshotAssets().find((a) => a.mint === resolved.mint) ?? null;
+    if (asset) return asset;
+  }
+  return null;
+}
+
 function plannerSpendTokenAsset(): WalletBalanceAsset | null {
   const template = selectedTemplate();
-  // Only the UNAMBIGUOUS spend fields: inputToken (swap) / token (send/single). NOT inputMint in
-  // general — in connector borrow/withdraw forms inputMint is the RECEIVED token, so %-of-balance
-  // would be wrong. EXCEPTION: the Jupiter limit/TP-SL form, where inputMint IS the token you pay
-  // with (Buy) or sell (Sell), so the balance + %/max quick-fills are exactly right.
-  const spendId = ['inputToken', 'token'].find((id) => template.fields.some((f) => f.id === id))
-    ?? (template.id === 'connector-jupiter-trigger-limit-orders' ? 'inputMint' : undefined);
-  if (!spendId) return null;
-  const raw = templateFieldValue(spendId);
-  if (!raw) return null;
-  const resolved = resolveChatToken(raw);
-  if ('error' in resolved) return null;
-  return resolved.asset ?? chatSnapshotAssets().find((a) => a.mint === resolved.mint) ?? null;
+  // Connector actions: the spend asset is the CURRENT dispose action's asset field (deposit/repay/spend/sell),
+  // resolved via DISPOSE_SPEND_ASSET_FIELD keyed on the actual actionType — so withdraw/borrow/redeem (whose
+  // asset field id may collide, e.g. `token`) never resolve, and the balance/% never shows on a receive action.
+  if (isConnectorCapableTemplate(template)) {
+    const form = activeConnectorActionForm();
+    const actionType = (form ? connectorActionFormTemplateActionType(form, state.templateFields) : '') || (template.actionType ?? '');
+    const assetFieldId = DISPOSE_SPEND_ASSET_FIELD[actionType];
+    return assetFieldId ? plannerFieldWalletAsset(assetFieldId) : null;
+  }
+  // Base (non-connector) swap/send templates: the unambiguous spend fields inputToken (swap) / token (send).
+  const spendId = ['inputToken', 'token'].find((id) => template.fields.some((f) => f.id === id));
+  return spendId ? plannerFieldWalletAsset(spendId) : null;
 }
 function isAmountControlField(fieldDef: AgentPlanTemplateField): boolean {
-  if (fieldDef.id !== 'amount') return false;
+  // DCA's spend/sell amount field is `totalAmount`; give it the same $/token + balance + % control a swap
+  // `amount` gets (its inputMint is the token you deploy/sell, so balance + %/max are meaningful).
+  const isDcaTotal = fieldDef.id === 'totalAmount' && isJupiterDcaCreateTemplate();
+  if (fieldDef.id !== 'amount' && !isDcaTotal) return false;
   const template = selectedTemplate();
   if (!isConnectorCapableTemplate(template)) {
     return template.fields.some((f) => f.id === 'inputToken' || f.id === 'token');
@@ -35486,7 +35530,7 @@ function isAmountControlField(fieldDef: AgentPlanTemplateField): boolean {
   // Connector forms: give the amount field the $/token + quick-fills only when a spend token resolves
   // (so balance/$ are meaningful) AND the value isn't a non-numeric sentinel like "all" — otherwise the
   // plain input (which preserves the connector's own semantics, e.g. amount="all").
-  const current = (templateFieldValue('amount') || '').trim();
+  const current = (templateFieldValue(fieldDef.id) || '').trim();
   if (current && !/^[\d.]+$/.test(current)) return false;
   return plannerSpendTokenAsset() !== null;
 }
@@ -35522,11 +35566,28 @@ function amountControlFieldInput(fieldDef: AgentPlanTemplateField, value: string
   const inputAttr = mode === 'usd'
     ? `data-template-amount-usd="${escapeHtml(fieldDef.id)}"`
     : `data-template-field="${escapeHtml(fieldDef.id)}"`;
+  const inputHtml = `<input id="tpl-amount-${escapeHtml(fieldDef.id)}" ${inputAttr} value="${escapeHtml(display)}" placeholder="${escapeHtml(mode === 'usd' ? '$0.00' : (fieldDef.placeholder ? t(fieldDef.placeholder) : '0.00'))}" inputmode="decimal" autocomplete="off" ${disabled} />`;
+  // DCA matches the Swap sheet exactly: the balance reads out on the RIGHT of the input (compact, mode-aware),
+  // and the 50/100/custom-% row sits on its own line below. Scoped to DCA so the shared recurring/trigger
+  // amount layouts (which style .amount-input-row) are untouched.
+  if (isJupiterDcaCreateTemplate()) {
+    const balanceReadout = asset
+      ? `<span class="chat-amount-balance">${escapeHtml(mode === 'usd' ? (formatChatCompactUsd(asset.valueUsd) || '') : `${formatChatCompactAmount(asset.amount)} ${asset.symbol}`)}</span>`
+      : '';
+    return `
+      <label class="field compact planner-field amount-control-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
+        <span class="token-choice-head"><span>${escapeHtml(label)}</span>${unitPill}</span>
+        <div class="chat-amount-field">${inputHtml}${balanceReadout}</div>
+        ${pctRow}
+        ${error}
+      </label>
+    `;
+  }
   return `
     <label class="field compact planner-field amount-control-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
       <span class="token-choice-head"><span>${escapeHtml(label)}</span>${unitPill}</span>
       <div class="amount-input-row">
-        <input id="tpl-amount-${escapeHtml(fieldDef.id)}" ${inputAttr} value="${escapeHtml(display)}" placeholder="${escapeHtml(mode === 'usd' ? '$0.00' : (fieldDef.placeholder ? t(fieldDef.placeholder) : '0.00'))}" inputmode="decimal" autocomplete="off" ${disabled} />
+        ${inputHtml}
         ${pctRow}
       </div>
       ${balanceLine}
@@ -35550,35 +35611,48 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
   const subjectTag = subAction === 'oco-tpsl' ? t('Selling') : t('Buying');
   const mode = portfolioOnly ? 'preset' : templateTokenMode(fieldDef, value);
   const presetMode = mode === 'preset';
-  // Input-token LIST = the user's PORTFOLIO (owned tokens, balance + $); output-token LIST keeps the
-  // curated catalog. MINT (search) is unchanged for both.
-  const portfolio = ((isInputTokenField(fieldDef.id) && presetMode) || portfolioOnly)
+  // DISPOSE token fields (spend/sell: token / inputToken / inputMint / depositMint — `isInputTokenField`) show
+  // the PORTFOLIO ONLY in LIST: never the curated fallback (you can only dispose what you hold), with the Mint
+  // toggle kept for search. DCA buy/receive (outputMint) merges owned + curated presets (like Swap's output);
+  // other output tokens stay curated.
+  const dcaReceive = isJupiterDcaCreateTemplate() && fieldDef.id === 'outputMint';
+  const portfolio = ((isInputTokenField(fieldDef.id) && presetMode) || portfolioOnly || (dcaReceive && presetMode))
     ? chatSnapshotAssets().filter((a) => a.amount > 0)
     : [];
   const usePortfolio = portfolio.length > 0;
   const resolvedCurrentMint = (() => { const r = resolveChatToken(value); return 'error' in r ? '' : r.mint; })();
-  const listPickerOptions: SelectPickerOption[] = usePortfolio
-    ? portfolio.map((a) => ({
-        value: a.mint,
-        label: a.symbol || `${a.mint.slice(0, 4)}…${a.mint.slice(-4)}`,
-        meta: `${formatChatCompactAmount(a.amount)}${a.symbol ? ` ${a.symbol}` : ''}`,
-        detail: formatChatCompactUsd(a.valueUsd) || '',
-      }))
-    : options.map((option) => ({
-        value: option,
-        label: tokenDisplayLabel(option),
-        meta: fieldDef.label,
-        detail: tokenDisplayTitle(option),
-      }));
+  const ownedOption = (a: WalletBalanceAsset): SelectPickerOption => ({
+    value: a.mint,
+    label: a.symbol || `${a.mint.slice(0, 4)}…${a.mint.slice(-4)}`,
+    meta: `${formatChatCompactAmount(a.amount)}${a.symbol ? ` ${a.symbol}` : ''}`,
+    detail: formatChatCompactUsd(a.valueUsd) || '',
+  });
+  const curatedOption = (option: string): SelectPickerOption => ({
+    value: option,
+    label: tokenDisplayLabel(option),
+    meta: fieldDef.label,
+    detail: tokenDisplayTitle(option),
+  });
+  // DCA receive: owned first, then the curated presets the wallet doesn't already hold (deduped by mint).
+  const dcaReceivePresets = dcaReceive
+    ? options.filter((o) => { const r = resolveChatToken(o); return 'error' in r || !portfolio.some((a) => a.mint === r.mint); })
+    : [];
+  const listPickerOptions: SelectPickerOption[] = dcaReceive
+    ? [...portfolio.map(ownedOption), ...dcaReceivePresets.map(curatedOption)]
+    : usePortfolio
+      ? portfolio.map(ownedOption)
+      : options.map(curatedOption);
   const curatedSelectValue = (): string => {
     if (options.includes(value)) return value;
     // A stored mint (e.g. a pasted token) → resolve to its symbol so the curated picker shows it.
     if (looksLikeMintAddress(value)) { const sym = tokenDisplayLabel(value); if (options.includes(sym)) return sym; }
     return fieldDef.defaultValue || options[0] || '';
   };
-  const selectValue = usePortfolio
-    ? (portfolio.find((a) => a.mint === resolvedCurrentMint)?.mint ?? portfolio[0]?.mint ?? '')
-    : curatedSelectValue();
+  const selectValue = dcaReceive
+    ? (listPickerOptions.find((o) => o.value === resolvedCurrentMint || o.value === value)?.value ?? curatedSelectValue())
+    : usePortfolio
+      ? (portfolio.find((a) => a.mint === resolvedCurrentMint)?.mint ?? portfolio[0]?.mint ?? '')
+      : curatedSelectValue();
   // Keep the portfolio-only field's stored value in sync with what's shown, so a submit never sends a
   // token the user doesn't hold (or a stale default). Reconcile once; the next render is a no-op.
   if (portfolioOnly && usePortfolio && selectValue && state.templateFields[fieldDef.id] !== selectValue) {
@@ -35617,10 +35691,12 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
           </button>
         </span>`}
       </span>
-      ${portfolioOnly && !usePortfolio
-        ? (state.walletBalance.fullStatus === 'ready' || state.walletBalance.summaryStatus === 'ready'
-            ? `<div class="token-portfolio-empty">${escapeHtml(t('No tokens with a balance yet.'))}</div>`
-            : `<div class="token-portfolio-empty">${escapeHtml(t('Loading balances…'))}</div>`)
+      ${(portfolioOnly || (isInputTokenField(fieldDef.id) && presetMode)) && !usePortfolio
+        ? (!state.address
+            ? `<div class="token-portfolio-empty">${escapeHtml(t('Connect a wallet to pick from your tokens.'))}</div>`
+            : state.walletBalance.fullStatus === 'ready' || state.walletBalance.summaryStatus === 'ready'
+              ? `<div class="token-portfolio-empty">${escapeHtml(t('No tokens with a balance yet.'))}</div>`
+              : `<div class="token-portfolio-empty">${escapeHtml(t('Loading balances…'))}</div>`)
         : presetMode ? selectPicker({
         value: selectValue,
         options: listPickerOptions,
@@ -35654,7 +35730,7 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
 // search (MINT). Only the true output fields default to MINT — input AND price-watch fields (e.g.
 // triggerMint, which has a curated list) default to LIST.
 function isInputTokenField(fieldId: string): boolean {
-  return fieldId === 'token' || fieldId === 'inputToken' || fieldId === 'inputMint';
+  return fieldId === 'token' || fieldId === 'inputToken' || fieldId === 'inputMint' || fieldId === 'depositMint';
 }
 function isOutputTokenField(fieldId: string): boolean {
   return fieldId === 'outputToken' || fieldId === 'outputMint';
@@ -41850,9 +41926,17 @@ function bind(): void {
       const field = recurringTokenFieldFromDataset(button.dataset.recurringTokenField);
       state.recurringDraft = readRecurringDraft();
       const current = recurringDraftTokenFieldValue(state.recurringDraft, field) || RECURRING_TOKEN_OPTIONS[0]!;
+      // A dispose field's List is the portfolio, so keep a held-token pick when switching INTO List instead of
+      // snapping back to a curated default. Output token stays on the curated list.
+      const owned = mode === 'preset' && field !== 'outputToken' ? chatSnapshotAssets().filter((a) => a.amount > 0) : [];
+      const currentMint = (() => { const r = resolveChatToken(current); return 'error' in r ? '' : r.mint; })();
       const nextValue = mode === 'custom'
-        ? RECURRING_TOKEN_OPTIONS.includes(current) ? '' : current
-        : RECURRING_TOKEN_OPTIONS.includes(current) ? current : RECURRING_TOKEN_OPTIONS[0]!;
+        ? (RECURRING_TOKEN_OPTIONS.includes(current) ? '' : current)
+        : field === 'outputToken'
+          ? (RECURRING_TOKEN_OPTIONS.includes(current) ? current : RECURRING_TOKEN_OPTIONS[0]!)
+          : (currentMint && owned.some((a) => a.mint === currentMint))
+            ? currentMint
+            : (owned[0]?.mint ?? (RECURRING_TOKEN_OPTIONS.includes(current) ? current : RECURRING_TOKEN_OPTIONS[0]!));
       const nextMode: TokenInputMode = mode === 'custom' ? 'custom' : 'preset';
       state.recurringTokenModes[field] = nextMode;
       if (mode === 'custom') {
@@ -44572,25 +44656,27 @@ function positionTemplatePickerMenu(trigger: HTMLElement, menu: HTMLElement): vo
   const viewportWidth = viewport?.width ?? window.innerWidth;
   const viewportHeight = viewport?.height ?? window.innerHeight;
   const triggerRect = trigger.getBoundingClientRect();
-  const safeBottom = viewportTop + viewportHeight - 10;
-  const safeTop = viewportTop + 10;
+  // Bound the drop space to the scroll container (rail sheet body / desktop popover) when present, so the
+  // menu is sized to what's actually visible INSIDE it and never overflows into a scroll of the whole sheet.
+  const sheetBody = menu.closest<HTMLElement>('.mobile-rail-sheet-body, .chat-action-popover');
+  const sheetRect = sheetBody?.getBoundingClientRect();
+  const safeBottom = Math.min(viewportTop + viewportHeight - 10, sheetRect ? sheetRect.bottom - 8 : Number.POSITIVE_INFINITY);
+  const safeTop = Math.max(viewportTop + 10, sheetRect ? sheetRect.top + 8 : Number.NEGATIVE_INFINITY);
   const spaceBelow = Math.max(0, Math.floor(safeBottom - triggerRect.bottom - 8));
   const spaceAbove = Math.max(0, Math.floor(triggerRect.top - safeTop - 8));
   const placement = selectPickerPlacement(trigger, menu);
   const inBottomDock = Boolean(trigger.closest('[data-layout="android-bottom-tab-dock"]'));
+  // Open UPWARD when an auto down-drop can't reasonably fit below AND there's more room above — a near-bottom
+  // trigger then opens over the form above it instead of scrolling the whole sheet into view.
   const shouldDropUp = placement === 'down'
     ? false
-    : placement === 'up' || inBottomDock || (spaceBelow < 200 && spaceAbove > spaceBelow);
-  let usableSpace = shouldDropUp ? spaceAbove : spaceBelow;
-  // Constrain the menu to its scroll container (the rail sheet body or the desktop chat
-  // action popover) so it doesn't get clipped by the container's overflow.
-  const sheetBody = menu.closest<HTMLElement>('.mobile-rail-sheet-body, .chat-action-popover');
-  if (sheetBody && placement === 'down') {
-    const sheetRect = sheetBody.getBoundingClientRect();
-    usableSpace = Math.max(0, Math.floor(sheetRect.bottom - triggerRect.bottom - 8));
-  }
-  const compactSheetMenu = Boolean(sheetBody && placement === 'down');
-  const maxHeight = Math.min(compactSheetMenu ? 240 : 420, Math.max(compactSheetMenu ? 120 : 160, usableSpace));
+    : placement === 'up' || inBottomDock || (spaceBelow < 180 && spaceAbove > spaceBelow);
+  const usableSpace = shouldDropUp ? spaceAbove : spaceBelow;
+  // Cap to the available space in the chosen direction (no floor that would force it to overflow the sheet);
+  // longer lists scroll inside the menu (overflow-y:auto).
+  const maxHeight = sheetBody
+    ? Math.max(88, Math.min(320, usableSpace))
+    : Math.min(420, Math.max(160, usableSpace));
   menu.classList.toggle('drop-up', shouldDropUp);
   menu.style.setProperty('--template-menu-max-height', `${maxHeight}px`);
   menu.style.setProperty('--template-menu-max-width', `${Math.max(220, Math.floor(viewportWidth - 20))}px`);
@@ -44611,9 +44697,12 @@ function scrollForcedDownSelectPickerMenuIntoView(trigger: HTMLElement, menu: HT
   const sheetRect = sheetBody.getBoundingClientRect();
   const topOverflow = Math.ceil(sheetRect.top - triggerRect.top + 8);
   const bottomOverflow = Math.ceil(menuRect.bottom - sheetRect.bottom + 12);
-  if (topOverflow > 0) {
+  // positionTemplatePickerMenu now caps the menu to fit the sheet (and drops it up when short), so a
+  // down-menu normally fits — only nudge on a genuine overflow (e.g. a partially-scrolled-off trigger),
+  // never for the few-px fit slack, so opening a dropdown doesn't shove the whole sheet.
+  if (topOverflow > 8) {
     sheetBody.scrollTop -= topOverflow;
-  } else if (bottomOverflow > 0) {
+  } else if (bottomOverflow > 8) {
     sheetBody.scrollTop += bottomOverflow;
   }
 }
@@ -70204,7 +70293,13 @@ function recurringTokenSelectField(field: RecurringTokenField, label: string, va
           </button>
         </span>
       </span>
-      ${presetMode ? selectPicker({
+      ${field !== 'outputToken' && presetMode && !usePortfolio
+        ? (!state.address
+            ? `<div class="token-portfolio-empty">${escapeHtml(t('Connect a wallet to pick from your tokens.'))}</div>`
+            : state.walletBalance.fullStatus === 'ready' || state.walletBalance.summaryStatus === 'ready'
+              ? `<div class="token-portfolio-empty">${escapeHtml(t('No tokens with a balance yet.'))}</div>`
+              : `<div class="token-portfolio-empty">${escapeHtml(t('Loading balances…'))}</div>`)
+        : presetMode ? selectPicker({
         id,
         value: selectValue,
         attrs: { 'data-recurring-field': field },

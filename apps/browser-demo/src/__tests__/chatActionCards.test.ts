@@ -449,3 +449,90 @@ describe('DCA lifecycle: per-fill + completion Done receipts + live poll', () =>
     expect(mainSource).not.toContain('if (rows.length > 0) expireStaleSeededForSection(section, cluster);');
   });
 });
+
+describe('DCA sheet Swap-parity: token/amount controls, positioning, copy', () => {
+  it('routes the DCA spend token to the portfolio (never the curated fallback) and keeps the Mint toggle', () => {
+    const tokenField = sourceBetween('function tokenFieldInput', 'function isInputTokenField');
+    // DCA spend (inputMint) is now covered by the GENERALIZED dispose portfolio-lock (isInputTokenField),
+    // not a DCA-specific dcaSpend branch. spend/sell with no balances → empty state, NOT the curated list.
+    expect(tokenField).toContain('(portfolioOnly || (isInputTokenField(fieldDef.id) && presetMode)) && !usePortfolio');
+    expect(tokenField).not.toContain('const dcaSpend =');
+  });
+
+  it('merges owned balances + curated presets for the DCA buy/receive token (like Swap output)', () => {
+    const tokenField = sourceBetween('function tokenFieldInput', 'function isInputTokenField');
+    expect(tokenField).toContain("const dcaReceive = isJupiterDcaCreateTemplate() && fieldDef.id === 'outputMint'");
+    expect(tokenField).toContain('[...portfolio.map(ownedOption), ...dcaReceivePresets.map(curatedOption)]');
+  });
+
+  it('gives the DCA totalAmount the Swap amount control ($/token + balance + %)', () => {
+    // DCA's spend asset (inputMint) is now resolved via the DISPOSE map (jupiter_recurring_create_time_order),
+    // not a DCA template-id special-case.
+    const spend = sourceBetween('function plannerSpendTokenAsset', 'function isAmountControlField');
+    expect(spend).toContain('DISPOSE_SPEND_ASSET_FIELD[actionType]');
+    expect(mainSource).toContain("jupiter_recurring_create_time_order: 'inputMint'");
+    const amountGate = sourceBetween('function isAmountControlField', 'function amountControlFieldInput');
+    expect(amountGate).toContain("const isDcaTotal = fieldDef.id === 'totalAmount' && isJupiterDcaCreateTemplate()");
+    expect(amountGate).toContain('templateFieldValue(fieldDef.id)');
+    // DCA uses Swap's layout: balance on the right of the input
+    const amountInput = sourceBetween('function amountControlFieldInput', 'function tokenFieldInput');
+    expect(amountInput).toContain('if (isJupiterDcaCreateTemplate())');
+    expect(amountInput).toContain('<div class="chat-amount-field">${inputHtml}${balanceReadout}</div>');
+  });
+
+  it('sizes the sheet dropdown to fit + drops it up when short, so it never scrolls the whole sheet', () => {
+    const pos = sourceBetween('function positionTemplatePickerMenu', 'function selectPickerPlacement');
+    expect(pos).toContain('spaceBelow < 180 && spaceAbove > spaceBelow');
+    expect(pos).toContain('Math.max(88, Math.min(320, usableSpace))');
+    expect(pos).not.toContain('Math.max(compactSheetMenu ? 120');
+    const scroll = sourceBetween('function scrollForcedDownSelectPickerMenuIntoView', 'function setActiveTemplateOption');
+    expect(scroll).toContain('bottomOverflow > 8');
+    expect(scroll).not.toContain('} else if (bottomOverflow > 0) {');
+  });
+
+  it('DCA copy has no em-dash and is concise', () => {
+    expect(mainSource).toContain("t('Each fill posts a receipt to Done; cancel anytime from Positions.')");
+    expect(mainSource).not.toContain('Fills run automatically through Jupiter —');
+  });
+});
+
+describe('dispose token fields show wallet balances (List/Mint-toggle surfaces)', () => {
+  it('adds depositMint to the token-select + input-token sets (Prediction deposit token)', () => {
+    expect(mainSource).toContain("'token', 'inputToken', 'outputToken', 'inputMint', 'outputMint', 'triggerMint', 'depositMint'");
+    expect(mainSource).toContain("fieldId === 'inputMint' || fieldId === 'depositMint'");
+  });
+
+  it('portfolio-LOCKS every dispose toggle field (empty-state, no curated fallback)', () => {
+    // the gate keys off isInputTokenField, so swap/send/DCA/trigger/prediction all show the empty state (not
+    // the curated `options`) when balances are empty/loading; the old dcaSpend-only gate is gone.
+    expect(mainSource).toContain('(portfolioOnly || (isInputTokenField(fieldDef.id) && presetMode)) && !usePortfolio');
+    expect(mainSource).not.toContain('(portfolioOnly || (dcaSpend && presetMode)) && !usePortfolio');
+    expect(mainSource).toContain("t('Connect a wallet to pick from your tokens.')");
+  });
+
+  it('Repeat Payments dispose token is portfolio-locked and survives a List/Mint toggle', () => {
+    const recurring = sourceBetween('function recurringTokenSelectField', 'function recurringTokenSelect');
+    expect(recurring).toContain("field !== 'outputToken' && presetMode && !usePortfolio");
+    // the toggle handler keeps a held-token pick instead of resetting to RECURRING_TOKEN_OPTIONS[0]
+    expect(mainSource).toContain('currentMint && owned.some((a) => a.mint === currentMint)');
+  });
+
+  it('lend/deposit amount control resolves the spend asset only for DISPOSE actions', () => {
+    const map = sourceBetween('const DISPOSE_SPEND_ASSET_FIELD', 'function plannerFieldWalletAsset');
+    expect(map).toContain('jupiter_lend_earn_deposit');
+    expect(map).toContain('save_repay');
+    expect(map).toContain('marginfi_deposit');
+    // withdraw/borrow/redeem must NOT be in the dispose map (they never show a wallet balance)
+    expect(map).not.toContain('withdraw');
+    expect(map).not.toContain('borrow');
+    expect(map).not.toContain('redeem');
+    const spend = sourceBetween('function plannerSpendTokenAsset', 'function isAmountControlField');
+    expect(spend).toContain('DISPOSE_SPEND_ASSET_FIELD[actionType]');
+    expect(spend).toContain('plannerFieldWalletAsset');
+    // cascading picks resolve via the option meta (symbol/bank-addr aren't always a mint)
+    const resolver = sourceBetween('function plannerFieldWalletAsset', 'function plannerSpendTokenAsset');
+    expect(resolver).toContain('cascadingFieldCachedOption(fieldDef, raw)');
+    expect(resolver).toContain('option?.meta?.mint');
+    expect(resolver).toContain('option?.meta?.symbol');
+  });
+});
