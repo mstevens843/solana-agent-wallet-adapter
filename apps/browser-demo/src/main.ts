@@ -1506,6 +1506,10 @@ interface SelectPickerOption {
   metaSuffix?: string;
   detail?: string;
   logoId?: BrandLogoId;
+  // Pre-built raw HTML icon (e.g. a token-logo chip pair) shown before the label — used where a
+  // BrandLogoId can't express the icon (arbitrary token mints). Trusted HTML: build it from escaped
+  // helpers only (tokenLogoChipHtml).
+  iconHtml?: string;
   disabled?: boolean;
   hiddenFromMenu?: boolean;
   title?: string;
@@ -5013,6 +5017,7 @@ const SYSTEM_HEALTH_INTERVAL_MS = 30_000;
 let tokenMarketUnavailableUntil = 0;
 let tokenMarketHydrationScheduled = false;
 let tokenMarketHydrationInFlight = false;
+let borrowTermsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 const chatQuoteRefreshInFlight = new Set<string>();
 
 const appRoot = document.querySelector<HTMLDivElement>('#app');
@@ -10308,6 +10313,46 @@ function restoreMobileRailRenderSnapshot(snapshot: MobileRailRenderSnapshot | nu
   window.requestAnimationFrame(apply);
 }
 
+interface PlannerInputSnapshot {
+  focusSelector: string;
+  selectionStart: number | null;
+  selectionEnd: number | null;
+}
+
+// Preserve the focused connector-form input (id + caret) across the full innerHTML rebuild. The chat
+// surfaces morph (skipping the focused input) and the mobile-rail sheet has its own snapshot, but a
+// plain full render on the New Request tab otherwise drops the caret + dismisses the mobile keyboard
+// for any [data-template-field] input — which the live borrow health panel's debounced render() would
+// trigger mid-typing. Generalized so every connector form benefits, not just borrow.
+function capturePlannerInputSnapshot(): PlannerInputSnapshot | null {
+  if (typeof document === 'undefined') return null;
+  const active = document.activeElement;
+  if (!(active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement)) return null;
+  if (!active.hasAttribute('data-template-field') || !active.id) return null;
+  return {
+    focusSelector: `#${cssEscape(active.id)}`,
+    selectionStart: active.selectionStart,
+    selectionEnd: active.selectionEnd,
+  };
+}
+
+function restorePlannerInputSnapshot(snapshot: PlannerInputSnapshot | null): void {
+  if (!snapshot || typeof document === 'undefined') return;
+  // Inside a mobile-rail sheet the rail snapshot already owns focus restoration (with its own
+  // preventScroll + re-center suppression); don't double-focus.
+  if (state.activeMobileRailSheet) return;
+  const target = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(snapshot.focusSelector);
+  if (!target || !target.hasAttribute('data-template-field') || document.activeElement === target) return;
+  target.focus({ preventScroll: true });
+  if (
+    typeof snapshot.selectionStart === 'number' &&
+    typeof snapshot.selectionEnd === 'number' &&
+    typeof target.setSelectionRange === 'function'
+  ) {
+    target.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
+  }
+}
+
 async function withMobileSheetCleanupTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
   let timeoutId: number | undefined;
   try {
@@ -10631,6 +10676,7 @@ function render(): void {
   // popover) — before any markup, so New Request never renders the connector form's data.
   reconcileChatConnectorSession();
   const mobileRailSnapshot = captureMobileRailRenderSnapshot();
+  const plannerInputSnapshot = capturePlannerInputSnapshot();
   // Publish the connected wallet address to the shared dev-tab sinks BEFORE
   // pageContent() runs, so dev-tab guards (which fire inside pageContent's
   // tab-nav fan-out) see the current address synchronously. Both writes are
@@ -10717,6 +10763,7 @@ function render(): void {
   bindWalletSurfaceControls();
   restoreMobileRailRenderSnapshot(mobileRailSnapshot);
   restoreChatComposerAfterRender();
+  restorePlannerInputSnapshot(plannerInputSnapshot);
   mountPlanConnectorPairingPanel();
   mountConnectorKeysPanel({ container: 'connector-keys-panel', onChange: onConnectorKeysPanelChange });
   if (state.tauriNativeEnvironment.isTauriNative) {
@@ -19957,11 +20004,31 @@ function templatesForOutcomeFilter(filter = state.templateOutcomeFilter): AgentP
   return templates.filter((template) => templateOutcome(template) === filter);
 }
 
-// True when the active action category resolves to a single plan template (e.g. Swap, Send).
-// In that case the plan-template dropdown only ever offers one option, so on the native
-// apps we drop the whole picker block to reclaim vertical space.
+// The plan-template picker offers a real choice only when the SELECTED template's action has more
+// than one template. Derive the pool from the selected template's OWN action categories (not
+// state.createActionCategory) so the picker is correctly hidden even when no category is scoped —
+// the default New Request landing (lands on Swap) and connector manage/positions flows leave
+// createActionCategory empty, which would otherwise make templatesForOutcomeFilter() return a
+// grab-bag and keep the redundant dropdown. Single-option actions (Swap, Send, Jupiter
+// Lend/Limit/DCA/Prediction, Lulo, Phoenix limit, Pyth oracle, connector "Check", …) collapse;
+// multi-option ones (Kamino lend, Marginfi borrow, Raydium LP, Proof/Evidence, …) keep the picker.
+function templatesSharingSelectedAction(): AgentPlanTemplate[] {
+  const template = selectedTemplate();
+  const selectedConnector = selectedConnectorForCreate(template);
+  const pool = selectedConnector ? templatesForConnector(selectedConnector) : oneTimePlanTemplates();
+  const cats = templateActionCategories(template);
+  if (cats.size === 0) return pool.filter((tpl) => tpl.id === template.id);
+  return pool.filter((tpl) => {
+    const tcats = templateActionCategories(tpl);
+    for (const c of cats) if (tcats.has(c)) return true;
+    return false;
+  });
+}
+
+// True when the selected template is the only plan template for its action. In that case the
+// plan-template dropdown offers no real choice, so both render surfaces drop the whole picker block.
 function activeCategoryHasSingleTemplate(): boolean {
-  return templatesForOutcomeFilter().length <= 1;
+  return templatesSharingSelectedAction().length <= 1;
 }
 
 
@@ -21804,7 +21871,7 @@ const CHAT_SUGGESTED_PROMPTS: string[] = [
 const CHAT_POWER_ACTIONS: Array<{ id: string; eyebrow: string; title: string; description: string; template: string }> = [
   { id: 'swap', eyebrow: 'Trading', title: 'Swap Tokens', description: 'Prepare a DeFi swap with input, output, amount, and slippage.', template: 'Swap [0.1] SOL to USDC' },
   { id: 'send', eyebrow: 'Payments', title: 'Send Tokens', description: 'Prepare a token payment with recipient, amount, and memo.', template: 'Send [amount] SOL to [recipient address]' },
-  { id: 'recurring', eyebrow: 'Automation', title: 'Recurring / DCA', description: 'Set up a recurring payment or DCA swap. Each run returns to Sign Approval.', template: '' },
+  { id: 'recurring', eyebrow: 'Automation', title: 'Recurring', description: 'Set up a recurring payment or scheduled swap. Each run returns to Sign Approval.', template: '' },
   { id: 'sign', eyebrow: 'Proof', title: 'Sign Proof', description: 'Sign a message to create a verifiable proof receipt. No transaction.', template: 'Sign a proof that [statement to attest]' },
 ];
 
@@ -21822,6 +21889,7 @@ function visibleActionCategory(category: ActionCategory): boolean {
 const CHAT_ADVANCED_ACTIONS: Array<{ id: ActionCategory; eyebrow: string; title: string; description: string }> = [
   { id: 'lend', eyebrow: 'Earn', title: 'Lend', description: 'Earn yield on a connected lending protocol.' },
   { id: 'limit', eyebrow: 'Trading', title: 'Limit / TP-SL', description: 'Set a limit order or take-profit / stop-loss.' },
+  { id: 'dca', eyebrow: 'Trading', title: 'DCA', description: 'Dollar-cost average into a token on a set schedule.' },
   { id: 'borrow', eyebrow: 'Borrow', title: 'Borrow', description: 'Borrow against collateral on a lending protocol.' },
   { id: 'lp', eyebrow: 'Liquidity', title: 'Liquidity', description: 'Provide or manage liquidity in a connected pool.' },
   { id: 'stake', eyebrow: 'Earn', title: 'Stake', description: 'Stake SOL or LSTs on a connected protocol.' },
@@ -21868,6 +21936,8 @@ function chatActionIcon(id: string): string {
     ? '<polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>'
     : id === 'sign'
     ? '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/>'
+    : id === 'dca'
+    ? '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2"/><path d="M5 3 2 6"/><path d="M22 6l-3-3"/>'
     : '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>';
   return `<svg class="chat-plus-option-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${inner}</svg>`;
 }
@@ -23681,17 +23751,20 @@ function chatConnectorSurfaceBodyHtml(): string {
         ${connectorPicker}
       </div>
       ${selectedConnectGate}
+      ${activeCategoryHasSingleTemplate() ? '' : `
       <div class="field compact planner-field">
         <span>${escapeHtml(t('Plan template'))}</span>
         ${templatePicker(template)}
-      </div>
+      </div>`}
+      ${template.id === 'connector-jupiter-trigger-limit-orders' ? '' : `
       <div class="chat-connector-template-meta">
         <strong class="template-outcome-badge ${escapeHtml(outcomeClass(outcome))}">${escapeHtml(outcomeShortLabel(outcome))}</strong>
         <p class="template-description">${escapeHtml(t(template.description))}</p>
-      </div>
-      <div class="chat-sheet-fields mobile-planner-fields">
+      </div>`}
+      <div class="chat-sheet-fields mobile-planner-fields" data-template-id="${escapeHtml(template.id)}">
         ${plannerFieldsHtml(template)}
       </div>
+      ${dcaAutomationNoteHtml()}
       <div class="chat-sheet-confirm">
         <button type="button" class="primary" data-chat-connector-confirm ${selectedNeedsConnect ? 'disabled' : ''}>${escapeHtml(t('Confirm'))}</button>
       </div>
@@ -23841,6 +23914,11 @@ function reconcileChatConnectorSession(): void {
 // Readable label from the plan's already-resolved picker answers. Drops the raw-mint rows
 // readableParameters() adds (label ends "mint") + any pure base58 value, so no id leaks.
 function compileConnectorDraftToMessage(plan: AgentPlan, opts: { amountPlaceholder?: boolean } = {}): string {
+  // DCA reads as a sentence ("DCA 100 USDC to SOL") rather than the generic "title · amount", mirroring
+  // Swap's composer grammar so the bracket fills in as the spend token/amount/receive token are picked.
+  if (plan.actionType === 'jupiter_recurring_create_time_order') {
+    return compileDcaConnectorMessage(plan, opts);
+  }
   // Reuse the approval CARD's OWN summary primitives — they are concise, deduped, per-protocol,
   // scoped to the SELECTED sub-action, and localized. (The old plan.fields join emitted a row per
   // flattened sub-action field — dupes + irrelevant repay/withdraw rows — because readableParameters
@@ -23858,6 +23936,21 @@ function compileConnectorDraftToMessage(plan: AgentPlan, opts: { amountPlacehold
   // Confirm every required field is filled, so callers pass no placeholder and there are none.
   if (amount) segments.push(amount);
   else if (opts.amountPlaceholder) segments.push('[amount]');
+  if (note) segments.push(`note: ${note}`);
+  return segments.join(' · ');
+}
+
+// DCA-specific composer/held label: "DCA 100 USDC to SOL" (or "DCA [amount] USDC to SOL" while the total
+// is unfilled during the live preview). Mirrors Swap's grammar so the bracket fills in as the spend
+// amount is entered; the full schedule (orders/interval) rides on the approval card, not the composer.
+function compileDcaConnectorMessage(plan: AgentPlan, opts: { amountPlaceholder?: boolean }): string {
+  const from = tokenDisplayLabel(planParameter(plan, ['inputMint']) || '') || t('token');
+  const to = tokenDisplayLabel(planParameter(plan, ['outputMint']) || '') || t('token');
+  const total = planParameter(plan, ['totalAmount']).trim();
+  const amountText = total || (opts.amountPlaceholder ? '[amount]' : '');
+  const spend = amountText ? `${amountText} ${from}` : from;
+  const note = (plan.parameters.memo || plan.parameters.note || plan.userNotes || '').trim();
+  const segments = [tf('DCA {spend} to {to}', { spend, to })];
   if (note) segments.push(`note: ${note}`);
   return segments.join(' · ');
 }
@@ -24122,7 +24215,7 @@ function chatRecurringPopoverHtml(): string {
   return `
     <div class="chat-action-popover chat-recurring-popover" data-chat-recurring-popover>
       <div class="chat-popover-head">
-        <span class="chat-builder-eyebrow">${escapeHtml(t('Recurring / DCA'))}</span>
+        <span class="chat-builder-eyebrow">${escapeHtml(t('Recurring'))}</span>
         <button type="button" class="chat-builder-clear" data-chat-recurring-popover-close aria-label="${escapeHtml(t('Close'))}" title="${escapeHtml(t('Close'))}">&times;</button>
       </div>
       ${chatRecurringSurfaceBodyHtml()}
@@ -24311,7 +24404,7 @@ function chatProofSheetHtml(): string {
 
 // Bottom-sheet header strings + body for the chat-action sheet (native mobile).
 function chatActionSheetTitle(): string {
-  if (state.chatRecurringSession?.active) return t('Recurring / DCA');
+  if (state.chatRecurringSession?.active) return t('Recurring');
   if (state.chatConnectorSession?.active) return chatConnectorSurfaceTitle();
   const kind = state.chatActionBuilder?.kind;
   if (kind === 'swap') return t('Swap tokens');
@@ -24320,7 +24413,7 @@ function chatActionSheetTitle(): string {
   return t('Wallet Actions');
 }
 function chatActionSheetDetail(): string {
-  if (state.chatRecurringSession?.active) return t('Set up a recurring payment or DCA swap');
+  if (state.chatRecurringSession?.active) return t('Set up a recurring payment or scheduled swap');
   if (state.chatConnectorSession?.active) return t('Prepare a protocol action');
   const kind = state.chatActionBuilder?.kind;
   if (kind === 'swap') return t('Set up swap');
@@ -30817,6 +30910,8 @@ function generatedPlanErrorNotice(message: string): string {
 }
 
 function generatedPlanReviewTitle(record: GeneratedPlanRecord): string {
+  // DCA: clean title (the generic connector title leaks a truncated inputMint base58 — see preparedActionCardTitle).
+  if (record.plan.actionType === 'jupiter_recurring_create_time_order') return t('DCA order');
   const connectorDisplay = CONNECTOR_APPROVAL_ACTION_TYPES.has(record.plan.actionType)
     ? connectorActionDisplayParts(record.plan.actionType, record.plan.parameters)
     : undefined;
@@ -31046,6 +31141,20 @@ function reviewPlanMetric(plan: AgentPlan): { primary: string; secondary: string
       secondary: planRecipientOrRoute(plan),
     };
   }
+  if (plan.actionType === 'jupiter_recurring_create_time_order') {
+    // DCA: amount + resolved "IN → OUT" route + schedule — instead of the generic connector title, which
+    // for DCA leaks a truncated inputMint base58 via connectorActionDisplayParts' selectionLabel.
+    const amount = planAmountSummary(plan);
+    const route = tokenRouteDisplaySummary(
+      planParameter(plan, ['inputMint']) || 'input',
+      planParameter(plan, ['outputMint']) || 'output',
+    ).value;
+    const schedule = dcaPlanScheduleSummary(plan);
+    return {
+      primary: amount === 'n/a' ? t('DCA order') : amount,
+      secondary: compactSentence([route, schedule].filter(Boolean).join(' · '), 56),
+    };
+  }
   if (CONNECTOR_APPROVAL_ACTION_TYPES.has(plan.actionType)) {
     const amount = planAmountSummary(plan);
     const connectorDisplay = connectorActionDisplayParts(plan.actionType, plan.parameters);
@@ -31071,7 +31180,11 @@ function generatedPlanReviewSummaryGrid(record: GeneratedPlanRecord): string {
   const plan = record.plan;
   const routeSummary = plan.actionType === 'swap'
     ? tokenRouteDisplaySummary(plan.parameters.inputToken || 'input', plan.parameters.outputToken || 'output')
-    : undefined;
+    : plan.actionType === 'jupiter_recurring_create_time_order'
+      // DCA: resolve the spend→receive route to symbols so the Route row shows "USDC → SOL" instead of the
+      // truncated inputMint base58 planRecipientOrRoute would otherwise fall back to.
+      ? tokenRouteDisplaySummary(planParameter(plan, ['inputMint']) || 'input', planParameter(plan, ['outputMint']) || 'output')
+      : undefined;
   const amountCopyActions = plan.actionType === 'swap'
     ? undefined
     : planAmountTokenCopyActions(plan);
@@ -32139,6 +32252,7 @@ function connectorPlanAmountInfo(plan: AgentPlan): ConnectorActionAmountInfo | u
   const amount = planParameter(plan, [
     'amount',
     'inputAmount',
+    'totalAmount',
     'plannedAmount',
     'maxAmount',
     'collateralAmount',
@@ -32922,7 +33036,11 @@ function agentPlannerWorkbench(): string {
   // so the mid-page description is always dropped on native. When the category resolves to a
   // single template (Swap, Send) the picker offers no real choice either, so the whole block goes.
   const nativeShell = isNativeAppShellSurface();
-  const hideTemplateBlock = nativeShell && activeCategoryHasSingleTemplate();
+  // When the selected template is the only one for its action (Swap, Send, Jupiter Lend/Limit/DCA,
+  // Lulo, Phoenix limit, Pyth oracle, a connector "Check", …) the "Plan template" picker + description
+  // offer no real choice, so the whole block goes on every shell — activeCategoryHasSingleTemplate()
+  // now derives that from the selected template's own action, so it holds even with no active category.
+  const hideTemplateBlock = activeCategoryHasSingleTemplate();
   const showTemplateDescription = !nativeShell;
   return `
     <div class="agent-planner-grid planner-single-column">
@@ -32945,9 +33063,10 @@ function agentPlannerWorkbench(): string {
           ${showTemplateDescription ? `<p class="template-description">${escapeHtml(t(template.description))}</p>` : ''}
         </div>`}
         <div class="planner-form-body">
-          <div class="planner-fields ${isMobileAppViewport() ? 'mobile-planner-fields' : ''}">
+          <div class="planner-fields ${isMobileAppViewport() ? 'mobile-planner-fields' : ''}" data-template-id="${escapeHtml(template.id)}">
             ${plannerFieldsHtml(template)}
           </div>
+          ${dcaAutomationNoteHtml()}
           <label class="intent-document planner-prompt">
             <span class="field-label-row">
               <span class="field-label-text">${notesLabel}${notesRequired ? ' *' : ''}</span>
@@ -33636,7 +33755,7 @@ function plannerFieldsHtml(template: AgentPlanTemplate): string {
     : mobilePlannerFieldRows(template, fields);
   // The borrow "open a loan" flow appends a live loan-terms estimate below its fields; every other form
   // gets '' (the panel gates itself on subAction === 'borrow-create' with all amounts present).
-  return `${body}${borrowTermsPanelHtml()}`;
+  return `${body}${borrowTermsPanelHtml()}${triggerReadoutPanelHtml()}`;
 }
 
 // ---- Jupiter Borrow loan-terms estimate (create-form panel) ------------------------------------
@@ -33646,6 +33765,8 @@ function plannerFieldsHtml(template: AgentPlanTemplate): string {
 interface BorrowTermsPreview {
   healthText?: string;
   liquidationStatus?: string;
+  projectedLtvBps?: number;
+  maxLtvBps?: number;
   projectedLtvPct?: number;
   maxLtvPct?: number;
   blocked: boolean;
@@ -33653,6 +33774,7 @@ interface BorrowTermsPreview {
 }
 interface BorrowTermsEntry { loading: boolean; fetchedAt: number; data?: BorrowTermsPreview; error?: string }
 const borrowTermsCache = new Map<string, BorrowTermsEntry>();
+const BORROW_MAX_SAFE_PROBE_DEBT = '10';
 
 function extractBorrowTermsPreview(raw: Record<string, unknown>): BorrowTermsPreview | undefined {
   const preview = asRecord(raw.preview);
@@ -33666,6 +33788,8 @@ function extractBorrowTermsPreview(raw: Record<string, unknown>): BorrowTermsPre
   return {
     ...(after && typeof after.healthRatioText === 'string' ? { healthText: after.healthRatioText } : {}),
     ...(after && typeof after.liquidationStatus === 'string' ? { liquidationStatus: after.liquidationStatus } : {}),
+    ...(projectedLtvBps !== undefined ? { projectedLtvBps } : {}),
+    ...(maxLtvBps !== undefined ? { maxLtvBps } : {}),
     ...(projectedLtvBps !== undefined ? { projectedLtvPct: projectedLtvBps / 100 } : {}),
     ...(maxLtvBps !== undefined ? { maxLtvPct: maxLtvBps / 100 } : {}),
     blocked: preview.blocked === true,
@@ -33673,7 +33797,20 @@ function extractBorrowTermsPreview(raw: Record<string, unknown>): BorrowTermsPre
   };
 }
 
-async function requestBorrowTerms(sig: string, params: { vaultId: number; collateralDelta: string; debtDelta: string }): Promise<void> {
+// Debounced re-render so the live borrow health panel re-evaluates its amount-gate + re-fetches as
+// the user types collateral/borrow. Plain-input keystrokes never trigger render() on their own;
+// debouncing avoids a full New Request rebuild per keystroke, and the planner-input focus snapshot
+// keeps the caret + mobile keyboard across the render.
+function scheduleBorrowTermsRefresh(): void {
+  if (borrowTermsRefreshTimer !== null) clearTimeout(borrowTermsRefreshTimer);
+  borrowTermsRefreshTimer = setTimeout(() => {
+    borrowTermsRefreshTimer = null;
+    if (typeof document !== 'undefined' && document.querySelector('.select-picker.open')) return;
+    render();
+  }, 350);
+}
+
+async function requestBorrowTerms(sig: string, params: { vaultId: number; collateralDelta: string; debtDelta: string; minHealthRatio?: number }): Promise<void> {
   const existing = borrowTermsCache.get(sig);
   if (existing?.loading) return;
   borrowTermsCache.set(sig, { loading: true, fetchedAt: Date.now(), ...(existing?.data ? { data: existing.data } : {}) });
@@ -33682,6 +33819,7 @@ async function requestBorrowTerms(sig: string, params: { vaultId: number; collat
       vaultId: params.vaultId,
       collateralDelta: params.collateralDelta,
       debtDelta: params.debtDelta,
+      ...(params.minHealthRatio !== undefined ? { minHealthRatio: params.minHealthRatio } : {}),
     });
     const data = raw ? extractBorrowTermsPreview(raw) : undefined;
     borrowTermsCache.set(sig, { loading: false, fetchedAt: Date.now(), ...(data ? { data } : {}) });
@@ -33700,18 +33838,94 @@ function borrowTermsTile(label: string, value: string, tone?: 'good' | 'warn' | 
   return `<div class="borrow-terms-tile${tone ? ' tone-' + tone : ''}"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`;
 }
 
-function borrowTermsPanelHtml(): string {
+function borrowPreviewMaxSafeAmount(data: BorrowTermsPreview | undefined, debtDelta: string): number | undefined {
+  const debt = Number(debtDelta);
+  if (!data || !(debt > 0) || !(data.projectedLtvBps && data.projectedLtvBps > 0) || !(data.maxLtvBps && data.maxLtvBps > 0)) {
+    return undefined;
+  }
+  return debt * data.maxLtvBps / data.projectedLtvBps;
+}
+
+function formatBorrowTokenAmount(amount: number, symbol?: string): string {
+  if (!Number.isFinite(amount) || amount <= 0) return '';
+  const display = formatChatCompactAmount(amount);
+  return symbol ? `${display} ${symbol}` : display;
+}
+
+function borrowLiquidationDropText(data: BorrowTermsPreview | undefined, liquidationThresholdBps: number | undefined, collateralSymbol: string): { value: string; tone?: 'warn' | 'bad' } | undefined {
+  if (!data?.projectedLtvBps || !liquidationThresholdBps || liquidationThresholdBps <= 0) return undefined;
+  const drop = 1 - data.projectedLtvBps / liquidationThresholdBps;
+  if (!Number.isFinite(drop)) return undefined;
+  if (drop <= 0) return { value: t('At liquidation threshold'), tone: 'bad' };
+  const pct = Math.max(0, drop * 100);
+  const label = collateralSymbol || t('collateral');
+  return {
+    value: tf('Liquidated if {symbol} falls ~{pct}%', { symbol: label, pct: pct.toFixed(pct >= 10 ? 0 : 1) }),
+    tone: pct < 10 ? 'warn' : undefined,
+  };
+}
+
+function borrowVaultDisplayContext(): { option?: ConnectorOption; collateralSymbol: string; borrowSymbol: string; liquidationThresholdBps?: number; borrowDecimals: number } {
+  const option = selectedBorrowVaultOption();
+  const collateralSymbol = borrowFieldSymbol(option?.meta?.symbol, option?.meta?.supplyMint) ?? '';
+  const borrowSymbol = borrowFieldSymbol(option?.meta?.borrowSymbol, option?.meta?.borrowMint) ?? '';
+  return {
+    option,
+    collateralSymbol,
+    borrowSymbol,
+    ...(option?.meta?.liquidationThresholdBps !== undefined ? { liquidationThresholdBps: option.meta.liquidationThresholdBps } : {}),
+    borrowDecimals: option?.meta?.borrowDecimals ?? 6,
+  };
+}
+
+function currentBorrowTermsInput(): { vaultRaw: string; vaultId: number; collateral: string; borrow: string; minHealthRatio: number } | undefined {
   const f = state.templateFields;
-  if (f.subAction !== 'borrow-create') return '';
+  if (selectedTemplate().id !== 'connector-jupiter-lend' || f.subAction !== 'borrow-create') return undefined;
   const vaultRaw = (f.vaultId ?? '').trim();
   const collateral = (f.collateralAmount ?? '').trim();
   const borrow = (f.borrowAmount ?? '').trim();
   const vaultId = Number(vaultRaw);
-  if (!vaultRaw || !Number.isFinite(vaultId) || !collateral || !borrow) return '';
-  if (!(Number(collateral) > 0) || !(Number(borrow) > 0)) return '';
-  const sig = `${vaultRaw}|${collateral}|${borrow}`;
+  if (!vaultRaw || !Number.isFinite(vaultId) || !collateral || !(Number(collateral) > 0)) return undefined;
+  return { vaultRaw, vaultId, collateral, borrow, minHealthRatio: borrowRiskMinHealthRatio() };
+}
+
+function borrowTermsCacheKey(input: { vaultRaw: string; collateral: string; borrow: string; minHealthRatio: number }, prefix = 'borrow'): string {
+  return `${prefix}|${input.vaultRaw}|${input.collateral}|${input.borrow}|${input.minHealthRatio}`;
+}
+
+function currentBorrowMaxSafeEstimate(options: { requestProbe?: boolean } = {}): { amount: number; sourceDebt: string; entry: BorrowTermsEntry } | undefined {
+  const input = currentBorrowTermsInput();
+  if (!input || !state.address) return undefined;
+  const requestProbe = options.requestProbe ?? true;
+  const currentBorrow = Number(input.borrow);
+  if (currentBorrow > 0) {
+    const entry = borrowTermsCache.get(borrowTermsCacheKey(input));
+    const amount = borrowPreviewMaxSafeAmount(entry?.data, input.borrow);
+    if (amount !== undefined && entry) return { amount, sourceDebt: input.borrow, entry };
+  }
+  const probeInput = { ...input, borrow: BORROW_MAX_SAFE_PROBE_DEBT };
+  const probeSig = borrowTermsCacheKey(probeInput, 'probe');
+  const probeEntry = borrowTermsCache.get(probeSig);
+  if (!probeEntry && requestProbe) {
+    void requestBorrowTerms(probeSig, {
+      vaultId: input.vaultId,
+      collateralDelta: input.collateral,
+      debtDelta: BORROW_MAX_SAFE_PROBE_DEBT,
+      minHealthRatio: input.minHealthRatio,
+    });
+  }
+  const amount = borrowPreviewMaxSafeAmount(probeEntry?.data, BORROW_MAX_SAFE_PROBE_DEBT);
+  if (amount !== undefined && probeEntry) return { amount, sourceDebt: BORROW_MAX_SAFE_PROBE_DEBT, entry: probeEntry };
+  return undefined;
+}
+
+function borrowTermsPanelHtml(): string {
+  const input = currentBorrowTermsInput();
+  if (!input?.borrow) return '';
+  if (!(Number(input.borrow) > 0)) return '';
+  const sig = borrowTermsCacheKey(input);
   const entry = borrowTermsCache.get(sig);
-  if (!entry) void requestBorrowTerms(sig, { vaultId, collateralDelta: collateral, debtDelta: borrow });
+  if (!entry) void requestBorrowTerms(sig, { vaultId: input.vaultId, collateralDelta: input.collateral, debtDelta: input.borrow, minHealthRatio: input.minHealthRatio });
   const badge = `<span class="borrow-terms-badge">${escapeHtml(t('Estimate — verifying'))}</span>`;
   const head = `<div class="borrow-terms-head"><strong>${escapeHtml(t('Loan terms'))}</strong>${badge}</div>`;
   if (!entry || entry.loading) {
@@ -33723,11 +33937,54 @@ function borrowTermsPanelHtml(): string {
   if (data.healthText) tiles.push(borrowTermsTile(t('Projected health'), data.healthText, borrowTermsTone(data.liquidationStatus)));
   if (data.projectedLtvPct !== undefined) tiles.push(borrowTermsTile(t('Projected LTV'), `${data.projectedLtvPct.toFixed(1)}%`));
   if (data.maxLtvPct !== undefined) tiles.push(borrowTermsTile(t('Max LTV'), `${data.maxLtvPct.toFixed(1)}%`));
+  const vault = borrowVaultDisplayContext();
+  const maxSafe = borrowPreviewMaxSafeAmount(data, input.borrow);
+  if (maxSafe !== undefined) tiles.push(borrowTermsTile(t('Max-safe borrow'), `Max ~${formatBorrowTokenAmount(maxSafe, vault.borrowSymbol)}`));
+  const drop = borrowLiquidationDropText(data, vault.liquidationThresholdBps, vault.collateralSymbol);
+  if (drop) tiles.push(borrowTermsTile(t('Liquidation drop'), drop.value, drop.tone));
   if (!tiles.length) return '';
   const warn = data.blocked && data.warnings.length
     ? `<ul class="borrow-terms-warnings">${data.warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join('')}</ul>`
     : '';
   return `<div class="borrow-terms-estimate${data.blocked ? ' is-blocked' : ''}">${head}<div class="borrow-terms-grid">${tiles.join('')}</div>${warn}</div>`;
+}
+
+// Risk preset -> the health-preview's minHealthRatio. Presets sit at or above Jupiter's default
+// borrow guard (~1.25); operator deployments may raise that guard further. Safe warns earliest;
+// Max only warns near the vault's own limit.
+function borrowRiskMinHealthRatio(): number {
+  switch ((state.templateFields.borrowRisk ?? 'Balanced').trim()) {
+    case 'Safe': return 1.6;
+    case 'Max': return 1.25;
+    default: return 1.4; // Balanced
+  }
+}
+
+// Dynamic labels for the Jupiter borrow-create amount fields: once a vault is picked, the collateral
+// and borrow inputs name the vault's actual tokens ("Deposit as collateral (SOL)" / "Borrow (USDC)")
+// so it's unambiguous what goes in and what comes out. Falls back to generic labels pre-selection.
+function jupiterBorrowRuntimeLabel(fieldId: string): string | undefined {
+  if (fieldId !== 'collateralAmount' && fieldId !== 'borrowAmount') return undefined;
+  const template = selectedTemplate();
+  if (template.id !== 'connector-jupiter-lend') return undefined;
+  const option = selectedBorrowVaultOption();
+  if (fieldId === 'collateralAmount') {
+    const supply = borrowFieldSymbol(option?.meta?.symbol, option?.meta?.supplyMint);
+    return supply ? tf('Deposit as collateral ({symbol})', { symbol: supply }) : t('Deposit as collateral');
+  }
+  const borrow = borrowFieldSymbol(option?.meta?.borrowSymbol, option?.meta?.borrowMint);
+  return borrow ? tf('Borrow ({symbol})', { symbol: borrow }) : t('Borrow');
+}
+
+// A vault token symbol for a label: prefer the provider's meta symbol, else resolve the mint via the
+// app token registry (once hydrated). Never returns a truncated "nMzV…dnb1" placeholder as a symbol.
+function borrowFieldSymbol(metaSymbol: string | undefined, mint: string | undefined): string | undefined {
+  const direct = metaSymbol?.trim();
+  if (direct) return direct;
+  if (!mint) return undefined;
+  const resolved = tokenDisplayLabel(mint).trim();
+  if (!resolved || resolved === mint || resolved.includes('…')) return undefined;
+  return resolved;
 }
 
 function mobilePlannerFieldRows(template: AgentPlanTemplate, fields: RenderedPlannerField[]): string {
@@ -33786,11 +34043,23 @@ function mobilePreferredFieldOrder(templateId: string): string[] {
   if (templateId === 'send-tokens') return ['token', 'amount', 'recipient', 'memo'];
   if (templateId === 'dca') return ['token', 'amount', 'cadence', 'recipient', 'memo'];
   if (templateId === 'subscription') return ['token', 'amount', 'cadence', 'recipient', 'memo'];
+  // Jupiter limit/TP-SL (superset across the Buy/Sell/Auto-entry tabs): spend + receive pair on one row,
+  // then amount, then the price pair for that tab, then slippage/expiry, then reason.
+  if (templateId === 'connector-jupiter-trigger-limit-orders') {
+    return ['subAction', 'inputMint', 'outputMint', 'amount',
+      'triggerCondition', 'triggerPriceUsd', 'entryCondition', 'entryPriceUsd',
+      'takeProfitPriceUsd', 'stopLossPriceUsd', 'slippageBps', 'expiresAt', 'memo'];
+  }
   return [];
 }
 
 function mobilePlannerFieldWidth(fieldDef: AgentPlanTemplateField): MobilePlannerFieldWidth {
   const id = fieldDef.id.toLowerCase();
+  // The Buy/Sell/Auto-entry tab bar spans the full width (grid-column 1/-1), so it must own its row —
+  // otherwise greedy pairing would pack it next to the first token field and the tab bar would overlap
+  // it. Scoped to the trigger form so other connector forms' sub-action dropdowns keep their layout.
+  if (fieldDef.id === 'subAction' && selectedTemplate().id === 'connector-jupiter-trigger-limit-orders') return 'full';
+  if (selectedTemplate().id === 'connector-jupiter-lend' && (fieldDef.id === 'collateralAmount' || fieldDef.id === 'borrowAmount')) return 'full';
   if (fieldDef.type === 'textarea' || fieldDef.id === 'policy') return 'full';
   if (fieldDef.type === 'cascading-select' || fieldDef.cascading) return 'full';
   if (fieldDef.id === 'protocol' || fieldDef.id === 'operation') return 'full';
@@ -33848,6 +34117,124 @@ function mobileTemplateFieldDisplayLabel(
   }
   if (isSlippageBpsField(fieldDef.id)) return t('Slippage');
   return fallback;
+}
+
+function borrowRiskOptionCaption(option: string): string {
+  switch (option) {
+    case 'Safe': return t('Largest cushion');
+    case 'Max': return t('Near vault limit');
+    default: return t('Middle cushion');
+  }
+}
+
+function borrowRiskSegmentedFieldInput(fieldDef: AgentPlanTemplateField, value: string, label: string, error: string): string {
+  const current = value || fieldDef.defaultValue || 'Balanced';
+  const options = fieldDef.options?.length ? fieldDef.options : ['Safe', 'Balanced', 'Max'];
+  const disabled = state.busy ? 'disabled' : '';
+  const chips = options.map((option) => {
+    const active = option === current;
+    const caption = borrowRiskOptionCaption(option);
+    return `
+      <button
+        type="button"
+        class="borrow-risk-chip ${active ? 'active' : ''}"
+        data-template-field-choice="${escapeHtml(fieldDef.id)}"
+        data-template-field-value="${escapeHtml(option)}"
+        aria-pressed="${active ? 'true' : 'false'}"
+        aria-label="${escapeHtml(`${t(option)}. ${caption}`)}"
+        title="${escapeHtml(caption)}"
+        ${disabled}
+      >
+        <strong>${escapeHtml(t(option))}</strong>
+        <em>${escapeHtml(caption)}</em>
+      </button>
+    `;
+  }).join('');
+  return `
+    <div class="field compact planner-field borrow-risk-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
+      <span>${escapeHtml(label)}</span>
+      <div class="borrow-risk-segments" role="group" aria-label="${escapeHtml(label)}">
+        ${chips}
+      </div>
+      ${templateFieldHelper(fieldDef)}
+      ${error}
+    </div>
+  `;
+}
+
+function borrowRiskSizingFraction(value: string): number {
+  switch (value.trim()) {
+    case 'Safe': return 0.4;
+    case 'Max': return 0.9;
+    default: return 0.6;
+  }
+}
+
+function applyBorrowMaxSafeFraction(fraction: number): boolean {
+  const bounded = Math.max(0, Math.min(1, fraction));
+  if (!(bounded > 0)) return false;
+  const estimate = currentBorrowMaxSafeEstimate({ requestProbe: false });
+  if (!estimate || !(estimate.amount > 0)) return false;
+  const { borrowDecimals } = borrowVaultDisplayContext();
+  state.templateFields.borrowAmount = trimChatAmount(estimate.amount * bounded, borrowDecimals);
+  delete state.templateFieldErrors.borrowAmount;
+  state.agentPlan = null;
+  state.agentSignature = '';
+  state.agentPreparedActionId = '';
+  return true;
+}
+
+function applyBorrowRiskPresetAmount(value: string): void {
+  if (selectedTemplate().id !== 'connector-jupiter-lend' || state.templateFields.subAction !== 'borrow-create') return;
+  applyBorrowMaxSafeFraction(borrowRiskSizingFraction(value));
+}
+
+function borrowAmountSizerHtml(): string {
+  if (selectedTemplate().id !== 'connector-jupiter-lend' || state.templateFields.subAction !== 'borrow-create') return '';
+  const input = currentBorrowTermsInput();
+  if (!input || !state.address) return '';
+  const estimate = currentBorrowMaxSafeEstimate();
+  if (!estimate || !(estimate.amount > 0)) {
+    return `<div class="borrow-amount-sizer is-loading"><span>${escapeHtml(t('Estimating max-safe borrow…'))}</span></div>`;
+  }
+  const { borrowSymbol } = borrowVaultDisplayContext();
+  const currentBorrow = Number(input.borrow);
+  const pct = Number.isFinite(currentBorrow) && currentBorrow > 0
+    ? Math.max(0, Math.min(100, (currentBorrow / estimate.amount) * 100))
+    : 0;
+  const pctLabel = pct > 0 ? tf('{pct}% of max-safe', { pct: pct.toFixed(0) }) : t('Choose an amount');
+  const chip = (fraction: number, label: string): string => {
+    const active = Math.abs(pct - fraction * 100) < 1;
+    return `
+      <button
+        type="button"
+        class="borrow-amount-chip ${active ? 'active' : ''}"
+        data-borrow-amount-fraction="${escapeHtml(String(fraction))}"
+        aria-pressed="${active ? 'true' : 'false'}"
+      >${escapeHtml(label)}</button>
+    `;
+  };
+  return `
+    <div class="borrow-amount-sizer">
+      <div class="borrow-amount-sizer-head">
+        <strong>${escapeHtml(tf('Max-safe {amount}', { amount: formatBorrowTokenAmount(estimate.amount, borrowSymbol) }))}</strong>
+        <span>${escapeHtml(pctLabel)}</span>
+      </div>
+      <div class="borrow-amount-chip-row" role="group" aria-label="${escapeHtml(t('Borrow amount presets'))}">
+        ${chip(0.25, '25%')}${chip(0.5, '50%')}${chip(0.75, '75%')}${chip(1, t('Max'))}
+      </div>
+      <input
+        class="borrow-amount-slider"
+        type="range"
+        min="0"
+        max="100"
+        step="1"
+        value="${escapeHtml(pct.toFixed(0))}"
+        data-borrow-amount-slider
+        aria-label="${escapeHtml(t('Borrow amount as percent of max-safe'))}"
+      />
+    </div>
+  `;
 }
 
 function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
@@ -33912,6 +34299,9 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
     `;
   }
   if (fieldDef.type === 'select' && fieldDef.options?.length) {
+    if (fieldDef.id === 'borrowRisk' && template.id === 'connector-jupiter-lend') {
+      return borrowRiskSegmentedFieldInput(fieldDef, value, label, error);
+    }
     const fieldLabel = templateFieldDisplayLabel(fieldDef);
     return `
       <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
@@ -33927,14 +34317,29 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
       </label>
     `;
   }
+  const borrowSizer = fieldDef.id === 'borrowAmount' && template.id === 'connector-jupiter-lend'
+    ? borrowAmountSizerHtml()
+    : '';
   return `
-    <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
+    <label class="field compact planner-field ${borrowSizer ? 'borrow-amount-field ' : ''}${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
       <span>${escapeHtml(label)}</span>
-      <input id="tpl-field-${escapeHtml(fieldDef.id)}" data-template-field="${escapeHtml(fieldDef.id)}"${valueDisplay.attrs} value="${escapeHtml(valueDisplay.value)}" placeholder="${escapeHtml(fieldDef.placeholder ? t(fieldDef.placeholder) : '')}" ${disabled} />
+      <input id="tpl-field-${escapeHtml(fieldDef.id)}" data-template-field="${escapeHtml(fieldDef.id)}"${valueDisplay.attrs}${plannerNumericInputAttrs(fieldDef)} value="${escapeHtml(valueDisplay.value)}" placeholder="${escapeHtml(fieldDef.placeholder ? t(fieldDef.placeholder) : '')}" ${disabled} />
+      ${borrowSizer}
       ${templateFieldHelper(fieldDef)}
       ${error}
     </label>
   `;
+}
+
+// Decimal numeric planner fields (amounts, prices, thresholds, collateral/borrow) should open the
+// numeric keypad on mobile. Excludes textual ids that merely contain a numeric-ish word.
+function plannerNumericInputAttrs(fieldDef: AgentPlanTemplateField): string {
+  const id = fieldDef.id;
+  if (/(address|recipient|token|mint|symbol|url|blink|memo|reason|note|policy|instruction|question|label)/i.test(id)) return '';
+  if (/(amount|price|threshold|slippage|percent|shares|ratio|factor|collateral|borrow|count|orders|leverage|size)/i.test(id)) {
+    return ' inputmode="decimal"';
+  }
+  return '';
 }
 
 function localizedTemplateFieldControlValue(value: string): { value: string; attrs: string } {
@@ -33951,6 +34356,41 @@ function templateFieldHelper(fieldDef: AgentPlanTemplateField): string {
   const base = fieldDef.helperText ? `<em class="planner-field-hint subtle">${escapeHtml(t(fieldDef.helperText))}</em>` : '';
   const pairHint = raydiumPairPreviewHintForField(fieldDef.id);
   return [base, pairHint].filter(Boolean).join('');
+}
+
+// A plain-language summary of the Jupiter limit/TP-SL order — rendered as a full-width panel just above
+// Confirm (via plannerFieldsHtml, like borrowTermsPanelHtml) so the user can read back exactly what will
+// happen. Full-width on every surface, never trapped in a cramped half-cell of the 2-col grids.
+function triggerReadoutPanelHtml(): string {
+  const template = selectedTemplate();
+  if (template.id !== 'connector-jupiter-trigger-limit-orders') return '';
+  const f = state.templateFields;
+  const subAction = f.subAction?.trim() || 'single-limit-stop';
+  const sym = (mint: string | undefined): string => (mint?.trim() ? tokenDisplayLabel(mint.trim()) : '');
+  const price = (v: string | undefined): string => { const s = (v ?? '').trim(); return s ? `$${s}` : ''; };
+  let text = '';
+  if (subAction === 'single-limit-stop') {
+    const buySym = sym(f.outputMint) || t('the token');
+    const dir = (f.triggerCondition || 'below') === 'above' ? t('rises above') : t('falls below');
+    text = tf('Buy {symbol} when its price {direction} {price}.', {
+      symbol: buySym, direction: dir, price: price(f.triggerPriceUsd) || t('your target price'),
+    });
+  } else if (subAction === 'oco-tpsl') {
+    text = tf('Sell {symbol} — take profit at {tp}, stop loss at {sl}.', {
+      symbol: sym(f.inputMint) || t('the token'),
+      tp: price(f.takeProfitPriceUsd) || '—',
+      sl: price(f.stopLossPriceUsd) || '—',
+    });
+  } else if (subAction === 'otoco-entry-tpsl') {
+    const dir = (f.entryCondition || 'below') === 'above' ? t('rises above') : t('falls below');
+    text = tf('Enter {symbol} when price {direction} {entry}, then take profit {tp} / stop loss {sl}.', {
+      symbol: sym(f.outputMint) || t('the token'), direction: dir,
+      entry: price(f.entryPriceUsd) || t('your entry price'),
+      tp: price(f.takeProfitPriceUsd) || '—',
+      sl: price(f.stopLossPriceUsd) || '—',
+    });
+  }
+  return text ? `<div class="trigger-order-readout-panel"><span class="trigger-order-readout">${escapeHtml(text)}</span></div>` : '';
 }
 
 function raydiumPairPreviewHintForField(fieldId: string): string {
@@ -33977,6 +34417,8 @@ function raydiumPairPreviewHintForField(fieldId: string): string {
 }
 
 function templateFieldDisplayLabel(fieldDef: AgentPlanTemplateField): string {
+  const jupiterBorrowLabel = jupiterBorrowRuntimeLabel(fieldDef.id);
+  if (jupiterBorrowLabel) return jupiterBorrowLabel;
   const jupiterDcaLabel = jupiterDcaRuntimeLabel(fieldDef.id);
   if (jupiterDcaLabel) return jupiterDcaLabel;
   const liquidityLabel = liquidityAmountFieldRuntimeLabel(fieldDef.id);
@@ -33991,6 +34433,14 @@ function isJupiterDcaCreateTemplate(): boolean {
   const form = activeConnectorActionForm();
   const branch = form ? selectedSubAction(form, state.templateFields) : undefined;
   return !branch || branch.id === 'create-time-dca';
+}
+
+// Non-blocking disclosure shown on the DCA create form (chat surface + New Request): future fills run via
+// Jupiter automation with no per-cycle Agentic approval — but each fill posts a receipt to Done and the
+// order stays cancelable from Positions. Reuses .template-description styling (no new CSS).
+function dcaAutomationNoteHtml(): string {
+  if (!isJupiterDcaCreateTemplate()) return '';
+  return `<p class="template-description dca-automation-note">${escapeHtml(t('Fills run automatically through Jupiter — each posts a receipt in Done, and you can cancel anytime from Positions.'))}</p>`;
 }
 
 function jupiterDcaDirection(): 'buy' | 'sell' {
@@ -34331,10 +34781,15 @@ function connectorSubActionPicker(form: ConnectorActionForm): string {
       `;
     })
     .join('');
+  // The Jupiter limit/TP-SL form renders its sub-actions as a full-width Buy·Sell·Auto-entry tab bar
+  // (it sits where the hidden template picker used to be), so give it a dedicated modifier class.
+  const tabs = form.templateId === 'connector-jupiter-trigger-limit-orders';
+  const rowClass = tabs ? 'connector-subaction-row connector-subaction-tabs' : 'connector-subaction-row';
+  const chipsClass = tabs ? 'connector-subaction-chips connector-subaction-tabs-chips' : 'connector-subaction-chips';
   return `
-    <div class="connector-subaction-row" role="group" aria-label="${escapeHtml(t(group.label))}">
+    <div class="${rowClass}" role="group" aria-label="${escapeHtml(t(group.label))}">
       <span class="connector-subaction-label">${escapeHtml(t(group.label))}</span>
-      <div class="connector-subaction-chips">${chips}</div>
+      <div class="${chipsClass}">${chips}</div>
     </div>
   `;
 }
@@ -34405,6 +34860,23 @@ function cascadingUnavailableSelectInput(
       ${error}
     </div>
   `;
+}
+
+// Hydrate token symbol+logo metadata for the mints referenced by the borrow vault dropdown, then
+// repaint once when anything changed — so every vault (incl. exotics absent from the provider's
+// built-in symbol map) shows a real "Borrow X · Y collateral" pair + logos. TTL-gated
+// (tokenMetadataNeedsHydration), so it no-ops once hydrated and never loops.
+function ensureBorrowVaultTokenLogos(options: ConnectorOption[]): void {
+  const mints = new Set<string>();
+  for (const option of options) {
+    if (option.meta?.supplyMint) mints.add(option.meta.supplyMint);
+    if (option.meta?.borrowMint) mints.add(option.meta.borrowMint);
+  }
+  const needed = [...mints].filter((mint) => tokenMetadataNeedsHydration(mint));
+  if (needed.length === 0) return;
+  void fetchTokenMetadataForMints(needed)
+    .then((changed) => { if (changed) render(); })
+    .catch(() => undefined);
 }
 
 function cascadingSelectFieldInput(
@@ -34480,6 +34952,9 @@ function cascadingSelectFieldInput(
   const fetchedAt = cached?.fetchedAt ?? 0;
   const errorMessage = cached?.error;
   const options = cached?.options ?? [];
+  if (cascading.providerId === 'jupiter.lend.borrow.vault' && options.length) {
+    ensureBorrowVaultTokenLogos(options);
+  }
   if (errorMessage && !options.length) {
     return cascadingUnavailableSelectInput(
       fieldDef,
@@ -34565,6 +35040,19 @@ function selectedMeteoraPoolOption(
   return cascadingFieldCachedOption(poolField, parameters.poolAddress ?? '', parameters);
 }
 
+// The Jupiter Lend borrow-create form's currently-selected vault option (carries supply/borrow
+// symbols + mints in meta), so the collateral/borrow amount fields can relabel to the vault's tokens.
+function selectedBorrowVaultOption(
+  parameters: Record<string, string> = cascadingFieldValues(),
+): ConnectorOption | undefined {
+  const template = selectedTemplate();
+  if (template.id !== 'connector-jupiter-lend') return undefined;
+  const field = effectiveTemplateFieldsForParameters(template, parameters)
+    .find((fieldDef) => fieldDef.id === 'vaultId' && fieldDef.cascading?.providerId === 'jupiter.lend.borrow.vault');
+  if (!field) return undefined;
+  return cascadingFieldCachedOption(field, parameters.vaultId ?? '', parameters);
+}
+
 function selectedMeteoraPoolTokenSymbol(side: 'x' | 'y'): string | undefined {
   const option = selectedMeteoraPoolOption();
   const metaKey = side === 'x' ? 'tokenXSymbol' : 'tokenYSymbol';
@@ -34601,22 +35089,45 @@ function cascadingSelectPickerOptions(options: ConnectorOption[], fallbackMeta: 
   const positions = options.filter((option) => option.group === 'positions');
   const rest = options.filter((option) => option.group !== 'positions');
   for (const option of positions) {
+    const enriched = borrowVaultOptionDisplay(option);
     result.push({
       value: option.value,
-      label: option.label,
+      label: enriched?.label ?? option.label,
       meta: t('Your positions'),
       detail: option.detail,
+      ...(enriched?.iconHtml ? { iconHtml: enriched.iconHtml } : {}),
     });
   }
   for (const option of rest) {
+    const enriched = borrowVaultOptionDisplay(option);
     result.push({
       value: option.value,
-      label: option.label,
+      label: enriched?.label ?? option.label,
       meta: option.group ? t('All') : fallbackMeta,
       detail: option.detail,
+      ...(enriched?.iconHtml ? { iconHtml: enriched.iconHtml } : {}),
     });
   }
   return result;
+}
+
+// Render-layer enrichment for a Jupiter borrow vault option: resolve real token symbols + logos from
+// the mints the provider carries in meta (the provider's built-in symbol map only covers ~14 common
+// tokens; this covers all 78 vaults incl. exotics once token metadata hydrates). Returns undefined for
+// non-borrow-vault options so every other cascading dropdown is untouched.
+function borrowVaultOptionDisplay(option: ConnectorOption): { label: string; iconHtml?: string } | undefined {
+  const supplyMint = option.meta?.supplyMint;
+  const borrowMint = option.meta?.borrowMint;
+  if (!supplyMint && !borrowMint) return undefined;
+  const supplySym = supplyMint ? tokenDisplayLabel(supplyMint) : (option.meta?.symbol ?? '');
+  const borrowSym = borrowMint ? tokenDisplayLabel(borrowMint) : (option.meta?.borrowSymbol ?? '');
+  const label = borrowSym && supplySym
+    ? tf('Borrow {borrow} · {supply} collateral', { borrow: borrowSym, supply: supplySym })
+    : option.label;
+  const iconHtml = borrowMint || supplyMint
+    ? `<span class="cascading-vault-logos">${borrowMint ? tokenLogoChipHtml(borrowMint) : ''}${supplyMint ? tokenLogoChipHtml(supplyMint) : ''}</span>`
+    : undefined;
+  return iconHtml ? { label, iconHtml } : { label };
 }
 
 function formatCascadingFetchedAt(fetchedAt: number): string {
@@ -34656,7 +35167,7 @@ async function requestConnectorOptions(
       fieldValues: { ...defaultTemplateFieldValues(selectedTemplate()), ...fieldValuesSnapshot },
       walletAddress: ctxWalletAddress,
       cluster: state.cluster,
-      bridge: bridgeRequest,
+      bridge: connectorOptionBridgeFetch,
     });
     state.templateFieldOptionCache[cacheKey] = {
       options,
@@ -34953,9 +35464,12 @@ function templateAmountModeFor(fieldId: string): ChatAmountMode {
 // actions, inputMint for connector forms). Returns null if no canonical spend field resolves.
 function plannerSpendTokenAsset(): WalletBalanceAsset | null {
   const template = selectedTemplate();
-  // Only the UNAMBIGUOUS spend fields: inputToken (swap) / token (send/single). NOT inputMint — in
-  // connector borrow/withdraw forms inputMint is the RECEIVED token, so %-of-balance would be wrong.
-  const spendId = ['inputToken', 'token'].find((id) => template.fields.some((f) => f.id === id));
+  // Only the UNAMBIGUOUS spend fields: inputToken (swap) / token (send/single). NOT inputMint in
+  // general — in connector borrow/withdraw forms inputMint is the RECEIVED token, so %-of-balance
+  // would be wrong. EXCEPTION: the Jupiter limit/TP-SL form, where inputMint IS the token you pay
+  // with (Buy) or sell (Sell), so the balance + %/max quick-fills are exactly right.
+  const spendId = ['inputToken', 'token'].find((id) => template.fields.some((f) => f.id === id))
+    ?? (template.id === 'connector-jupiter-trigger-limit-orders' ? 'inputMint' : undefined);
   if (!spendId) return null;
   const raw = templateFieldValue(spendId);
   if (!raw) return null;
@@ -35023,11 +35537,22 @@ function amountControlFieldInput(fieldDef: AgentPlanTemplateField, value: string
 
 function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label: string, error: string): string {
   const options = fieldDef.options ?? [];
-  const mode = templateTokenMode(fieldDef, value);
+  const template = selectedTemplate();
+  const isTriggerForm = template.id === 'connector-jupiter-trigger-limit-orders';
+  const subAction = state.templateFields.subAction?.trim() || 'single-limit-stop';
+  // Sell tab: the "Sell" field is portfolio-only — pick from tokens you actually hold, with no
+  // Mint-paste and no curated fallback. Buy/Auto-entry "Pay with" keeps the normal List/Mint control.
+  const portfolioOnly = isTriggerForm && fieldDef.id === 'inputMint' && subAction === 'oco-tpsl';
+  // The "subject" token — what the order is actually about — gets emphasis + a Buying/Selling tag.
+  const isSubject = isTriggerForm && (
+    subAction === 'oco-tpsl' ? fieldDef.id === 'inputMint' : fieldDef.id === 'outputMint'
+  );
+  const subjectTag = subAction === 'oco-tpsl' ? t('Selling') : t('Buying');
+  const mode = portfolioOnly ? 'preset' : templateTokenMode(fieldDef, value);
   const presetMode = mode === 'preset';
   // Input-token LIST = the user's PORTFOLIO (owned tokens, balance + $); output-token LIST keeps the
   // curated catalog. MINT (search) is unchanged for both.
-  const portfolio = (isInputTokenField(fieldDef.id) && presetMode)
+  const portfolio = ((isInputTokenField(fieldDef.id) && presetMode) || portfolioOnly)
     ? chatSnapshotAssets().filter((a) => a.amount > 0)
     : [];
   const usePortfolio = portfolio.length > 0;
@@ -35054,16 +35579,24 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
   const selectValue = usePortfolio
     ? (portfolio.find((a) => a.mint === resolvedCurrentMint)?.mint ?? portfolio[0]?.mint ?? '')
     : curatedSelectValue();
+  // Keep the portfolio-only field's stored value in sync with what's shown, so a submit never sends a
+  // token the user doesn't hold (or a stale default). Reconcile once; the next render is a no-op.
+  if (portfolioOnly && usePortfolio && selectValue && state.templateFields[fieldDef.id] !== selectValue) {
+    state.templateFields[fieldDef.id] = selectValue;
+  }
   const selection = templateTokenSelection(fieldDef, value);
   const customValue = presetMode ? '' : tokenSelectionInputValue(selection, value);
   const executionValue = !presetMode && selection.value && selection.value !== customValue ? selection.value : '';
   const selectionHint = !presetMode ? tokenSelectionHint(selection) : '';
   const disabled = state.busy;
   return `
-    <div class="field compact planner-field token-choice-field ${isOutputTokenField(fieldDef.id) ? 'token-field--output ' : ''}${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
+    <div class="field compact planner-field token-choice-field ${isOutputTokenField(fieldDef.id) ? 'token-field--output ' : ''}${isSubject ? 'token-field--subject ' : ''}${portfolioOnly ? 'token-field--portfolio ' : ''}${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
       <span class="token-choice-head">
-        <span>${escapeHtml(label)}</span>
-        <span class="token-choice-mode" role="group" aria-label="${escapeHtml(tf('{field} input mode', { field: t(fieldDef.label) }))}">
+        <span class="token-choice-title">
+          <span>${escapeHtml(label)}</span>
+          ${isSubject ? `<span class="token-role-tag">${escapeHtml(subjectTag)}</span>` : ''}
+        </span>
+        ${portfolioOnly ? '' : `<span class="token-choice-mode" role="group" aria-label="${escapeHtml(tf('{field} input mode', { field: t(fieldDef.label) }))}">
           <button
             type="button"
             data-token-field-mode="preset"
@@ -35082,9 +35615,13 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
           >
             ${escapeHtml(t('Mint'))}
           </button>
-        </span>
+        </span>`}
       </span>
-      ${presetMode ? selectPicker({
+      ${portfolioOnly && !usePortfolio
+        ? (state.walletBalance.fullStatus === 'ready' || state.walletBalance.summaryStatus === 'ready'
+            ? `<div class="token-portfolio-empty">${escapeHtml(t('No tokens with a balance yet.'))}</div>`
+            : `<div class="token-portfolio-empty">${escapeHtml(t('Loading balances…'))}</div>`)
+        : presetMode ? selectPicker({
         value: selectValue,
         options: listPickerOptions,
         attrs: { 'data-template-field': fieldDef.id },
@@ -35126,9 +35663,17 @@ function isOutputTokenField(fieldId: string): boolean {
 function defaultTokenMode(fieldId: string): TokenInputMode {
   return isOutputTokenField(fieldId) ? 'custom' : 'preset';
 }
+// The Jupiter limit/TP-SL "Buy"/"Receive" token defaults to the LIST pill (showing SOL) rather than
+// Mint-search — cleaner for the buy/sell flow, while the Mint pill stays available.
+function triggerFormReceiveDefaultsToList(templateId: string, fieldId: string): boolean {
+  return templateId === 'connector-jupiter-trigger-limit-orders' && fieldId === 'outputMint';
+}
 function templateTokenMode(fieldDef: AgentPlanTemplateField, value: string): TokenInputMode {
   void value;
-  return state.templateTokenModes[fieldDef.id] ?? defaultTokenMode(fieldDef.id);
+  const stored = state.templateTokenModes[fieldDef.id];
+  if (stored) return stored;
+  if (triggerFormReceiveDefaultsToList(selectedTemplate().id, fieldDef.id)) return 'preset';
+  return defaultTokenMode(fieldDef.id);
 }
 
 function defaultTemplateTokenModes(
@@ -35140,7 +35685,9 @@ function defaultTemplateTokenModes(
     if (!isTokenSelectField(fieldDef)) continue;
     // Role-aware (same as templateTokenMode) so a portfolio selection (stored as a mint, not a curated
     // symbol) doesn't get flipped back to MINT mode on a re-render/template reload.
-    modes[fieldDef.id] = defaultTokenMode(fieldDef.id);
+    modes[fieldDef.id] = triggerFormReceiveDefaultsToList(template.id, fieldDef.id)
+      ? 'preset'
+      : defaultTokenMode(fieldDef.id);
   }
   return modes;
 }
@@ -35171,6 +35718,20 @@ function templateTokenSelection(fieldDef: AgentPlanTemplateField, value: string)
   const current = state.templateTokenSelections[fieldDef.id];
   if (current && current.mode === mode && current.value === value) return current;
   return tokenSelectionFromValue(value, mode, mode === 'preset' ? 'preset' : 'manual');
+}
+
+function defaultTriggerInputMintForSubAction(subAction: string): string {
+  if (subAction !== 'oco-tpsl') return USDC_MINT;
+  const owned = chatSnapshotAssets().filter((asset) => asset.amount > 0);
+  return owned.find((asset) => !isStablecoinMint(asset.mint))?.mint ?? owned[0]?.mint ?? WSOL_MINT;
+}
+
+function resetTriggerSpendTokenForSubAction(fieldId: string, subAction: string): void {
+  if (fieldId !== 'subAction' || selectedTemplate().id !== 'connector-jupiter-trigger-limit-orders') return;
+  state.templateFields.inputMint = defaultTriggerInputMintForSubAction(subAction);
+  delete state.templateTokenModes.inputMint;
+  delete state.templateTokenSelections.inputMint;
+  delete state.templateFieldErrors.inputMint;
 }
 
 function isRecipientTemplateField(fieldDef: AgentPlanTemplateField): boolean {
@@ -40700,6 +41261,12 @@ function bind(): void {
       state.agentPreparedActionId = '';
       scheduleRaydiumPairPreview(fieldId);
       if (shouldRerender || cascadingRerender || fieldId === 'dcaDirection') render();
+      // Live borrow health panel: plain amount keystrokes don't re-render, so the panel's amount-gate
+      // never re-evaluates and the projected-health/LTV preview never appears. Schedule a debounced
+      // render for the Jupiter borrow-create amount fields (focus is preserved by the planner snapshot).
+      else if ((fieldId === 'collateralAmount' || fieldId === 'borrowAmount') && selectedTemplate().id === 'connector-jupiter-lend') {
+        scheduleBorrowTermsRefresh();
+      }
       // Live-update the chat composer preview when this form is the Chat connector surface
       // (no-op elsewhere — self-guarded on state.chatConnectorSession.active).
       applyChatConnectorDraftPreview();
@@ -40726,6 +41293,8 @@ function bind(): void {
         return;
       }
       state.templateFields[fieldId] = fieldValue;
+      if (fieldId === 'borrowRisk') applyBorrowRiskPresetAmount(fieldValue);
+      resetTriggerSpendTokenForSubAction(fieldId, fieldValue);
       delete state.templateFieldErrors[fieldId];
       invalidateCascadingDownstream(fieldId);
       state.agentPlan = null;
@@ -40856,6 +41425,41 @@ function bind(): void {
       const pct = Number((input?.value ?? '').replace(/[^\d.]/g, ''));
       if (!Number.isFinite(pct) || pct <= 0 || pct > 100) { pushToast('error', t('Invalid percent'), t('Enter a percent between 0 and 100.')); return; }
       applyPlannerPercent(fieldId, pct);
+    });
+  }
+  const applyBorrowAmountFraction = (fraction: number): void => {
+    if (!applyBorrowMaxSafeFraction(fraction)) {
+      pushToast('error', t('Estimate unavailable'), t('Enter collateral and wait for the max-safe estimate.'));
+      return;
+    }
+    suppressMobileRailSheetEnterAnimation = true;
+    scheduleBorrowTermsRefresh();
+    render();
+    applyChatConnectorDraftPreview();
+  };
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-borrow-amount-fraction]')) {
+    bindOnce(button, 'click', () => {
+      applyBorrowAmountFraction(Number(button.dataset.borrowAmountFraction ?? ''));
+    });
+  }
+  for (const slider of document.querySelectorAll<HTMLInputElement>('[data-borrow-amount-slider]')) {
+    bindOnce(slider, 'input', () => {
+      const pct = Number(slider.value);
+      if (!Number.isFinite(pct)) return;
+      if (applyBorrowMaxSafeFraction(pct / 100)) {
+        suppressMobileRailSheetEnterAnimation = true;
+        scheduleBorrowTermsRefresh();
+        applyChatConnectorDraftPreview();
+      }
+    });
+    bindOnce(slider, 'change', () => {
+      const pct = Number(slider.value);
+      if (!Number.isFinite(pct)) return;
+      if (applyBorrowMaxSafeFraction(pct / 100)) {
+        suppressMobileRailSheetEnterAnimation = true;
+        render();
+        applyChatConnectorDraftPreview();
+      }
     });
   }
   for (const fieldInput of document.querySelectorAll<HTMLInputElement>('[data-template-interval-field]')) {
@@ -47270,6 +47874,43 @@ async function connectorRead(
   }
 }
 
+// The cloud /api/connector/read-facts handler requires `cluster` (and a wallet for sessionless
+// reads); the connector-option provider bodies omit `cluster`, so fold it (and the active wallet,
+// if any) in when routing an option read to the cloud transport.
+function withReadFactsContext(body: BodyInit | null | undefined): string {
+  let parsed: Record<string, unknown> = {};
+  if (typeof body === 'string' && body.trim()) {
+    try {
+      parsed = JSON.parse(body) as Record<string, unknown>;
+    } catch {
+      parsed = {};
+    }
+  }
+  if (parsed.cluster === undefined) parsed.cluster = state.cluster;
+  if (parsed.walletAddress === undefined) {
+    const wallet = walletAddressForCascading() || state.address;
+    if (wallet) parsed.walletAddress = wallet;
+  }
+  return JSON.stringify(parsed);
+}
+
+// Transport for cascading connector-option reads (vault/bank/reserve dropdowns). These are PUBLIC
+// connector facts, so mirror connectorRead()'s routing — cloud when signed in → local bridge when
+// paired → keyless cloud fallback — instead of the raw `bridgeRequest`, which THROWS when there is
+// no local bridge token. Without this, every cascading dropdown (incl. Jupiter borrow vaults) came
+// back empty on web/hosted because the fetch never reached a server.
+async function connectorOptionBridgeFetch<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
+  const cloudPath = path === '/bridge/action/connector-read-facts' ? '/api/connector/read-facts' : path;
+  const canBridge = state.bridgeActive && Boolean(state.bridgeToken) && isTrustedBridgeUrl(state.bridgeUrl);
+  if (cloudSessionMatchesWallet()) {
+    return cloudRequest<T>(cloudPath, { ...init, body: withReadFactsContext(init.body) });
+  }
+  if (canBridge) {
+    return bridgeRequest<T>(path, init);
+  }
+  return cloudRequest<T>(cloudPath, { ...init, body: withReadFactsContext(init.body) });
+}
+
 function posArray(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? (value as Record<string, unknown>[]) : [];
 }
@@ -47429,6 +48070,78 @@ function parseDcaRows(res: Record<string, unknown> | null | undefined, prices: M
       cancel: { kind: 'jupiter_recurring_cancel_order', orderId },
     };
   });
+}
+
+// --- DCA lifecycle reconciliation → Done receipts -----------------------------------------------------
+// Jupiter automation runs each DCA cycle without an Agentic signature, so the only record of a fill is the
+// order's on-chain trade history (surfaced as `fills` on the recurring-orders read). On every orders read
+// we turn NEW fills into Done receipts and, once an order's cycles are all filled, post a completion record.
+// Deterministic ids make mergeActionReceipts idempotent across polls + reloads; the `browser-` prefix keeps
+// them in the browser-workflow Done history. Best-effort: the active read returns ALL fills so far (even
+// across app restarts), so fills are captured while the order is active; an order that closes while the app
+// is shut is the only gap.
+function reconcileDcaLifecycle(rec: Record<string, unknown> | null | undefined): void {
+  if (!rec || !state.address) return;
+  const orders = posArray(((rec.result ?? rec) as Record<string, unknown>).orders).filter((o) => posStr(o.orderId));
+  if (!orders.length) return;
+  const seen = new Set(state.receipts.map((r) => r.actionId));
+  const additions: ActionReceipt[] = [];
+  const nowIso = new Date().toISOString();
+  for (const o of orders) {
+    const orderId = posStr(o.orderId)!;
+    const inSym = posSymbol(posStr(o.inputMint));
+    const route = `${inSym} → ${posSymbol(posStr(o.outputMint))}`;
+    const total = posNum(o.numberOfOrders, 0);
+    const fillPrefix = `browser-dca-fill-${orderId}-`;
+    const fills = Array.isArray(o.fills) ? (o.fills as Record<string, unknown>[]) : [];
+    for (const fill of fills) {
+      const txId = posStr(fill.txId);
+      if (!txId) continue;
+      const id = `${fillPrefix}${txId}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const inAmt = posStr(fill.inputAmount);
+      const when = posStr(fill.confirmedAt) ?? nowIso;
+      additions.push({
+        actionId: id,
+        status: 'approved',
+        txStatus: 'confirmed',
+        txid: txId,
+        explorerUrl: explorerUrl(txId, state.cluster),
+        summary: tf('DCA fill · {route}', { route }),
+        ...(inAmt ? { amount: posAmount(inAmt), token: inSym } : {}),
+        walletAddress: state.address,
+        cluster: state.cluster,
+        createdAt: when,
+        completedAt: when,
+      });
+    }
+    // Completion: fired once per order (deduped) when its cycles are all filled — either the aggregate
+    // executed count reached the total, or a fill receipt has been recorded for every cycle.
+    const executed = Math.max(0, posNum(o.executedOrders, 0));
+    const recordedFills = state.receipts.filter((r) => r.actionId.startsWith(fillPrefix)).length +
+      additions.filter((r) => r.actionId.startsWith(fillPrefix)).length;
+    if (total > 0 && (executed >= total || recordedFills >= total)) {
+      const cid = `browser-dca-complete-${orderId}`;
+      if (!seen.has(cid)) {
+        seen.add(cid);
+        additions.push({
+          actionId: cid,
+          status: 'approved',
+          summary: tf('DCA complete · {route}', { route }),
+          note: tf('All {n} cycles filled.', { n: String(total) }),
+          walletAddress: state.address,
+          cluster: state.cluster,
+          createdAt: nowIso,
+          completedAt: nowIso,
+        });
+      }
+    }
+  }
+  if (additions.length) {
+    state.receipts = mergeActionReceipts(additions, state.receipts);
+    saveBrowserWorkflowState();
+  }
 }
 
 function parseLendRows(res: Record<string, unknown> | null | undefined, prices: Map<string, WalletBalancePriceInfo>): PositionLiveRow[] {
@@ -47652,6 +48365,9 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
       ];
       const prices = await posPrices(orderMints); // ONE price fetch for both limit + DCA parsers
       rows = [...parseLimitRows(trig, prices), ...parseDcaRows(rec, prices)];
+      // Turn observed Jupiter-automation fills + completion into Done receipts (they never touch the
+      // Agentic approval inbox, so this read is the only place they can be recorded).
+      reconcileDcaLifecycle(rec);
     } else if (section === 'lending') {
       const res = await connectorRead('jupiter', 'earn');
       if (res === null) throw new Error('unavailable');
@@ -47692,10 +48408,12 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
     if (state.cluster !== cluster) return;
     state.positionsLive[section] = { rows, fetchedAt: Date.now(), loading: false, cluster, ...(partial ? { partial: true } : {}) };
     // Reconcile manage-pending records first (partial reduce keeps them, full close retires them),
-    // then retire stale seeded OPENs once live is populated (live is authoritative). If live is EMPTY,
-    // a just-opened position may still be indexing — don't expire it prematurely.
+    // then retire stale seeded OPENs on any CLEAN (non-partial) read — including an empty one, which for
+    // an active-only read (DCA/limit) means the order completed or was cancelled and its seed should not
+    // resurface. `expireStaleSeededForSection`'s own 2-min age cutoff protects a just-opened, still-indexing
+    // position; a partial read (some source failed) is never authoritative, so seeds are kept.
     reconcileManagePendingForSection(section, cluster, rows, partial);
-    if (rows.length > 0) expireStaleSeededForSection(section, cluster);
+    if (!partial) expireStaleSeededForSection(section, cluster);
   } catch (e) {
     if (state.cluster !== cluster) return;
     state.positionsLive[section] = {
@@ -47706,6 +48424,8 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
       cluster,
     };
   }
+  // Start/stop the DCA progress poll based on whether the just-fetched Orders section holds an active DCA.
+  ensureDcaPollInterval();
   render();
 }
 
@@ -48078,7 +48798,7 @@ function completedPlanFromGeneratedPlan(
       ? 'archived'
       : 'proof signed';
   const completedAt = receipt?.completedAt ?? actionCompletedAt(action) ?? record.updatedAt;
-  const amount = receipt?.amount ?? (action ? amountLabel(action) : planParameter(record.plan, ['amountSol', 'amount', 'inputAmount', 'plannedAmount']));
+  const amount = receipt?.amount ?? (action ? amountLabel(action) : planParameter(record.plan, ['amountSol', 'amount', 'inputAmount', 'totalAmount', 'plannedAmount']));
   const token = receipt?.token ?? (action ? tokenLabel(action) : completedPlanTokenFromPlan(record.plan));
   const recipient = receipt?.recipient ?? (action ? recipientParam(action) : planParameter(record.plan, ['recipient', 'recipientAddress']));
   const workflowSource = record.workflowSource ?? action?.workflowSource ?? (actionId && isBrowserWorkflowId(actionId) ? 'browser' : undefined);
@@ -58812,6 +59532,36 @@ function clearPendingReconciliationInterval(): void {
   }
 }
 
+// DCA cycles run on Jupiter's schedule with no Agentic signature, so nothing re-fetches on its own. While
+// the live Orders section holds ≥1 active DCA card, poll it so progress advances ("2/4 → 3/4") and new
+// fills / completion reconcile into Done as they happen (fetchPositionCategory → reconcileDcaLifecycle).
+// Self-clears once no active DCA remains (completed/cancelled orders drop from the active read).
+const DCA_POLL_INTERVAL_MS = 45_000;
+let dcaPollTimer: number | null = null;
+
+function hasActiveDcaPosition(): boolean {
+  return (state.positionsLive.orders?.rows ?? []).some((row) => row.kind === 'dca');
+}
+
+function ensureDcaPollInterval(): void {
+  if (typeof window === 'undefined') return;
+  if (hasActiveDcaPosition() && dcaPollTimer === null) {
+    dcaPollTimer = window.setInterval(() => {
+      if (!hasActiveDcaPosition() || !state.address) { clearDcaPollInterval(); return; }
+      void fetchPositionCategory('orders', true);
+    }, DCA_POLL_INTERVAL_MS);
+  } else if (!hasActiveDcaPosition()) {
+    clearDcaPollInterval();
+  }
+}
+
+function clearDcaPollInterval(): void {
+  if (dcaPollTimer !== null) {
+    window.clearInterval(dcaPollTimer);
+    dcaPollTimer = null;
+  }
+}
+
 function ledgerWorkflowSource(action: PreparedAction): LedgerWorkflowSource {
   if (action.workflowSource === 'cloud') return 'cloud';
   if (action.workflowSource === 'local-bridge') return 'local-bridge';
@@ -63195,7 +63945,14 @@ function templateSpendBalanceError(
   if (template.actionType === 'swap') token = parameters.inputToken || parameters.inputMint || '';
   else if (template.actionType === 'transfer_sol') token = 'SOL';
   else if (template.actionType === 'transfer_spl') token = parameters.token || '';
-  else return null;
+  else if (template.id === 'connector-jupiter-lend' && parameters.subAction === 'borrow-create') {
+    const option = selectedBorrowVaultOption(parameters);
+    token = option?.meta?.supplyMint || option?.meta?.symbol || '';
+    const amount = (parameters.collateralAmount || '').trim();
+    if (!token || !amount) return null;
+    const message = insufficientBalanceError(token, amount);
+    return message ? { field: 'collateralAmount', message } : null;
+  } else return null;
   if (!token) return null;
   const amount = (parameters.amount || parameters.inputAmount || parameters.amountSol || '').trim();
   if (!amount) return null;
@@ -63566,7 +64323,7 @@ async function queuePlanThroughCloud(plan: AgentPlan, sourceRecord?: GeneratedPl
       params: plan.parameters,
       cluster: state.cluster,
       note: plan.userNotes || '',
-      amount: planParameter(plan, ['amountSol', 'amount', 'inputAmount', 'plannedAmount']),
+      amount: planParameter(plan, ['amountSol', 'amount', 'inputAmount', 'totalAmount', 'plannedAmount']),
       token: planParameter(plan, ['token', 'inputToken']),
       recipient: planParameter(plan, ['recipient', 'recipientAddress']),
       ...(sourceRecord?.agentReview ? { metadata: { agentReview: sourceRecord.agentReview } } : {}),
@@ -63668,24 +64425,36 @@ async function queuePlanThroughBrowserWorkflow(plan: AgentPlan, sourceRecord?: G
 }
 
 function browserPreparedActionFromPlan(plan: AgentPlan, sourceRecord?: GeneratedPlanRecord): PreparedAction {
+  const actionPlan = planWithNormalizedBrowserActionParams(plan, sourceRecord);
   const now = new Date().toISOString();
   const id = newId('browser-action');
-  const kind = browserActionKindForPlan(plan);
+  const kind = browserActionKindForPlan(actionPlan);
   return {
     id,
     kind,
     status: 'ready',
     walletAddress: state.address,
     cluster: state.cluster,
-    summary: plan.intent,
-    params: browserActionParams(plan, kind),
+    summary: actionPlan.intent,
+    params: browserActionParams(actionPlan, kind),
     dueAt: now,
     createdAt: now,
     updatedAt: now,
-    note: plan.userNotes || '',
+    note: actionPlan.userNotes || '',
     ...(sourceRecord?.agentReview ? { agentReview: sourceRecord.agentReview } : {}),
     ...(sourceRecord?.agentOverride ? { agentOverride: sourceRecord.agentOverride } : {}),
     workflowSource: 'browser',
+  };
+}
+
+function planWithNormalizedBrowserActionParams(plan: AgentPlan, sourceRecord?: GeneratedPlanRecord): AgentPlan {
+  if (!CONNECTOR_APPROVAL_ACTION_TYPES.has(plan.actionType)) return plan;
+  const template = sourceRecord
+    ? templateById(sourceRecord.templateId)
+    : templateById(connectorActionFormByActionType(plan.actionType)?.templateId ?? state.selectedTemplateId);
+  return {
+    ...plan,
+    parameters: normalizeConnectorDraftParameters(template, plan.parameters),
   };
 }
 
@@ -65404,7 +66173,7 @@ function selectPicker(input: {
   const selectedLabel = selected?.label ?? input.placeholder ?? t('Select');
   const selectedMeta = selected?.meta ?? '';
   const selectedMetaSuffix = selected?.metaSuffix ?? '';
-  const selectedLogo = selected?.logoId ? selectPickerLogo(selected.logoId) : '';
+  const selectedLogo = selected?.logoId ? selectPickerLogo(selected.logoId) : (selected?.iconHtml ?? '');
   const needsPlaceholderOption = Boolean(input.placeholder && !selected);
   const attrs = htmlAttrs({
     ...(input.id ? { id: input.id } : {}),
@@ -65475,7 +66244,7 @@ function selectPicker(input: {
 
 function selectPickerOption(option: SelectPickerOption, selected: boolean): string {
   const title = option.title ?? option.detail ?? option.label;
-  const logo = option.logoId ? selectPickerLogo(option.logoId) : '';
+  const logo = option.logoId ? selectPickerLogo(option.logoId) : (option.iconHtml ?? '');
   return `
     <button
       class="template-picker-option select-picker-option ${logo ? 'has-logo' : ''} ${selected ? 'selected active' : ''}"
@@ -66688,6 +67457,10 @@ function chatActionHeroHtml(action: PreparedAction): string {
     : isStatefulActionCategory(category)
       ? t('Updates a position')
       : preparedActionMetaLabel(action);
+  // DCA create: lead the sub-line with the schedule the user just set (e.g. "10 orders · daily") so the
+  // defining detail of a recurring order is visible on the compact card, then the generic position verb.
+  const dcaSchedule = action.kind === 'jupiter_recurring_create_time_order' ? dcaScheduleSummary(action) : '';
+  const sub = dcaSchedule ? `${dcaSchedule} · ${verb}` : verb;
   const target = connectorSummary?.value && connectorSummary.value !== amt
     ? `<span class="chat-action-target">${escapeHtml(connectorSummary.value)}</span>`
     : '';
@@ -66696,7 +67469,40 @@ function chatActionHeroHtml(action: PreparedAction): string {
       ? `<span class="chat-action-leg">${tokenLogoChipHtml(tok)}<strong>${escapeHtml(amt)}</strong>${usdHtml}</span>`
       : `<span class="chat-action-leg"><strong>${escapeHtml(amt)}</strong></span>`}
     ${target}
-    <span class="chat-action-sub">${escapeHtml(verb)}</span>`;
+    <span class="chat-action-sub">${escapeHtml(sub)}</span>`;
+}
+
+// "10 orders · daily" — the compact schedule shown on a DCA create card. Reuses the Repeat form's
+// interval decomposition (intervalSecondsToParts) so seconds→human lives in one place. Reader-based so
+// the same summary serves the PreparedAction cards (chat + Sign Approval) and the plan card (New Request).
+function dcaScheduleSummaryFrom(read: (key: string) => string): string {
+  const parts: string[] = [];
+  const orders = Number(read('numberOfOrders'));
+  if (Number.isFinite(orders) && orders > 0) {
+    parts.push(orders === 1 ? t('1 order') : tf('{n} orders', { n: String(orders) }));
+  }
+  const cadence = dcaCadenceLabel(read('intervalSeconds'));
+  if (cadence) parts.push(cadence);
+  return parts.join(' · ');
+}
+function dcaScheduleSummary(action: PreparedAction): string {
+  return dcaScheduleSummaryFrom((key) => stringParam(action, key));
+}
+function dcaPlanScheduleSummary(plan: AgentPlan): string {
+  return dcaScheduleSummaryFrom((key) => planParameter(plan, [key]));
+}
+
+function dcaCadenceLabel(intervalSeconds: string): string {
+  const seconds = Number((intervalSeconds || '').trim());
+  if (!Number.isFinite(seconds) || seconds <= 0) return '';
+  if (seconds === 3_600) return t('hourly');
+  if (seconds === 86_400) return t('daily');
+  if (seconds === 604_800) return t('weekly');
+  const { days, hours, minutes } = intervalSecondsToParts(String(seconds));
+  if (days) return tf('every {n} days', { n: String(days) });
+  if (hours) return tf('every {n} hours', { n: String(hours) });
+  if (minutes) return tf('every {n} min', { n: String(minutes) });
+  return '';
 }
 
 // Solscan block once the chat action has a txid (compact).
@@ -66894,6 +67700,10 @@ function preparedActionCardTitle(action: PreparedAction): string {
   if (action.kind === 'transfer_sol' || action.kind === 'transfer_spl') return t('Transfer approval');
   if (action.kind === 'swap') return t('Swap approval');
   if (action.kind === 'skill_fee_split') return t('Skill payment');
+  // DCA: the generic connector title resolves to a verbose, base58-leaking string
+  // ("Jupiter dca Orders - Create DCA Order - EPjF…Dt1v"). Use a clean title; the Jupiter logo, amount,
+  // route ("USDC → SOL"), and schedule already render elsewhere on the card.
+  if (action.kind === 'jupiter_recurring_create_time_order') return t('DCA order');
   const connectorDisplay = connectorActionDisplayParts(action.kind, action.params);
   if (connectorDisplay) return connectorDisplay.title;
   return action.summary;
@@ -66932,7 +67742,10 @@ function inboxApprovalHero(action: PreparedAction): string {
     ? tf('ACP cart {id}', { id: acpCartId(action) })
     : ap2Inbound
       ? tf('AP2 request {id}', { id: short(ap2RequestId(action)) })
-      : isConnectorApprovalKind(action) ? '' : preparedActionConnectorContextLabel(action);
+      : isConnectorApprovalKind(action)
+        // DCA create: surface the schedule ("10 orders · daily") in the otherwise-empty connector context slot.
+        ? (action.kind === 'jupiter_recurring_create_time_order' ? dcaScheduleSummary(action) : '')
+        : preparedActionConnectorContextLabel(action);
   return `
     <div class="inbox-approval-value" title="${escapeHtml(marketHeroTitle(primary, secondary, subject))}">
       ${marketAmountLineHtml(primary, subject)}
@@ -71000,6 +71813,7 @@ function connectorActionAmountInfo(action: PreparedAction): ConnectorActionAmoun
     { key: 'infAmount', token: 'INF' },
     { key: 'amount' },
     { key: 'inputAmount' },
+    { key: 'totalAmount' },
     { key: 'plannedAmount' },
     { key: 'maxAmount' },
     { key: 'collateralAmount' },
@@ -71497,6 +72311,8 @@ function stringArrayParam(action: PreparedAction, key: string): string[] {
 
 function connectorActionTokenRoute(action: PreparedAction): ConnectorActionTokenRoute | undefined {
   switch (action.kind) {
+    case 'jupiter_recurring_create_time_order':
+      return { inputToken: connectorActionInputToken(action), outputToken: connectorActionOutputToken(action) };
     case 'marinade_liquid_stake':
       return { inputToken: 'SOL', outputToken: 'mSOL' };
     case 'marinade_liquid_unstake':

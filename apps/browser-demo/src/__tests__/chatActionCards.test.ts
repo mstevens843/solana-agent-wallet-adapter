@@ -284,3 +284,168 @@ describe('chat swap balance guard + balance refresh', () => {
     expect(sideEffects).toContain('window.setTimeout(');
   });
 });
+
+describe('Jupiter Trigger Buy/Sell/Auto-entry polish', () => {
+  it('marks New Request planner fields by template and spans tall trigger fields on desktop', () => {
+    expect(mainSource).toContain('class="planner-fields ${isMobileAppViewport() ? \'mobile-planner-fields\' : \'\'}" data-template-id="${escapeHtml(template.id)}"');
+    expect(stylesSource).toContain('.planner-fields[data-template-id="connector-jupiter-trigger-limit-orders"]:not(.mobile-planner-fields) > .amount-control-field');
+    expect(stylesSource).toContain('.planner-fields[data-template-id="connector-jupiter-trigger-limit-orders"]:not(.mobile-planner-fields) > *:has([data-template-field="memo"])');
+  });
+
+  it('resets the spend token when switching trigger tabs without clearing amount/prices/receive token', () => {
+    const helper = sourceBetween('function defaultTriggerInputMintForSubAction', 'function isRecipientTemplateField');
+    expect(helper).toContain("if (subAction !== 'oco-tpsl') return USDC_MINT;");
+    expect(helper).toContain('owned.find((asset) => !isStablecoinMint(asset.mint))?.mint ?? owned[0]?.mint ?? WSOL_MINT');
+    expect(helper).toContain('delete state.templateTokenModes.inputMint;');
+    expect(helper).toContain('delete state.templateTokenSelections.inputMint;');
+    expect(helper).toContain('delete state.templateFieldErrors.inputMint;');
+    expect(helper).not.toContain('delete state.templateFields.outputMint');
+    expect(helper).not.toContain('delete state.templateFields.amount');
+    const handler = sourceBetween("querySelectorAll<HTMLButtonElement>('button[data-template-field-choice][data-template-field-value]')", "querySelectorAll<HTMLButtonElement>('button[data-cascading-retry]')");
+    expect(handler).toContain('state.templateFields[fieldId] = fieldValue;');
+    expect(handler).toContain('resetTriggerSpendTokenForSubAction(fieldId, fieldValue);');
+  });
+
+  it('normalizes connector params again before browser prepared actions are built from AI plans', () => {
+    const prepared = sourceBetween('function browserPreparedActionFromPlan', 'async function browserPreparedBlinkActionFromPlan');
+    expect(prepared).toContain('const actionPlan = planWithNormalizedBrowserActionParams(plan, sourceRecord);');
+    expect(prepared).toContain('params: browserActionParams(actionPlan, kind)');
+    expect(prepared).toContain('CONNECTOR_APPROVAL_ACTION_TYPES.has(plan.actionType)');
+    expect(prepared).toContain('connectorActionFormByActionType(plan.actionType)?.templateId');
+    expect(prepared).toContain('normalizeConnectorDraftParameters(template, plan.parameters)');
+  });
+});
+
+describe('DCA is a first-class chat Advanced action (Jupiter on-chain, → Positions)', () => {
+  it('registers DCA as the 3rd Advanced action — after Limit, before Borrow — matching New Request', () => {
+    const list = sourceBetween('const CHAT_ADVANCED_ACTIONS', 'interface ChatResearchAction');
+    expect(list).toContain("{ id: 'dca', eyebrow: 'Trading', title: 'DCA'");
+    const limitIdx = list.indexOf("id: 'limit'");
+    const dcaIdx = list.indexOf("id: 'dca'");
+    const borrowIdx = list.indexOf("id: 'borrow'");
+    expect(limitIdx).toBeGreaterThan(-1);
+    expect(dcaIdx).toBeGreaterThan(limitIdx);
+    expect(borrowIdx).toBeGreaterThan(dcaIdx);
+  });
+
+  it('gives DCA its own menu icon instead of the generic grid glyph', () => {
+    const icon = sourceBetween('function chatActionIcon', 'function chatResearchIcon');
+    expect(icon).toContain("id === 'dca'");
+  });
+
+  it('renames the Primary "Recurring / DCA" scheduler to "Recurring" so DCA lives only in Advanced', () => {
+    const power = sourceBetween('const CHAT_POWER_ACTIONS', 'function predictionActionEnabled');
+    expect(power).toContain("id: 'recurring', eyebrow: 'Automation', title: 'Recurring'");
+    expect(power).not.toContain("title: 'Recurring / DCA'");
+    // no chat surface still labels a control "Recurring / DCA"
+    expect(mainSource).not.toContain("t('Recurring / DCA')");
+  });
+
+  it('resolves the DCA total-spend amount on BOTH the composer preview and the approval card', () => {
+    // both amount resolvers previously omitted totalAmount → the composer never filled + the card showed "n/a"
+    const planAmount = sourceBetween('function connectorPlanAmountInfo', 'function connectorPlanAmountToken');
+    expect(planAmount).toContain("'totalAmount'");
+    const actionAmount = sourceBetween('function connectorActionAmountInfo', 'function connectorSemanticAmountInfo');
+    expect(actionAmount).toContain("{ key: 'totalAmount' }");
+  });
+
+  it('shows the DCA spend → receive route on the card', () => {
+    const route = sourceBetween('function connectorActionTokenRoute', 'function connectorActionInputToken');
+    expect(route).toContain("case 'jupiter_recurring_create_time_order':");
+    expect(route).toContain('inputToken: connectorActionInputToken(action), outputToken: connectorActionOutputToken(action)');
+  });
+
+  it('leads the DCA card sub-line with the schedule (orders · cadence)', () => {
+    const hero = sourceBetween('function chatActionHeroHtml', 'function dcaScheduleSummary');
+    expect(hero).toContain("action.kind === 'jupiter_recurring_create_time_order' ? dcaScheduleSummary(action)");
+    const schedule = sourceBetween('function dcaScheduleSummaryFrom', 'function chatActionTerminalHtml');
+    expect(schedule).toContain("read('numberOfOrders')");
+    expect(schedule).toContain('dcaCadenceLabel(');
+    expect(schedule).toContain("t('daily')");
+    expect(mainSource).toContain('{n} orders');
+  });
+
+  it('compiles the DCA composer/held label as a Swap-style sentence ("DCA {spend} to {to}")', () => {
+    const compile = sourceBetween('function compileConnectorDraftToMessage', 'function connectorFormHasAmountInput');
+    expect(compile).toContain("plan.actionType === 'jupiter_recurring_create_time_order'");
+    expect(compile).toContain('compileDcaConnectorMessage(plan, opts)');
+    const dca = sourceBetween('function compileDcaConnectorMessage', 'function connectorFormHasAmountInput');
+    expect(dca).toContain("planParameter(plan, ['inputMint'])");
+    expect(dca).toContain("planParameter(plan, ['outputMint'])");
+    expect(dca).toContain("planParameter(plan, ['totalAmount'])");
+    expect(dca).toContain('DCA {spend} to {to}');
+  });
+});
+
+describe('DCA card parity across chat / Sign Approval / New Request', () => {
+  it('gives the DCA card a clean title on every surface (no verbose/base58 connector title)', () => {
+    expect(mainSource).toContain("if (action.kind === 'jupiter_recurring_create_time_order') return t('DCA order');");
+    expect(mainSource).toContain("if (record.plan.actionType === 'jupiter_recurring_create_time_order') return t('DCA order');");
+  });
+
+  it('shares one reader-based schedule summary between the PreparedAction and plan cards', () => {
+    expect(mainSource).toContain('function dcaScheduleSummaryFrom(read: (key: string) => string)');
+    expect(mainSource).toContain('function dcaPlanScheduleSummary(plan: AgentPlan)');
+    // full card hero surfaces the schedule in the connector context slot
+    expect(mainSource).toContain("action.kind === 'jupiter_recurring_create_time_order' ? dcaScheduleSummary(action) : '')");
+  });
+
+  it('New Request DCA metric shows amount + resolved route + schedule (not the base58-leaking title)', () => {
+    const metric = sourceBetween('function reviewPlanMetric', 'function generatedPlanReviewSummaryGrid');
+    expect(metric).toContain("plan.actionType === 'jupiter_recurring_create_time_order'");
+    expect(metric).toContain('dcaPlanScheduleSummary(plan)');
+    expect(metric).toContain("tokenRouteDisplaySummary(");
+  });
+
+  it('New Request Route row resolves the DCA route to symbols instead of a truncated inputMint base58', () => {
+    // The DCA route is resolved via tokenRouteDisplaySummary in BOTH the summary-grid routeSummary and the
+    // metric — so planRecipientOrRoute (which leaks the raw inputMint) is never the DCA fallback.
+    const grid = sourceBetween('function generatedPlanReviewSummaryGrid', 'function reviewPlanDetailRows');
+    expect(grid).toContain("plan.actionType === 'jupiter_recurring_create_time_order'");
+    expect(grid).toContain("tokenRouteDisplaySummary(planParameter(plan, ['inputMint']) || 'input', planParameter(plan, ['outputMint']) || 'output')");
+  });
+
+  it('discloses the automation model on the DCA create form (both surfaces)', () => {
+    expect(mainSource).toContain('function dcaAutomationNoteHtml(): string');
+    expect((mainSource.match(/\$\{dcaAutomationNoteHtml\(\)\}/g) || []).length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('DCA lifecycle: per-fill + completion Done receipts + live poll', () => {
+  it('reconciles observed Jupiter-automation fills into Done receipts (deduped, persisted)', () => {
+    const rec = sourceBetween('function reconcileDcaLifecycle', 'function parseLendRows');
+    expect(rec).toContain('Array.isArray(o.fills)');
+    expect(rec).toContain('browser-dca-fill-');
+    expect(rec).toContain('explorerUrl(txId, state.cluster)');
+    // idempotent: skip fills already recorded, merge dedupes by actionId, and persist
+    expect(rec).toContain('if (seen.has(id)) continue');
+    expect(rec).toContain('mergeActionReceipts(additions, state.receipts)');
+    expect(rec).toContain('saveBrowserWorkflowState()');
+  });
+
+  it('posts a completion record once an order fills all its cycles', () => {
+    const rec = sourceBetween('function reconcileDcaLifecycle', 'function parseLendRows');
+    expect(rec).toContain('browser-dca-complete-');
+    expect(rec).toContain('executed >= total || recordedFills >= total');
+    expect(rec).toContain('DCA complete');
+  });
+
+  it('runs the reconciliation on every recurring-orders read', () => {
+    const fetchOrders = sourceBetween('if (section === \'orders\')', "} else if (section === 'lending')");
+    expect(fetchOrders).toContain('reconcileDcaLifecycle(rec)');
+  });
+
+  it('polls active DCA orders so progress + fills advance live, and self-clears when none remain', () => {
+    const poll = sourceBetween('function ensureDcaPollInterval', 'function clearDcaPollInterval');
+    expect(poll).toContain('hasActiveDcaPosition()');
+    expect(poll).toContain("fetchPositionCategory('orders', true)");
+    expect(mainSource).toContain("(state.positionsLive.orders?.rows ?? []).some((row) => row.kind === 'dca')");
+    // wired into the positions fetch
+    expect(mainSource).toContain('ensureDcaPollInterval();');
+  });
+
+  it('retires a completed DCA seed on a clean empty read so it cannot resurface on a later fetch error', () => {
+    expect(mainSource).toContain('if (!partial) expireStaleSeededForSection(section, cluster);');
+    expect(mainSource).not.toContain('if (rows.length > 0) expireStaleSeededForSection(section, cluster);');
+  });
+});

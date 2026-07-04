@@ -23,6 +23,26 @@ export interface ConnectorOptionMeta {
   baseSize?: string;
   maxLeverage?: string;
   markPriceUsd?: string;
+  // Jupiter Lend Borrow vault / position enrichment. A borrow vault fixes one collateral
+  // (supply) token + one borrow token; the picker resolves symbols/logos from these mints.
+  vaultId?: string;
+  positionId?: string;
+  supplyMint?: string;
+  borrowMint?: string;
+  borrowSymbol?: string;
+  supplyDecimals?: number;
+  borrowDecimals?: number;
+  ltvBps?: number;
+  liquidationThresholdBps?: number;
+  liquidationPenaltyBps?: number;
+  borrowApr?: number;
+  supplyApy?: number;
+  borrowAvailable?: string;
+  oraclePriceUsd?: string;
+  collateralAmount?: string;
+  debtAmount?: string;
+  healthRatioText?: string;
+  liquidationStatus?: string;
 }
 
 export interface ConnectorOption {
@@ -225,6 +245,72 @@ function jupiterFactList(resp: BridgeFactsResponse | null): Array<Record<string,
   return [];
 }
 
+function asNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
+  return undefined;
+}
+
+// Jupiter Lend Borrow reads (capability 'markets' -> vault list, 'positions' -> wallet positions)
+// return the raw structured snapshot arrays at the TOP level: resp.vaults
+// (JupiterLendBorrowVaultSnapshot[]) and resp.positions (JupiterLendBorrowPositionSnapshot[]).
+// Those carry vaultId / supplyMint / borrowMint / ltvBps etc. that the ConnectorFact projection
+// (resp.facts) drops — so we read the raw arrays directly rather than resp.facts.
+function jupiterBorrowRows(
+  resp: BridgeFactsResponse | null,
+  key: 'vaults' | 'positions',
+): Array<Record<string, unknown>> {
+  if (!resp) return [];
+  const top = (resp as Record<string, unknown>)[key];
+  if (Array.isArray(top)) return top as Array<Record<string, unknown>>;
+  const snapshot = resp.snapshot as Record<string, unknown> | undefined;
+  if (snapshot && Array.isArray(snapshot[key])) return snapshot[key] as Array<Record<string, unknown>>;
+  return [];
+}
+
+// Minimal built-in mint->symbol map so vault labels read as real token pairs even before the
+// render layer resolves logos. Covers the common borrow/collateral tokens; anything not here
+// falls back to the vault's own supplySymbol/borrowSymbol (if the server ever populates them)
+// and finally to a mint prefix. The picker UI (main.ts) resolves logos + the long tail from
+// the app's token registry via meta.supplyMint / meta.borrowMint.
+const BORROW_COMMON_SYMBOLS: Record<string, string> = {
+  So11111111111111111111111111111111111111112: 'SOL',
+  EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: 'USDC',
+  Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB: 'USDT',
+  '2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH': 'USDG',
+  USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA: 'USDS',
+  HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr: 'EURC',
+  J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn: 'JitoSOL',
+  jupSoLaHXQiZZTSfEWMTRRgpnyFm8f6sZdosWBjx93v: 'JupSOL',
+  mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So: 'mSOL',
+  '5oVNBeEEQvYi1cX3ir8Dx5n1P7pdxydbGF2X4TxVusJm': 'INF',
+  '27G8MtK7VtTcCHkpASjSDdkWWYfoqT6ggEuKidVJidD4': 'JLP',
+  JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN: 'JUP',
+  cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij: 'cbBTC',
+  '3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh': 'WBTC',
+};
+
+function lendTokenSymbolFor(mint: string | undefined, snapshotSymbol: string | undefined): string | undefined {
+  if (snapshotSymbol) return snapshotSymbol;
+  if (mint && BORROW_COMMON_SYMBOLS[mint]) return BORROW_COMMON_SYMBOLS[mint];
+  return undefined;
+}
+
+function borrowVaultLabel(supplySymbol: string | undefined, borrowSymbol: string | undefined, vaultId: string): string {
+  if (borrowSymbol && supplySymbol) return `Borrow ${borrowSymbol} · ${supplySymbol} collateral`;
+  if (supplySymbol) return `${supplySymbol} collateral vault`;
+  return `Vault #${vaultId}`;
+}
+
+function borrowVaultDetail(ltvBps: number | undefined, borrowApr: number | undefined, borrowAvailable: string | undefined, borrowSymbol: string | undefined): string {
+  const parts: string[] = [];
+  if (ltvBps !== undefined) parts.push(`${(ltvBps / 100).toFixed(0)}% max LTV`);
+  // borrowApr is already a percent value (RATE_DIVISOR=100 in the server snapshot), e.g. 5.28.
+  if (borrowApr !== undefined) parts.push(`${borrowApr.toFixed(2)}% APR`);
+  if (borrowAvailable) parts.push(`${borrowAvailable}${borrowSymbol ? ` ${borrowSymbol}` : ''} available`);
+  return parts.join(' · ') || 'Jupiter Lend borrow vault';
+}
+
 const jupiterLendEarnAssetProvider: ConnectorOptionProvider = {
   id: 'jupiter.lend.earn.asset',
   connectorId: 'jupiter',
@@ -295,57 +381,91 @@ const jupiterLendEarnAssetProvider: ConnectorOptionProvider = {
   },
 };
 
+// Map a raw JupiterLendBorrowVaultSnapshot row -> option meta (mints/decimals/bps/apr/liquidity).
+// The vault fixes both assets; the picker resolves symbols + logos from the mints.
+function borrowVaultMeta(entry: Record<string, unknown>): { vaultId: string; supplyMint?: string; borrowMint?: string; supplySymbol?: string; borrowSymbol?: string; meta: ConnectorOptionMeta } | null {
+  const vaultId = asDisplayString(entry.vaultId) ?? asDisplayString(entry.id);
+  if (!vaultId) return null;
+  const supplyMint = asString(entry.supplyMint);
+  const borrowMint = asString(entry.borrowMint);
+  const supplySymbol = lendTokenSymbolFor(supplyMint, asString(entry.supplySymbol) ?? asString(entry.collateralSymbol));
+  const borrowSymbol = lendTokenSymbolFor(borrowMint, asString(entry.borrowSymbol));
+  const supplyDecimals = asNumber(entry.supplyDecimals);
+  const borrowDecimals = asNumber(entry.borrowDecimals);
+  const ltvBps = asNumber(entry.ltvBps);
+  const liquidationThresholdBps = asNumber(entry.liquidationThresholdBps);
+  const liquidationPenaltyBps = asNumber(entry.liquidationPenaltyBps);
+  const borrowApr = asNumber(entry.borrowApr);
+  const supplyApy = asNumber(entry.supplyApy);
+  const borrowAvailable = asString(entry.borrowAvailable);
+  const meta: ConnectorOptionMeta = {
+    vaultId,
+    ...(supplyMint ? { supplyMint } : {}),
+    ...(borrowMint ? { borrowMint } : {}),
+    ...(supplySymbol ? { symbol: supplySymbol } : {}),
+    ...(borrowSymbol ? { borrowSymbol } : {}),
+    ...(supplyDecimals !== undefined ? { supplyDecimals } : {}),
+    ...(borrowDecimals !== undefined ? { borrowDecimals } : {}),
+    ...(ltvBps !== undefined ? { ltvBps } : {}),
+    ...(liquidationThresholdBps !== undefined ? { liquidationThresholdBps } : {}),
+    ...(liquidationPenaltyBps !== undefined ? { liquidationPenaltyBps } : {}),
+    ...(borrowApr !== undefined ? { borrowApr } : {}),
+    ...(supplyApy !== undefined ? { supplyApy } : {}),
+    ...(borrowAvailable ? { borrowAvailable } : {}),
+  };
+  return {
+    vaultId,
+    ...(supplyMint ? { supplyMint } : {}),
+    ...(borrowMint ? { borrowMint } : {}),
+    ...(supplySymbol ? { supplySymbol } : {}),
+    ...(borrowSymbol ? { borrowSymbol } : {}),
+    meta,
+  };
+}
+
 const jupiterLendBorrowVaultProvider: ConnectorOptionProvider = {
   id: 'jupiter.lend.borrow.vault',
   connectorId: 'jupiter',
   ttlMs: 60_000,
   async fetch({ walletAddress, bridge }) {
+    // Wallet's OPEN positions come from capability 'positions'; the full vault catalog from
+    // capability 'markets'. (Capability 'borrow' is the health-preview route and REQUIRES a
+    // vaultId — calling it without one throws server-side and blanked this dropdown.)
     const positionsResp = walletAddress
-      ? await safeBridgeFacts(bridge, {
-        connectorId: 'jupiter',
-        capability: 'borrow',
-        walletAddress,
-      })
+      ? await safeBridgeFacts(bridge, { connectorId: 'jupiter', capability: 'positions', walletAddress })
       : null;
-    const vaultsResp = await safeBridgeFacts(bridge, {
-      connectorId: 'jupiter',
-      capability: 'borrow',
-    });
+    const vaultsResp = await safeBridgeFacts(bridge, { connectorId: 'jupiter', capability: 'markets' });
+    // Build the full vault catalog first, keyed by vaultId, so wallet positions (whose position
+    // snapshot carries only a vaultId, not the token pair) can reuse the vault's rich pair label.
+    const catalog = new Map<string, { label: string; detail: string; meta: ConnectorOptionMeta }>();
+    for (const entry of jupiterBorrowRows(vaultsResp, 'vaults')) {
+      const mapped = borrowVaultMeta(entry);
+      if (!mapped || catalog.has(mapped.vaultId)) continue;
+      catalog.set(mapped.vaultId, {
+        label: borrowVaultLabel(mapped.supplySymbol, mapped.borrowSymbol, mapped.vaultId),
+        detail: borrowVaultDetail(mapped.meta.ltvBps, mapped.meta.borrowApr, mapped.meta.borrowAvailable, mapped.borrowSymbol),
+        meta: mapped.meta,
+      });
+    }
     const seen = new Set<string>();
     const positions: ConnectorOption[] = [];
-    for (const entry of jupiterFactList(positionsResp)) {
-      const vaultId = asString(entry.vaultId) ?? asString(entry.id);
+    for (const entry of jupiterBorrowRows(positionsResp, 'positions')) {
+      const vaultId = asDisplayString(entry.vaultId) ?? asDisplayString(entry.id);
       if (!vaultId || seen.has(vaultId)) continue;
       seen.add(vaultId);
-      const supplySymbol = asString(entry.supplySymbol) ?? asString(entry.collateralSymbol) ?? asString(entry.symbol);
-      const borrowSymbol = asString(entry.borrowSymbol);
-      const labelPair = supplySymbol && borrowSymbol
-        ? `${supplySymbol} → ${borrowSymbol}`
-        : supplySymbol ?? `Vault ${vaultId.slice(0, 6)}…`;
+      const cat = catalog.get(vaultId);
       positions.push({
         value: vaultId,
-        label: `${labelPair} vault`,
-        detail: 'Has open position in this vault',
+        label: cat?.label ?? `Vault #${vaultId}`,
+        detail: 'You have an open position in this vault',
         group: 'positions',
-        meta: { symbol: supplySymbol },
+        meta: cat?.meta ?? { vaultId },
       });
     }
     const all: ConnectorOption[] = [];
-    for (const entry of jupiterFactList(vaultsResp)) {
-      const vaultId = asString(entry.vaultId) ?? asString(entry.id);
-      if (!vaultId || seen.has(vaultId)) continue;
-      seen.add(vaultId);
-      const supplySymbol = asString(entry.supplySymbol) ?? asString(entry.collateralSymbol) ?? asString(entry.symbol);
-      const borrowSymbol = asString(entry.borrowSymbol);
-      const labelPair = supplySymbol && borrowSymbol
-        ? `${supplySymbol} → ${borrowSymbol}`
-        : supplySymbol ?? `Vault ${vaultId.slice(0, 6)}…`;
-      all.push({
-        value: vaultId,
-        label: `${labelPair} vault`,
-        detail: 'Jupiter Lend borrow vault',
-        group: 'all',
-      });
+    for (const [vaultId, cat] of catalog) {
+      if (seen.has(vaultId)) continue;
+      all.push({ value: vaultId, label: cat.label, detail: cat.detail, group: 'all', meta: cat.meta });
     }
     return [...positions, ...all];
   },
@@ -358,26 +478,31 @@ const jupiterLendBorrowPositionProvider: ConnectorOptionProvider = {
   async fetch({ fieldValues, walletAddress, bridge }) {
     if (!walletAddress) return [];
     const vaultId = fieldValues.vaultId?.trim();
-    const resp = await safeBridgeFacts(bridge, {
-      connectorId: 'jupiter',
-      capability: 'borrow',
-      walletAddress,
-      ...(vaultId ? { vaultId } : {}),
-    });
+    const resp = await safeBridgeFacts(bridge, { connectorId: 'jupiter', capability: 'positions', walletAddress });
     const out: ConnectorOption[] = [];
-    for (const entry of jupiterFactList(resp)) {
-      const positionId = asString(entry.positionId) ?? asString(entry.id);
+    for (const entry of jupiterBorrowRows(resp, 'positions')) {
+      const positionId = asDisplayString(entry.positionId) ?? asDisplayString(entry.id);
       if (!positionId) continue;
-      if (vaultId && asString(entry.vaultId) && entry.vaultId !== vaultId) continue;
+      const rowVaultId = asDisplayString(entry.vaultId);
+      if (vaultId && rowVaultId && rowVaultId !== vaultId) continue;
       const collateral = asString(entry.collateralAmount) ?? asString(entry.collateral);
-      const debt = asString(entry.borrowAmount) ?? asString(entry.debt);
+      const debt = asString(entry.debtAmount) ?? asString(entry.borrowAmount) ?? asString(entry.debt);
+      const health = asString(entry.healthRatioText);
       out.push({
         value: positionId,
-        label: `Position ${positionId.slice(0, 6)}…`,
-        detail: [collateral ? `Collateral ${collateral}` : '', debt ? `Debt ${debt}` : '']
+        label: `Position #${positionId}`,
+        detail: [collateral ? `Collateral ${collateral}` : '', debt ? `Debt ${debt}` : '', health ? `Health ${health}` : '']
           .filter(Boolean)
           .join(' · '),
         group: 'positions',
+        meta: {
+          ...(rowVaultId ? { vaultId: rowVaultId } : {}),
+          positionId,
+          ...(collateral ? { collateralAmount: collateral } : {}),
+          ...(debt ? { debtAmount: debt } : {}),
+          ...(health ? { healthRatioText: health } : {}),
+          ...(asString(entry.liquidationStatus) ? { liquidationStatus: asString(entry.liquidationStatus) } : {}),
+        },
       });
     }
     return out;

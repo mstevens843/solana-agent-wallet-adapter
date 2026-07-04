@@ -1,0 +1,320 @@
+- main [ref=f12e2]:
+  - generic [ref=f12e3]:
+    - generic "Agentic navigation" [ref=f12e4]:
+      - link "Agentic home" [ref=f12e5] [cursor=pointer]:
+        - /url: /
+        - img [ref=f12e6]
+        - generic [ref=f12e7]: Agentic
+      - navigation "Primary navigation" [ref=f12e8]:
+        - link "Home" [ref=f12e9] [cursor=pointer]:
+          - /url: /
+          - generic [ref=f12e10]: Home
+        - link "Docs" [ref=f12e11] [cursor=pointer]:
+          - /url: /docs
+          - generic [ref=f12e12]: Docs
+        - link "Builders" [ref=f12e13] [cursor=pointer]:
+          - /url: /builders
+          - generic [ref=f12e14]: Builders
+        - link "CLI" [ref=f12e15] [cursor=pointer]:
+          - /url: /cli
+          - generic [ref=f12e16]: CLI
+        - link "Desktop App" [ref=f12e17] [cursor=pointer]:
+          - /url: /desktop
+          - generic [ref=f12e18]: Desktop App
+        - link "Launch Demo" [ref=f12e19] [cursor=pointer]:
+          - /url: /demo
+          - generic [ref=f12e20]: Launch Demo
+        - link "Launch App" [ref=f12e21] [cursor=pointer]:
+          - /url: /app
+          - generic [ref=f12e22]: Launch App
+    - region "Agentic approval workspace." [ref=f12e23]:
+      - generic [ref=f12e25]:
+        - heading "Agentic approval workspace." [level=2] [ref=f12e26]
+        - paragraph [ref=f12e27]: AI or templates prepare review items. You check the route, recipient, amount, policy, and wallet action before signing.
+      - generic [ref=f12e28]:
+        - complementary [ref=f12e29]:
+          - generic [ref=f12e30]:
+            - generic [ref=f12e31]:
+              - generic [ref=f12e32]: SA
+              - generic [ref=f12e33]:
+                - paragraph [ref=f12e34]: Signer
+                - heading "Wallet standby" [level=2] [ref=f12e35]
+            - generic [ref=f12e38]:
+              - strong [ref=f12e39]: No signer connected
+              - paragraph [ref=f12e40]: No providers discovered
+          - button "Discover" [ref=f12e42] [cursor=pointer]
+          - generic [ref=f12e43]:
+            - group "Workspace storage status" [ref=f12e44]:
+              - generic "Workspace storage Browser-local workflow storage Sign in +" [ref=f12e45] [cursor=pointer]:
+                - generic [ref=f12e46]:
+                  - generic [ref=f12e47]: Workspace storage
+                  - emphasis [ref=f12e48]: Browser-local workflow storage
+                - button "Sign in" [disabled] [ref=f12e49]
+                - text: +
+            - group [ref=f12e50]:
+              - generic "AI connector Claude / Anthropic claude-opus-4-1-20250805 - Local Bridge not configured -" [ref=f12e51] [cursor=pointer]:
+                - generic [ref=f12e54]:
+                  - generic [ref=f12e55]: AI connector
+                  - strong [ref=f12e56]: Claude / Anthropic
+                  - emphasis [ref=f12e57]: claude-opus-4-1-20250805 - Local Bridge
+                - strong [ref=f12e58]: not configured
+                - text: "-"
+              - complementary [ref=f12e59]:
+                - tablist "AI setup type" [ref=f12e60]:
+                  - tab "API Key" [selected] [ref=f12e61] [cursor=pointer]
+                  - tab "Plan Connector" [ref=f12e62] [cursor=pointer]
+                - generic [ref=f12e63]:
+                  - generic [ref=f12e64]: AI provider key
+                  - generic [ref=f12e65]:
+                    - textbox "AI provider key" [ref=f12e66]:
+                      - /placeholder: Sent to local bridge memory
+                    - button "Paste key from clipboard" [ref=f12e67] [cursor=pointer]: Paste
+                - generic [ref=f12e68]:
+                  - generic [ref=f12e69]: AI path
+                  - generic [ref=f12e71]:
+                    - button "Local bridge AI - review via bridge" [ref=f12e72] [cursor=pointer]:
+                      - generic [ref=f12e73]:
+                        - generic [ref=f12e74]: AI path
+                        - strong [ref=f12e75]: Local bridge AI - review via bridge
+                    - text: ·
+                - generic [ref=f12e77]:
+                  - generic [ref=f12e78]: Provider preset
+                  - button "Claude / Anthropic" [ref=f12e81] [cursor=pointer]:
+                    - generic [ref=f12e83]:
+                      - generic [ref=f12e84]: Anthropic Messages API
+                      - strong [ref=f12e85]: Claude / Anthropic
+                - generic [ref=f12e87]:
+                  - generic [ref=f12e88]: Model
+                  - button "Claude Opus 4.1" [ref=f12e91] [cursor=pointer]:
+                    - generic [ref=f12e92]:
+                      - generic [ref=f12e93]:
+                        - text: Model preset
+                        - generic [ref=f12e94]: 500K tokens/minute
+                      - strong [ref=f12e95]: Claude Opus 4.1
+                - generic [ref=f12e97]:
+                  - generic [ref=f12e98]: Reasoning depth
+                  - button "Medium" [ref=f12e101] [cursor=pointer]:
+                    - generic [ref=f12e102]:
+                      - generic [ref=f12e103]: Balanced (default)
+                      - strong [ref=f12e104]: Medium
+                - button "Set and confirm API key" [disabled] [ref=f12e107]
+                - paragraph [ref=f12e108]:
+                  - text: AI suggests approve/deny and answers questions before signing. Your provider sees request details and public wallet address - never keys, seed phrase, location, or device IDs.
+                  - link "Privacy Policy" [ref=f12e109] [cursor=pointer]:
+                    - /url: /privacy
+                - group [ref=f12e110]:
+                  - generic "Setup needed Start the local runtime -" [ref=f12e111] [cursor=pointer]:
+                    - generic [ref=f12e112]: Setup needed
+                    - strong [ref=f12e113]: Start the local runtime
+                    - text: "-"
+                  - generic [ref=f12e114]:
+                    - paragraph [ref=f12e115]: Optional private AI path. Run the local runtime only if you want keys and workflow data to stay on this computer.
+                    - group "Local Bridge engine" [ref=f12e116]:
+                      - button "Provider API key" [ref=f12e117] [cursor=pointer]
+                      - button "Subscription connector" [ref=f12e118] [cursor=pointer]
+                    - generic [ref=f12e119]:
+                      - generic [ref=f12e120]: Run this in Terminal
+                      - generic [ref=f12e121]:
+                        - code [ref=f12e122]: npm exec @solana-agent-wallet-adapter/cli -- app
+                        - button "Copy" [ref=f12e123] [cursor=pointer]
+                      - paragraph [ref=f12e124]:
+                        - strong [ref=f12e125]: No separate install step.
+                        - text: This command downloads and starts Agentic's local runtime. Keep the Terminal window open.
+                      - list [ref=f12e126]:
+                        - listitem [ref=f12e127]: Paste the command and press Enter.
+                        - listitem [ref=f12e128]: Connect your wallet in the tab it opens.
+                        - listitem [ref=f12e129]: Return here and click Check.
+                      - group [ref=f12e130]:
+                        - generic "Desktop App or permanent install" [ref=f12e131] [cursor=pointer]
+                    - button "Check local bridge" [disabled] [ref=f12e132]
+                    - generic [ref=f12e133]:
+                      - generic [ref=f12e134]:
+                        - text: Endpoint
+                        - strong [ref=f12e135]: 127.0.0.1:8787
+                      - generic [ref=f12e136]:
+                        - text: Wallet
+                        - strong [ref=f12e137]: Not connected
+                      - generic [ref=f12e138]:
+                        - text: AI provider key
+                        - strong [ref=f12e139]: Not set
+                    - paragraph [ref=f12e140]: Paste your normal AI provider key below. It is sent to the local bridge and is not stored by Agentic.
+        - generic [ref=f12e141]:
+          - generic [ref=f12e142]:
+            - navigation "Workspace navigation" [ref=f12e143]:
+              - button "Home" [ref=f12e144] [cursor=pointer]:
+                - generic [ref=f12e145]: Home
+              - button "Chat" [ref=f12e146] [cursor=pointer]:
+                - generic [ref=f12e147]: Chat
+              - button "New Request" [ref=f12e148] [cursor=pointer]:
+                - generic [ref=f12e149]: New Request
+              - generic [ref=f12e150]:
+                - button "Sign Approval" [disabled] [ref=f12e151]:
+                  - generic [ref=f12e152]: Sign Approval
+                - text: Connect a wallet to review requests that need approval.
+              - button "Done" [ref=f12e153] [cursor=pointer]:
+                - generic [ref=f12e154]: Done
+              - group [ref=f12e155]:
+                - generic "More" [ref=f12e156] [cursor=pointer]:
+                  - generic [ref=f12e157]: More
+                  - generic [ref=f12e158]: ▾
+            - button "Open Preferences" [ref=f12e159] [cursor=pointer]: Preferences
+          - generic [ref=f12e161]:
+            - tablist "Home sections" [ref=f12e162]:
+              - tab "Center Command overview" [selected] [ref=f12e163] [cursor=pointer]:
+                - strong [ref=f12e164]: Center
+                - generic [ref=f12e165]: Command overview
+              - tab "Connect AI Agent setup" [ref=f12e166] [cursor=pointer]:
+                - strong [ref=f12e167]: Connect AI
+                - generic [ref=f12e168]: Agent setup
+              - tab "Connect Cloud Storage Device and cloud workspace" [ref=f12e169] [cursor=pointer]:
+                - strong [ref=f12e170]: Connect Cloud Storage
+                - generic [ref=f12e171]: Device and cloud workspace
+            - generic [ref=f12e173]:
+              - generic [ref=f12e174]:
+                - generic [ref=f12e175]:
+                  - heading "Approval workspace" [level=2] [ref=f12e176]
+                  - paragraph [ref=f12e177]: "- AI prepares the review item; the wallet owner checks the details and signs only after review."
+                - generic [ref=f12e178]:
+                  - button "New Request" [ref=f12e179] [cursor=pointer]
+                  - button "Sign Proof" [ref=f12e180] [cursor=pointer]
+              - region "First-time approval flow" [ref=f12e181]:
+                - generic [ref=f12e182]:
+                  - generic [ref=f12e183]: Approval loop
+                  - 'heading "Next: Discover wallets" [level=3] [ref=f12e184]'
+                  - paragraph [ref=f12e185]: Find Solana wallet providers in this browser.
+                  - generic [ref=f12e186]: "Workspace: Saved on this device"
+                - list "First-time progress" [ref=f12e187]:
+                  - listitem "Use your wallet signer." [ref=f12e188]:
+                    - generic [ref=f12e189]: "1"
+                    - strong [ref=f12e190]: Connect
+                  - listitem "Plan from template." [ref=f12e191]:
+                    - generic [ref=f12e192]: "2"
+                    - strong [ref=f12e193]: Create
+                  - listitem "Check route and limits." [ref=f12e194]:
+                    - generic [ref=f12e195]: "3"
+                    - strong [ref=f12e196]: Review
+                  - listitem "Send for approval." [ref=f12e197]:
+                    - generic [ref=f12e198]: "4"
+                    - strong [ref=f12e199]: Decide
+                  - listitem "Saved after decision." [ref=f12e200]:
+                    - generic [ref=f12e201]: "5"
+                    - strong [ref=f12e202]: Receipt
+              - region "Agentic trust boundary" [ref=f12e203]:
+                - generic [ref=f12e204]:
+                  - strong [ref=f12e205]: No key custody
+                  - generic [ref=f12e206]: Wallet keeps private keys
+                - generic [ref=f12e207]:
+                  - strong [ref=f12e208]: No unlimited signer
+                  - generic [ref=f12e209]: Every action has a boundary
+                - generic [ref=f12e210]:
+                  - strong [ref=f12e211]: AI prepares review
+                  - generic [ref=f12e212]: Wallet owner reviews and signs
+                - generic [ref=f12e213]:
+                  - strong [ref=f12e214]: Local receipts
+                  - generic [ref=f12e215]: Saved proofs stay available
+              - generic "Agentic approval loop" [ref=f12e216]:
+                - generic [ref=f12e217]:
+                  - generic [ref=f12e218]: Plan
+                  - paragraph [ref=f12e219]: AI or templates prepare a bounded review item.
+                - generic [ref=f12e220]:
+                  - generic [ref=f12e221]: Check
+                  - paragraph [ref=f12e222]: Review amount, route, recipient, risk, and rule.
+                - generic [ref=f12e223]:
+                  - generic [ref=f12e224]: Approve
+                  - paragraph [ref=f12e225]: Wallet signs only the visible decision.
+                - generic [ref=f12e226]:
+                  - generic [ref=f12e227]: Prove
+                  - paragraph [ref=f12e228]: Saved proofs stay attached to Done.
+              - generic [ref=f12e229]:
+                - article [ref=f12e230]:
+                  - generic [ref=f12e231]:
+                    - img [ref=f12e232]
+                    - generic [ref=f12e236]: Wallet
+                  - strong [ref=f12e237]: Connect wallet
+                  - paragraph [ref=f12e238]: No signing authority granted
+                  - generic [ref=f12e239]:
+                    - button "Discover" [ref=f12e240] [cursor=pointer]
+                    - button "Connect" [disabled] [ref=f12e241]
+                - article [ref=f12e242]:
+                  - generic [ref=f12e243]:
+                    - img [ref=f12e244]
+                    - generic [ref=f12e248]: Approvals
+                  - strong [ref=f12e249]: 0 pending
+                  - paragraph [ref=f12e250]: No approvals waiting
+                  - button "Open" [ref=f12e251] [cursor=pointer]
+                - article [ref=f12e252]:
+                  - generic [ref=f12e253]:
+                    - img [ref=f12e254]
+                    - generic [ref=f12e259]: Repeat Payments
+                  - strong [ref=f12e260]: 0 active
+                  - paragraph [ref=f12e261]: No active repeat payments
+                  - button "Open" [ref=f12e262] [cursor=pointer]
+                - article [ref=f12e263]:
+                  - generic [ref=f12e264]:
+                    - img [ref=f12e265]
+                    - generic [ref=f12e269]: Save Proof
+                  - strong [ref=f12e270]: No proof yet
+                  - paragraph [ref=f12e271]: Save a proof or complete an approval
+                  - button "Save" [ref=f12e272] [cursor=pointer]
+              - region "Preference snapshot" [ref=f12e273]:
+                - generic [ref=f12e274]:
+                  - generic [ref=f12e275]:
+                    - generic [ref=f12e276]: Preference snapshot
+                    - heading "Current setup" [level=3] [ref=f12e277]
+                  - paragraph [ref=f12e278]: Most important workspace settings at a glance.
+                - generic [ref=f12e279]:
+                  - article [ref=f12e280]:
+                    - generic [ref=f12e281]:
+                      - img [ref=f12e282]
+                      - generic [ref=f12e288]: AI path
+                    - strong [ref=f12e289]: Local Bridge selected
+                    - paragraph [ref=f12e290]: Claude / Anthropic - claude-opus-4-1-20250805
+                    - generic [ref=f12e291]:
+                      - emphasis [ref=f12e292]: Bridge key required
+                      - button "Connect" [ref=f12e293] [cursor=pointer]
+                  - article [ref=f12e294]:
+                    - generic [ref=f12e295]:
+                      - img [ref=f12e296]
+                      - generic [ref=f12e299]: Cloud storage
+                    - strong [ref=f12e300]: Cloud unavailable
+                    - paragraph [ref=f12e301]: Workflow data stays saved on this device.
+                    - generic [ref=f12e302]:
+                      - emphasis [ref=f12e303]: Local workspace
+                      - button "Connect" [ref=f12e304] [cursor=pointer]
+                  - article [ref=f12e305]:
+                    - generic [ref=f12e306]:
+                      - img [ref=f12e307]
+                      - generic [ref=f12e310]: Connectors
+                    - strong [ref=f12e311]: 1 connector set
+                    - paragraph [ref=f12e312]: Jupiter
+                    - button "Manage" [ref=f12e314] [cursor=pointer]
+                  - article [ref=f12e315]:
+                    - generic [ref=f12e316]:
+                      - img [ref=f12e317]
+                      - generic [ref=f12e320]: Review rules
+                    - strong [ref=f12e321]: Defaults active
+                    - paragraph [ref=f12e322]: 0 recipients - 0 rails - 0 policies - 0 alerts
+                    - generic [ref=f12e323]:
+                      - emphasis [ref=f12e324]: No extra rules
+                      - button "Review" [ref=f12e325] [cursor=pointer]
+    - generic "Agentic footer" [ref=f12e326]:
+      - generic [ref=f12e327]:
+        - generic [ref=f12e328]:
+          - img [ref=f12e329]
+          - text: Agentic
+        - paragraph [ref=f12e330]: Render serves the web app and hosted BYOK AI proxy. CLI, Desktop App, local bridge, and wallet approvals run on your device.
+        - paragraph [ref=f12e331]:
+          - generic [ref=f12e332]: SolPulse LLC
+          - link "support@solpulse.trade" [ref=f12e333] [cursor=pointer]:
+            - /url: mailto:support@solpulse.trade
+      - navigation "Footer navigation" [ref=f12e334]:
+        - link "Docs" [ref=f12e335] [cursor=pointer]:
+          - /url: /docs
+        - link "Releases" [ref=f12e336] [cursor=pointer]:
+          - /url: https://github.com/mstevens843/solana-agent-wallet-adapter/releases
+        - link "Terms" [ref=f12e337] [cursor=pointer]:
+          - /url: /terms
+        - link "Privacy" [ref=f12e338] [cursor=pointer]:
+          - /url: /privacy
+        - link "Delete Account" [ref=f12e339] [cursor=pointer]:
+          - /url: /delete-account

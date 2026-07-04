@@ -1,0 +1,270 @@
+- main [ref=e2]:
+  - generic [ref=e677]:
+    - generic "Agentic navigation" [ref=e678]:
+      - link "Agentic home" [ref=e679] [cursor=pointer]:
+        - /url: /
+        - img [ref=e680]
+        - generic [ref=e681]: Agentic
+      - navigation "Primary navigation" [ref=e682]:
+        - link "Home" [ref=e683] [cursor=pointer]:
+          - /url: /
+          - generic [ref=e684]: Home
+        - link "Docs" [ref=e685] [cursor=pointer]:
+          - /url: /docs
+          - generic [ref=e686]: Docs
+        - link "Builders" [ref=e687] [cursor=pointer]:
+          - /url: /builders
+          - generic [ref=e688]: Builders
+        - link "CLI" [ref=e689] [cursor=pointer]:
+          - /url: /cli
+          - generic [ref=e690]: CLI
+        - link "Desktop App" [ref=e691] [cursor=pointer]:
+          - /url: /desktop
+          - generic [ref=e692]: Desktop App
+        - link "Launch Demo" [ref=e693] [cursor=pointer]:
+          - /url: /demo
+          - generic [ref=e694]: Launch Demo
+        - link "Launch App" [ref=e695] [cursor=pointer]:
+          - /url: /app
+          - generic [ref=e696]: Launch App
+    - region "Agentic approval workspace." [ref=e697]:
+      - generic [ref=e699]:
+        - heading "Agentic approval workspace." [level=2] [ref=e700]
+        - paragraph [ref=e701]: AI or templates prepare review items. You check the route, recipient, amount, policy, and wallet action before signing.
+      - generic [ref=e702]:
+        - complementary [ref=e703]:
+          - generic [ref=e704]:
+            - generic [ref=e705]:
+              - generic [ref=e706]: SA
+              - generic [ref=e707]:
+                - paragraph [ref=e708]: Signer
+                - heading "Wallet standby" [level=2] [ref=e709]
+            - generic [ref=e712]:
+              - strong [ref=e713]: No signer connected
+              - paragraph [ref=e714]: No providers discovered
+          - button "Discover" [ref=e716] [cursor=pointer]
+          - generic [ref=e717]:
+            - group "Workspace storage status" [ref=e718]:
+              - generic "Workspace storage Browser-local workflow storage Sign in +" [ref=e719] [cursor=pointer]:
+                - generic [ref=e720]:
+                  - generic [ref=e721]: Workspace storage
+                  - emphasis [ref=e722]: Browser-local workflow storage
+                - button "Sign in" [disabled] [ref=e723]
+                - text: +
+            - group [ref=e724]:
+              - generic "AI connector Claude / Anthropic claude-opus-4-1-20250805 - Local Bridge not configured -" [ref=e725] [cursor=pointer]:
+                - generic [ref=e728]:
+                  - generic [ref=e729]: AI connector
+                  - strong [ref=e730]: Claude / Anthropic
+                  - emphasis [ref=e731]: claude-opus-4-1-20250805 - Local Bridge
+                - strong [ref=e732]: not configured
+                - text: "-"
+              - complementary [ref=e733]:
+                - tablist "AI setup type" [ref=e734]:
+                  - tab "API Key" [selected] [ref=e735] [cursor=pointer]
+                  - tab "Plan Connector" [ref=e736] [cursor=pointer]
+                - generic [ref=e737]:
+                  - generic [ref=e738]: AI provider key
+                  - generic [ref=e739]:
+                    - textbox "AI provider key" [ref=e740]:
+                      - /placeholder: Sent to local bridge memory
+                    - button "Paste key from clipboard" [ref=e741] [cursor=pointer]: Paste
+                - generic [ref=e742]:
+                  - generic [ref=e743]: AI path
+                  - generic [ref=e745]:
+                    - button "Local bridge AI - review via bridge" [ref=e746] [cursor=pointer]:
+                      - generic [ref=e747]:
+                        - generic [ref=e748]: AI path
+                        - strong [ref=e749]: Local bridge AI - review via bridge
+                    - text: ·
+                - generic [ref=e751]:
+                  - generic [ref=e752]: Provider preset
+                  - button "Claude / Anthropic" [ref=e755] [cursor=pointer]:
+                    - generic [ref=e757]:
+                      - generic [ref=e758]: Anthropic Messages API
+                      - strong [ref=e759]: Claude / Anthropic
+                - generic [ref=e761]:
+                  - generic [ref=e762]: Model
+                  - button "Claude Opus 4.1" [ref=e765] [cursor=pointer]:
+                    - generic [ref=e766]:
+                      - generic [ref=e767]:
+                        - text: Model preset
+                        - generic [ref=e768]: 500K tokens/minute
+                      - strong [ref=e769]: Claude Opus 4.1
+                - generic [ref=e771]:
+                  - generic [ref=e772]: Reasoning depth
+                  - button "Medium" [ref=e775] [cursor=pointer]:
+                    - generic [ref=e776]:
+                      - generic [ref=e777]: Balanced (default)
+                      - strong [ref=e778]: Medium
+                - button "Set and confirm API key" [disabled] [ref=e781]
+                - paragraph [ref=e782]:
+                  - text: AI suggests approve/deny and answers questions before signing. Your provider sees request details and public wallet address - never keys, seed phrase, location, or device IDs.
+                  - link "Privacy Policy" [ref=e783] [cursor=pointer]:
+                    - /url: /privacy
+                - group [ref=e784]:
+                  - generic "Setup needed Start the local runtime -" [ref=e785] [cursor=pointer]:
+                    - generic [ref=e786]: Setup needed
+                    - strong [ref=e787]: Start the local runtime
+                    - text: "-"
+                  - generic [ref=e788]:
+                    - paragraph [ref=e789]: Optional private AI path. Run the local runtime only if you want keys and workflow data to stay on this computer.
+                    - group "Local Bridge engine" [ref=e790]:
+                      - button "Provider API key" [ref=e791] [cursor=pointer]
+                      - button "Subscription connector" [ref=e792] [cursor=pointer]
+                    - generic [ref=e793]:
+                      - generic [ref=e794]: Run this in Terminal
+                      - generic [ref=e795]:
+                        - code [ref=e796]: npm exec @solana-agent-wallet-adapter/cli -- app
+                        - button "Copy" [ref=e797] [cursor=pointer]
+                      - paragraph [ref=e798]:
+                        - strong [ref=e799]: No separate install step.
+                        - text: This command downloads and starts Agentic's local runtime. Keep the Terminal window open.
+                      - list [ref=e800]:
+                        - listitem [ref=e801]: Paste the command and press Enter.
+                        - listitem [ref=e802]: Connect your wallet in the tab it opens.
+                        - listitem [ref=e803]: Return here and click Check.
+                      - group [ref=e804]:
+                        - generic "Desktop App or permanent install" [ref=e805] [cursor=pointer]
+                    - button "Check local bridge" [disabled] [ref=e806]
+                    - generic [ref=e807]:
+                      - generic [ref=e808]:
+                        - text: Endpoint
+                        - strong [ref=e809]: 127.0.0.1:8787
+                      - generic [ref=e810]:
+                        - text: Wallet
+                        - strong [ref=e811]: Not connected
+                      - generic [ref=e812]:
+                        - text: AI provider key
+                        - strong [ref=e813]: Not set
+                    - paragraph [ref=e814]: Paste your normal AI provider key below. It is sent to the local bridge and is not stored by Agentic.
+        - generic [ref=e815]:
+          - generic [ref=e816]:
+            - navigation "Workspace navigation" [ref=e817]:
+              - button "Home" [ref=e818] [cursor=pointer]:
+                - generic [ref=e819]: Home
+              - button "Chat" [ref=e820] [cursor=pointer]:
+                - generic [ref=e821]: Chat
+              - button "New Request" [ref=e822] [cursor=pointer]:
+                - generic [ref=e823]: New Request
+              - generic [ref=e824]:
+                - button "Sign Approval" [disabled] [ref=e825]:
+                  - generic [ref=e826]: Sign Approval
+                - text: Connect a wallet to review requests that need approval.
+              - button "Done" [ref=e827] [cursor=pointer]:
+                - generic [ref=e828]: Done
+              - group [ref=e829]:
+                - generic "More" [ref=e830] [cursor=pointer]:
+                  - generic [ref=e831]: More
+                  - generic [ref=e832]: ▾
+            - button "Open Preferences" [ref=e833] [cursor=pointer]: Preferences
+          - generic [ref=e835]:
+            - generic [ref=e837]:
+              - heading "New Request" [level=2] [ref=e838]
+              - paragraph [ref=e839]: "- Create a one-time payment or swap. Nothing is sent until you approve it."
+            - generic [ref=e840]:
+              - tablist "One-time plan steps" [ref=e841]:
+                - tab "Start" [selected] [ref=e842] [cursor=pointer]
+                - tab "Check" [ref=e843] [cursor=pointer]
+              - group "What do you want to do?" [ref=e844]:
+                - generic [ref=e845]:
+                  - button "Swap" [pressed] [ref=e846] [cursor=pointer]
+                  - button "Send" [ref=e847] [cursor=pointer]
+                  - button "Proof" [ref=e848] [cursor=pointer]
+                  - button "Evidence" [ref=e849] [cursor=pointer]
+                - generic [ref=e850]:
+                  - button "Lend" [expanded] [active] [ref=e851] [cursor=pointer]:
+                    - strong [ref=e852]: Lend
+                  - listbox [ref=e927]:
+                    - generic [ref=e928]:
+                      - option "Lend" [ref=e929] [cursor=pointer]:
+                        - strong [ref=e930]: Lend
+                      - option "Limit / TP-SL" [ref=e931] [cursor=pointer]:
+                        - strong [ref=e932]: Limit / TP-SL
+                      - option "DCA" [ref=e933] [cursor=pointer]:
+                        - strong [ref=e934]: DCA
+                      - option "Borrow" [ref=e935] [cursor=pointer]:
+                        - strong [ref=e936]: Borrow
+                      - option "Liquidity" [ref=e937] [cursor=pointer]:
+                        - strong [ref=e938]: Liquidity
+                      - option "Stake" [ref=e939] [cursor=pointer]:
+                        - strong [ref=e940]: Stake
+                      - option "Perps" [ref=e941] [cursor=pointer]:
+                        - strong [ref=e942]: Perps
+                      - option "NFT" [ref=e943] [cursor=pointer]:
+                        - strong [ref=e944]: NFT
+                      - option "Governance" [ref=e945] [cursor=pointer]:
+                        - strong [ref=e946]: Governance
+                      - option "Bridge" [ref=e947] [cursor=pointer]:
+                        - strong [ref=e948]: Bridge
+                      - option "Oracle" [ref=e949] [cursor=pointer]:
+                        - strong [ref=e950]: Oracle
+            - generic [ref=e854]:
+              - generic [ref=e856]:
+                - generic [ref=e857]:
+                  - heading "Swap tokens - This draft can request a wallet approval. Signed-in users use Agentic Cloud; signed-out workflow stays on this device." [level=3] [ref=e859]:
+                    - generic [ref=e860]: Swap tokens
+                    - generic [ref=e861]: "- This draft can request a wallet approval. Signed-in users use Agentic Cloud; signed-out workflow stays on this device."
+                  - strong [ref=e862]: Approval-ready
+                - generic [ref=e863]:
+                  - generic [ref=e864]:
+                    - generic [ref=e865]:
+                      - generic [ref=e866]:
+                        - generic [ref=e868]: Input token
+                        - group "Input token input mode" [ref=e869]:
+                          - button "List" [ref=e870] [cursor=pointer]
+                          - button "Mint" [ref=e871] [cursor=pointer]
+                      - button "SOL" [ref=e874] [cursor=pointer]:
+                        - generic [ref=e875]:
+                          - generic [ref=e876]: Input token
+                          - strong [ref=e877]: SOL
+                    - generic [ref=e879]:
+                      - generic [ref=e880]:
+                        - generic [ref=e882]: Output token
+                        - group "Output token input mode" [ref=e883]:
+                          - button "List" [ref=e884] [cursor=pointer]
+                          - button "Mint" [ref=e885] [cursor=pointer]
+                      - textbox "Search symbol/name or paste mint" [ref=e887]: USDC
+                    - generic [ref=e888]:
+                      - generic [ref=e889]:
+                        - generic [ref=e890]: Token amount *
+                        - group "Amount unit" [ref=e891]:
+                          - button "Token amount * Amount unit 0.01" [disabled] [ref=e892]: $
+                          - button "Token" [ref=e893] [cursor=pointer]
+                      - textbox "0.01" [ref=e895]
+                    - generic [ref=e896]:
+                      - generic [ref=e897]:
+                        - generic [ref=e898]: Max slippage
+                        - group "Slippage mode" [ref=e899]:
+                          - button "Max slippage Slippage mode Auto" [ref=e900] [cursor=pointer]: Auto
+                          - button "Custom" [ref=e901] [cursor=pointer]
+                      - textbox [disabled] [ref=e902]: Auto
+                  - generic [ref=e903]:
+                    - generic [ref=e905]: Notes for review record
+                    - textbox "Notes for review record" [ref=e906]:
+                      - /placeholder: Optional context, reason, or policy note saved with this plan.
+                  - button "Create Plan" [ref=e909] [cursor=pointer]
+              - generic [ref=e910]:
+                - generic [ref=e911]: Plan flow
+                - paragraph [ref=e912]: Plans move to Check. Send for approval when ready; your wallet signs later.
+    - generic "Agentic footer" [ref=e913]:
+      - generic [ref=e914]:
+        - generic [ref=e915]:
+          - img [ref=e916]
+          - text: Agentic
+        - paragraph [ref=e917]: Render serves the web app and hosted BYOK AI proxy. CLI, Desktop App, local bridge, and wallet approvals run on your device.
+        - paragraph [ref=e918]:
+          - generic [ref=e919]: SolPulse LLC
+          - link "support@solpulse.trade" [ref=e920] [cursor=pointer]:
+            - /url: mailto:support@solpulse.trade
+      - navigation "Footer navigation" [ref=e921]:
+        - link "Docs" [ref=e922] [cursor=pointer]:
+          - /url: /docs
+        - link "Releases" [ref=e923] [cursor=pointer]:
+          - /url: https://github.com/mstevens843/solana-agent-wallet-adapter/releases
+        - link "Terms" [ref=e924] [cursor=pointer]:
+          - /url: /terms
+        - link "Privacy" [ref=e925] [cursor=pointer]:
+          - /url: /privacy
+        - link "Delete Account" [ref=e926] [cursor=pointer]:
+          - /url: /delete-account

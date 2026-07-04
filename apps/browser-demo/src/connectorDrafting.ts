@@ -846,6 +846,13 @@ export function scopeConnectorDraftParameters(
     if (!connectorParameterFieldIsVisible(field, scopedSource)) continue;
     allowConnectorFieldParameter(allowed, field.id);
   }
+  // The Buy/Sell/Auto-entry tabs derive triggerMint (and mirror one slippage onto both TP/SL legs)
+  // instead of exposing them as fields, so allow those derived params through even with no field.
+  if (form && JUPITER_TRIGGER_ORDER_ACTION_TYPES.has(connectorActionFormTemplateActionType(form, scopedSource))) {
+    allowed.add('triggerMint');
+    allowed.add('takeProfitSlippageBps');
+    allowed.add('stopLossSlippageBps');
+  }
 
   const scoped: Record<string, string> = {};
   for (const [key, value] of Object.entries(scopedSource)) {
@@ -980,6 +987,17 @@ export function healthFactorError(value: string | undefined): string {
   return '';
 }
 
+// Whole-count fields (e.g. DCA numberOfOrders): a positive integer when present. Empty = valid
+// (required-ness enforced separately). Catches "0", "-3", "2.5", "abc" at create-time instead of the
+// MCP boundary (z.number().int().min(1)) at sign-time. Returns a raw (untranslated) error.
+export function positiveIntegerError(value: string | undefined): string {
+  const v = (value ?? '').trim();
+  if (!v) return '';
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 1) return 'Enter a whole number of 1 or more.';
+  return '';
+}
+
 // Connector numeric fields validated as a positive number when present. Amounts are always concrete
 // decimals here (withdraw-all uses a separate withdrawMode/withdrawAll flag, never the amount field),
 // so there are no "all"/"max" keyword values to special-case. Ticks are intentionally excluded
@@ -987,7 +1005,9 @@ export function healthFactorError(value: string | undefined): string {
 const POSITIVE_NUMBER_FIELDS = new Set([
   'amount', 'amountSol', 'solAmount', 'msolAmount', 'inputAmount', 'totalAmount', 'shares',
   'priceSol', 'bidPriceSol', 'maxEscrowSol', 'lowerPrice', 'upperPrice', 'triggerPrice', 'limitPrice',
+  'minPrice', 'maxPrice',
 ]);
+const POSITIVE_INTEGER_FIELDS = new Set(['numberOfOrders']);
 const HEALTH_FACTOR_FIELDS = new Set(['minHealthFactor', 'minHealthRatio']);
 
 export function validateConnectorDraftParameters(
@@ -1043,9 +1063,17 @@ export function validateConnectorDraftParameters(
   for (const [key, value] of Object.entries(normalized)) {
     let fieldErr = '';
     if (/slippagebps$/i.test(key)) fieldErr = slippageBpsError(value);
+    else if (POSITIVE_INTEGER_FIELDS.has(key)) fieldErr = positiveIntegerError(value);
     else if (POSITIVE_NUMBER_FIELDS.has(key)) fieldErr = positiveNumberError(value);
     else if (HEALTH_FACTOR_FIELDS.has(key)) fieldErr = healthFactorError(value);
     if (fieldErr) errors[key] = fieldErr;
+  }
+
+  // DCA optional price bounds: reject min > max at create-time (backend enforces the same at sign).
+  const minPrice = normalized.minPrice?.trim();
+  const maxPrice = normalized.maxPrice?.trim();
+  if (minPrice && maxPrice && !errors.minPrice && !errors.maxPrice && Number(minPrice) > Number(maxPrice)) {
+    errors.maxPrice = 'Maximum price must be greater than or equal to the minimum price.';
   }
 
   // Jupiter Lend earn withdraw/redeem accept EITHER an amount OR a share count — both are optional
@@ -1157,6 +1185,23 @@ function minHealthRatioField(): AgentPlanTemplateField {
   });
 }
 
+// Plain-English risk posture for the borrow open-loan form. Replaces the raw "minimum health ratio"
+// jargon input: instead of typing a number, the user picks how much of a safety buffer to keep above
+// liquidation. This drives the projected-health preview's warning threshold (Safe warns earliest,
+// Max only warns near the vault's own limit). main.ts maps the choice -> a minHealthRatio.
+function borrowRiskField(): AgentPlanTemplateField {
+  return {
+    id: 'borrowRisk',
+    label: 'Risk level',
+    type: 'select',
+    options: ['Safe', 'Balanced', 'Max'],
+    defaultValue: 'Balanced',
+    helperText:
+      'How much of a safety buffer to keep above liquidation. Safe keeps the biggest cushion; ' +
+      'Max borrows nearest the vault limit (riskier). We flag it below before you get too close.',
+  };
+}
+
 function normalizeConnectorParameterAliases(
   form: ConnectorActionForm | undefined,
   parameters: Record<string, string>,
@@ -1165,6 +1210,7 @@ function normalizeConnectorParameterAliases(
   if (!form) return tokenNormalized;
   parameters = tokenNormalized;
   const actionType = connectorActionFormTemplateActionType(form, parameters);
+  parameters = applyJupiterTriggerDerivedParams(actionType, parameters);
   if (actionType !== 'magiceden_bid' && actionType !== 'tensor_bid') return parameters;
   const next = { ...parameters };
   const rawBidPriceSol = next.bidPriceSol?.trim() || next.priceSol?.trim() || '';
@@ -1194,6 +1240,42 @@ function normalizeConnectorTokenParameters(
     }
     const symbolMint = JUPITER_FORM_TOKEN_SYMBOL_TO_MINT[next[fieldId]?.trim().toUpperCase() ?? ''];
     if (symbolMint) next[fieldId] = symbolMint;
+  }
+  return next;
+}
+
+const JUPITER_TRIGGER_ORDER_ACTION_TYPES = new Set([
+  'jupiter_trigger_single_order',
+  'jupiter_trigger_oco_order',
+  'jupiter_trigger_otoco_order',
+]);
+
+// The Buy/Sell/Auto-entry tabs let us derive Jupiter Trigger's internal knobs instead of asking the user:
+//  - triggerMint (the watched token): Buy/Auto-entry watch what you acquire (outputMint); Sell watches
+//    what you sell (inputMint — which also keeps the adapter's min-order USD math correct).
+//  - one "Max slippage" value is mirrored onto the per-leg TP/SL slippage fields the OCO/OTOCO adapter
+//    expects, so the single field governs every leg.
+// The OCO position side stays at its adapter default of 'sell', which matches the Sell tab.
+function applyJupiterTriggerDerivedParams(
+  actionType: string,
+  parameters: Record<string, string>,
+): Record<string, string> {
+  if (!JUPITER_TRIGGER_ORDER_ACTION_TYPES.has(actionType)) return parameters;
+  const next = { ...parameters };
+  const input = next.inputMint?.trim() ?? '';
+  let output = next.outputMint?.trim() ?? '';
+  // Never swap a token for itself (e.g. selling SOL with the SOL receive default) — nudge the receive
+  // side to a sensible different token so the order is always valid.
+  if (input && output && input === output) {
+    output = input === JUPITER_FORM_TOKEN_MINTS.USDC ? JUPITER_FORM_TOKEN_MINTS.SOL : JUPITER_FORM_TOKEN_MINTS.USDC;
+    next.outputMint = output;
+  }
+  const watched = actionType === 'jupiter_trigger_oco_order' ? input : output;
+  if (watched) next.triggerMint = watched;
+  const slippage = next.slippageBps?.trim();
+  if (slippage && (actionType === 'jupiter_trigger_oco_order' || actionType === 'jupiter_trigger_otoco_order')) {
+    if (!next.takeProfitSlippageBps?.trim()) next.takeProfitSlippageBps = slippage;
+    if (!next.stopLossSlippageBps?.trim()) next.stopLossSlippageBps = slippage;
   }
   return next;
 }
@@ -2390,7 +2472,7 @@ function jupiterLendUnifiedForm(): ConnectorActionForm {
           label: 'Borrow',
           description: 'Deposit collateral and receive borrowed funds in one approval.',
           actionType: 'jupiter_lend_borrow_create_position',
-          fields: [borrowVault, formField('collateralAmount', 'Collateral', true), formField('borrowAmount', 'Borrow', true), minHealthRatioField()],
+          fields: [borrowVault, formField('collateralAmount', 'Collateral', true), formField('borrowAmount', 'Borrow', true), borrowRiskField()],
         },
         {
           id: 'borrow-deposit-collateral',
@@ -2431,14 +2513,22 @@ function jupiterLendUnifiedForm(): ConnectorActionForm {
 
 function jupiterTriggerUnifiedForm(): ConnectorActionForm {
   const memo = formField('memo', 'Reason');
-  const inputMint = jupiterTokenField('inputMint', 'Spend token', true, JUPITER_FORM_TOKEN_MINTS.SOL);
-  const outputMint = jupiterTokenField('outputMint', 'Receive token', true, JUPITER_FORM_TOKEN_MINTS.USDC);
-  const triggerMint = jupiterTokenField('triggerMint', 'Watch price of', true, JUPITER_FORM_TOKEN_MINTS.SOL);
+  // Buy / Auto-entry legs: pay with a token (default USDC) to acquire another (default SOL).
+  const spendPay = jupiterTokenField('inputMint', 'Pay with', true, JUPITER_FORM_TOKEN_MINTS.USDC);
+  const buyToken = jupiterTokenField('outputMint', 'Buy', true, JUPITER_FORM_TOKEN_MINTS.SOL);
+  // Sell leg: sell a token you already hold (portfolio-only picker) for another (default SOL).
+  // Sell default is SOL (a token you likely hold), not USDC — the chip handler re-picks the user's best
+  // owned token on switch, and this is the sane fallback when balances haven't loaded yet.
+  const sellToken = jupiterTokenField('inputMint', 'Sell', true, JUPITER_FORM_TOKEN_MINTS.SOL);
+  const sellReceive = jupiterTokenField('outputMint', 'Receive', true, JUPITER_FORM_TOKEN_MINTS.SOL);
   const amount = formField('amount', 'Amount to spend', true);
+  const sellAmount = formField('amount', 'Amount to sell', true);
   const expiresAt = formDateTimeField('expiresAt', 'Expires at', true);
   const slippageBps = formField('slippageBps', 'Max slippage', false, { placeholder: '0.5%' });
-  const takeProfitPrice = formField('takeProfitPriceUsd', 'Take-profit price', true);
-  const stopLossPrice = formField('stopLossPriceUsd', 'Stop-loss price', true);
+  const takeProfitPrice = formField('takeProfitPriceUsd', 'Take-profit (USD)', true);
+  const stopLossPrice = formField('stopLossPriceUsd', 'Stop-loss (USD)', true);
+  // The watched token (triggerMint) and the OCO position side are derived from the tab / direction in
+  // normalizeConnectorParameterAliases — the user never picks them. See applyJupiterTriggerDerivedParams.
   return {
     id: 'jupiter:trigger-limit-orders',
     connectorId: 'jupiter',
@@ -2451,9 +2541,9 @@ function jupiterTriggerUnifiedForm(): ConnectorActionForm {
     fields: [memo],
     subActions: {
       fieldId: 'subAction',
-      label: 'Limit order action',
+      label: 'Order type',
       defaultId: 'single-limit-stop',
-      display: 'select',
+      display: 'chips',
       options: [
         {
           id: 'register-vault',
@@ -2465,55 +2555,48 @@ function jupiterTriggerUnifiedForm(): ConnectorActionForm {
         },
         {
           id: 'single-limit-stop',
-          label: 'Limit order',
-          description: 'Swap automatically when a token reaches your target USD price. The amount received isn\'t guaranteed at trigger time.',
+          label: 'Buy',
+          description: 'Buy a token automatically when it reaches your target price.',
           actionType: 'jupiter_trigger_single_order',
           fields: [
-            inputMint,
-            outputMint,
+            spendPay,
+            buyToken,
             amount,
-            triggerMint,
-            formSelectField('triggerCondition', 'Trigger when price is', ['above', 'below'], 'above', true),
-            formField('triggerPriceUsd', 'Trigger price USD', true),
+            formSelectField('triggerCondition', 'Buy when price is', ['below', 'above'], 'below', true),
+            formField('triggerPriceUsd', 'Target price (USD)', true),
             slippageBps,
             expiresAt,
           ],
         },
         {
           id: 'oco-tpsl',
-          label: 'Take-profit / Stop-loss',
-          description: 'Set a take-profit and a stop-loss together — whichever fills first cancels the other (OCO).',
+          label: 'Sell',
+          description: 'Sell a token you hold with a take-profit and a stop-loss (whichever fills first cancels the other).',
           actionType: 'jupiter_trigger_oco_order',
           fields: [
-            inputMint,
-            outputMint,
-            amount,
-            triggerMint,
-            formSelectField('side', 'Position side', ['sell', 'buy'], 'sell'),
+            sellToken,
+            sellReceive,
+            sellAmount,
             takeProfitPrice,
             stopLossPrice,
-            formField('takeProfitSlippageBps', 'Take-profit max slippage', false, { placeholder: '0.5%' }),
-            formField('stopLossSlippageBps', 'Stop-loss max slippage', false, { placeholder: '0.5%' }),
+            slippageBps,
             expiresAt,
           ],
         },
         {
           id: 'otoco-entry-tpsl',
-          label: 'Auto-entry with exits',
-          description: 'Wait for an entry price, then automatically arm a paired take-profit and stop-loss (OTOCO).',
+          label: 'Auto-entry',
+          description: 'Enter at a price, then automatically arm a paired take-profit and stop-loss.',
           actionType: 'jupiter_trigger_otoco_order',
           fields: [
-            inputMint,
-            outputMint,
+            spendPay,
+            buyToken,
             amount,
-            triggerMint,
-            formSelectField('entryCondition', 'Entry when price is', ['above', 'below'], 'above', true),
-            formField('entryPriceUsd', 'Entry price USD', true),
+            formSelectField('entryCondition', 'Enter when price is', ['below', 'above'], 'below', true),
+            formField('entryPriceUsd', 'Entry price (USD)', true),
             takeProfitPrice,
             stopLossPrice,
             slippageBps,
-            formField('takeProfitSlippageBps', 'Take-profit max slippage', false, { placeholder: '0.5%' }),
-            formField('stopLossSlippageBps', 'Stop-loss max slippage', false, { placeholder: '0.5%' }),
             expiresAt,
           ],
         },
@@ -2588,7 +2671,7 @@ function jupiterRecurringUnifiedForm(): ConnectorActionForm {
             outputMint,
             formField('totalAmount', 'Total spend', true, { helperText: 'Total amount of the spend token to deploy across all orders.' }),
             formField('numberOfOrders', 'Number of orders', true, { helperText: 'How many times to repeat the swap.', placeholder: 'e.g. 10' }),
-            formField('intervalSeconds', 'Repeat every (seconds)', true, { helperText: 'e.g. 3600 = hourly · 86400 = daily · 604800 = weekly', placeholder: '86400' }),
+            formField('intervalSeconds', 'Repeat every', true, { helperText: 'How often each buy runs — set it in days, hours, or minutes.' }),
             formDateTimeField('startAt', 'Start at', false, { helperText: 'Optional — defaults to now.' }),
             formField('minPrice', 'Minimum price', false, { helperText: 'Optional — only fill when the price is at or above this.' }),
             formField('maxPrice', 'Maximum price', false, { helperText: 'Optional — only fill when the price is at or below this.' }),
@@ -2842,6 +2925,9 @@ function connectorVisibleFormFields(
 
 function connectorRenderFieldRank(field: AgentPlanTemplateField): number {
   if (field.id === 'subAction') return 0;
+  // DCA Direction (buy/sell) relabels the token fields (Spend↔Sell / Buy↔Receive), so it must render
+  // ABOVE them — otherwise the user picks tokens under labels that then change when they set direction.
+  if (field.id === 'dcaDirection') return 5;
   if (connectorMemoField(field)) return 90;
   if (connectorPrimarySelectorField(field)) return 10;
   if (connectorDependentSelectorField(field)) return 20;
@@ -2882,7 +2968,7 @@ function connectorRecipientField(field: AgentPlanTemplateField): boolean {
 }
 
 function connectorConstraintField(field: AgentPlanTemplateField): boolean {
-  return /^(slippageBps|minHealthFactor|minHealthRatio|rangePreset|strategyType|withdrawMode|lowerPrice|upperPrice|lowerTick|upperTick|maxAgeSeconds|question)$/i.test(field.id);
+  return /^(slippageBps|minHealthFactor|minHealthRatio|borrowRisk|rangePreset|strategyType|withdrawMode|lowerPrice|upperPrice|lowerTick|upperTick|maxAgeSeconds|question)$/i.test(field.id);
 }
 
 export function subActionSelectField(form: ConnectorActionForm): AgentPlanTemplateField | undefined {
@@ -2987,11 +3073,10 @@ function connectorActionFields(actionKind: string): AgentPlanTemplateField[] {
   } else if (actionKind.startsWith('jupiter_trigger_')) {
     if (has('cancel', 'edit', 'withdraw')) add(formField('orderId', 'Order id', true));
     if (has('single_order', 'oco_order', 'otoco_order')) {
-      add(jupiterTokenField('inputMint', 'Spend token', true, JUPITER_FORM_TOKEN_MINTS.SOL));
-      add(jupiterTokenField('outputMint', 'Receive token', true, JUPITER_FORM_TOKEN_MINTS.USDC));
+      add(jupiterTokenField('inputMint', 'Pay with', true, JUPITER_FORM_TOKEN_MINTS.USDC));
+      add(jupiterTokenField('outputMint', 'Buy', true, JUPITER_FORM_TOKEN_MINTS.SOL));
       add(formField('amount', 'Amount to spend', true));
-      add(formField('takingAmount', 'Minimum output amount'));
-      add(formField('triggerPriceUsd', 'Trigger price'));
+      add(formField('triggerPriceUsd', 'Target price (USD)'));
       add(formField('slippageBps', 'Max slippage', false, { placeholder: '0.5%' }));
     }
     if (has('register_vault')) add(formField('payer', 'Payer override'));

@@ -13,6 +13,16 @@ export type JupiterRecurringOrderState =
   | 'failed'
   | 'all';
 
+// A single executed cycle (keeper-run fill) of a recurring order. Surfaced so the client can render a
+// receipt per fill in Done — the fills run through Jupiter automation and never touch the Agentic
+// approval inbox, so this per-cycle history is the only record of them.
+export interface RecurringOrderFill {
+  txId: string;
+  inputAmount?: string;
+  outputAmount?: string;
+  confirmedAt?: string;
+}
+
 export interface RecurringOrderSnapshot {
   orderId: string;
   walletAddress: string;
@@ -33,6 +43,7 @@ export interface RecurringOrderSnapshot {
   createdAt?: string;
   closedAt?: string;
   feeBps?: number;
+  fills?: RecurringOrderFill[];
   raw: Record<string, unknown>;
 }
 
@@ -223,7 +234,37 @@ export function normalizeRecurringOrder(
   if (closedAt) snapshot.closedAt = closedAt;
   const feeBps = optionalNumber(body, 'feeBps');
   if (feeBps !== undefined) snapshot.feeBps = feeBps;
+  const fills = normalizeRecurringFills(body);
+  if (fills.length) snapshot.fills = fills;
   return snapshot;
+}
+
+// Extract per-cycle fills from a recurring order body. Jupiter returns these under `trades` (each keeper
+// run); we read defensively across likely aliases so a field rename upstream degrades gracefully to an
+// empty list rather than throwing. A fill without a tx signature is dropped (it can't back a receipt).
+export function normalizeRecurringFills(body: Record<string, unknown>): RecurringOrderFill[] {
+  const source = [body.trades, body.fills, body.executions, body.history].find(Array.isArray) ?? [];
+  const out: RecurringOrderFill[] = [];
+  for (const entry of source) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const row = entry as Record<string, unknown>;
+    const txId =
+      optionalString(row, 'txId') ??
+      optionalString(row, 'txSignature') ??
+      optionalString(row, 'signature') ??
+      optionalString(row, 'txHash') ??
+      optionalString(row, 'transaction');
+    if (!txId) continue;
+    const fill: RecurringOrderFill = { txId };
+    const inputAmount = optionalString(row, 'inputAmount') ?? optionalString(row, 'inAmount') ?? optionalString(row, 'rawInputAmount');
+    if (inputAmount) fill.inputAmount = inputAmount;
+    const outputAmount = optionalString(row, 'outputAmount') ?? optionalString(row, 'outAmount') ?? optionalString(row, 'rawOutputAmount');
+    if (outputAmount) fill.outputAmount = outputAmount;
+    const confirmedAt = optionalTimestamp(row, 'confirmedAt') ?? optionalTimestamp(row, 'timestamp') ?? optionalTimestamp(row, 'blockTime') ?? optionalTimestamp(row, 'date');
+    if (confirmedAt) fill.confirmedAt = confirmedAt;
+    out.push(fill);
+  }
+  return out;
 }
 
 function apiOrderStatus(state: JupiterRecurringOrderState): 'active' | 'history' {

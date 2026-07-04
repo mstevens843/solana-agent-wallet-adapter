@@ -536,4 +536,111 @@ describe('built-in connector option fallbacks', () => {
       detail: expect.stringContaining('Floor 5 SOL'),
     });
   });
+
+  it('loads Jupiter Lend Borrow vaults from the markets capability and raw vaults array', async () => {
+    registerBuiltInConnectorOptionProviders();
+    const provider = getConnectorOptionProvider('jupiter.lend.borrow.vault');
+    if (!provider) throw new Error('jupiter.lend.borrow.vault provider missing');
+    const calls: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const bridge: ConnectorOptionBridgeFetch = async <T = unknown>(path: string, init?: RequestInit): Promise<T> => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      calls.push({ path, body });
+      // The server 'markets' read returns the raw JupiterLendBorrowVaultSnapshot[] at top level,
+      // plus a ConnectorFact[] projection that lacks vaultId/mints and MUST be ignored.
+      return {
+        capability: 'markets',
+        vaults: [
+          {
+            vaultId: 1,
+            vaultAddress: 'nMzVs8GiXMVUENEwkev7JZfDcCENmz18ScheeVRdnb1',
+            supplyMint: 'So11111111111111111111111111111111111111112',
+            borrowMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            supplyDecimals: 9,
+            borrowDecimals: 6,
+            ltvBps: 8000,
+            liquidationThresholdBps: 8500,
+            borrowApr: 5.28,
+            borrowAvailable: '15890.35',
+            active: true,
+          },
+        ],
+        facts: [{ connectorId: 'jupiter', label: 'Jupiter Borrow vault #1', value: 'SOL/USDC · LTV 80%' }],
+      } as T;
+    };
+
+    const options = await provider.fetch({ fieldValues: {}, cluster: 'mainnet-beta', bridge });
+
+    // The vault list must be requested via 'markets', never the vaultId-required 'borrow' route.
+    expect(calls).toEqual([{
+      path: '/bridge/action/connector-read-facts',
+      body: { connectorId: 'jupiter', capability: 'markets' },
+    }]);
+    expect(options).toHaveLength(1);
+    expect(options[0]).toMatchObject({
+      value: '1',
+      label: 'Borrow USDC · SOL collateral',
+      group: 'all',
+      meta: {
+        supplyMint: 'So11111111111111111111111111111111111111112',
+        borrowMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        ltvBps: 8000,
+        liquidationThresholdBps: 8500,
+        borrowApr: 5.28,
+      },
+    });
+    expect(options[0]?.detail).toContain('80% max LTV');
+    expect(options[0]?.detail).toContain('5.28% APR');
+  });
+
+  it('prepends wallet borrow positions using the vault pair label', async () => {
+    registerBuiltInConnectorOptionProviders();
+    const provider = getConnectorOptionProvider('jupiter.lend.borrow.vault');
+    if (!provider) throw new Error('jupiter.lend.borrow.vault provider missing');
+    const seenCapabilities: string[] = [];
+    const bridge: ConnectorOptionBridgeFetch = async <T = unknown>(_path: string, init?: RequestInit): Promise<T> => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      seenCapabilities.push(String(body.capability));
+      if (body.capability === 'positions') {
+        return { positions: [{ vaultId: 1, positionId: 42, collateralAmount: '2.0', debtAmount: '100' }] } as T;
+      }
+      return {
+        vaults: [{
+          vaultId: 1,
+          supplyMint: 'So11111111111111111111111111111111111111112',
+          borrowMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+          ltvBps: 8000,
+          borrowApr: 5.28,
+        }],
+      } as T;
+    };
+
+    const options = await provider.fetch({ fieldValues: {}, walletAddress: 'wallet', cluster: 'mainnet-beta', bridge });
+
+    expect(seenCapabilities).toEqual(expect.arrayContaining(['positions', 'markets']));
+    // The wallet's open-position vault is surfaced first, reusing the catalog's rich pair label,
+    // and is de-duplicated out of the "all" group.
+    expect(options[0]).toMatchObject({
+      value: '1',
+      label: 'Borrow USDC · SOL collateral',
+      group: 'positions',
+    });
+    expect(options.filter((o) => o.value === '1')).toHaveLength(1);
+  });
+
+  it('reads Jupiter Lend Borrow positions via the positions capability', async () => {
+    registerBuiltInConnectorOptionProviders();
+    const provider = getConnectorOptionProvider('jupiter.lend.borrow.position');
+    if (!provider) throw new Error('jupiter.lend.borrow.position provider missing');
+    const calls: Array<Record<string, unknown>> = [];
+    const bridge: ConnectorOptionBridgeFetch = async <T = unknown>(_path: string, init?: RequestInit): Promise<T> => {
+      calls.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+      return { positions: [{ vaultId: 1, positionId: 42, collateralAmount: '2.0', debtAmount: '100', healthRatioText: '1.8' }] } as T;
+    };
+
+    const options = await provider.fetch({ fieldValues: { vaultId: '1' }, walletAddress: 'wallet', cluster: 'mainnet-beta', bridge });
+
+    expect(calls[0]).toMatchObject({ connectorId: 'jupiter', capability: 'positions', walletAddress: 'wallet' });
+    expect(options[0]).toMatchObject({ value: '42', group: 'positions' });
+    expect(options[0]?.detail).toContain('Health 1.8');
+  });
 });

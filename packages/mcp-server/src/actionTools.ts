@@ -5881,7 +5881,7 @@ function registerJupiterTriggerTools(
       inputSchema: {
         inputMint: z.string().min(32),
         outputMint: z.string().min(32),
-        amount: z.string().min(1).optional().describe('Deprecated raw amount alias. Prefer amountRaw.'),
+        amount: z.string().min(1).optional().describe('Human decimal input-token amount, for example "1.5".'),
         amountRaw: z.string().min(1).optional().describe('Raw integer input-token amount.'),
         triggerMint: z.string().min(32),
         triggerCondition: z.enum(['above', 'below']),
@@ -5908,7 +5908,7 @@ function registerJupiterTriggerTools(
       inputSchema: {
         inputMint: z.string().min(32),
         outputMint: z.string().min(32),
-        amount: z.string().min(1).optional().describe('Deprecated raw amount alias. Prefer amountRaw.'),
+        amount: z.string().min(1).optional().describe('Human decimal input-token amount, for example "1.5".'),
         amountRaw: z.string().min(1).optional().describe('Raw integer input-token amount.'),
         triggerMint: z.string().min(32),
         takeProfitPriceUsd: z.number().positive(),
@@ -5936,7 +5936,7 @@ function registerJupiterTriggerTools(
       inputSchema: {
         inputMint: z.string().min(32),
         outputMint: z.string().min(32),
-        amount: z.string().min(1).optional().describe('Deprecated raw amount alias. Prefer amountRaw.'),
+        amount: z.string().min(1).optional().describe('Human decimal input-token amount, for example "1.5".'),
         amountRaw: z.string().min(1).optional().describe('Raw integer input-token amount.'),
         triggerMint: z.string().min(32),
         entryCondition: z.enum(['above', 'below']),

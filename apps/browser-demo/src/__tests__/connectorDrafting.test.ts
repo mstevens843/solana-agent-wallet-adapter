@@ -23,6 +23,7 @@ import {
   validateConnectorDraftParameters,
   isValidWalletAddress,
   positiveNumberError,
+  positiveIntegerError,
   healthFactorError,
 } from '../connectorDrafting.js';
 import {
@@ -291,6 +292,12 @@ describe('connector drafting helpers', () => {
     const fieldIds = borrowCreate!.fields.map((f) => f.id);
     expect(fieldIds).toContain('collateralAmount');
     expect(fieldIds).toContain('borrowAmount');
+    // Risk is chosen via a plain-English preset select, not a raw "minimum health ratio" number input.
+    expect(fieldIds).toContain('borrowRisk');
+    expect(fieldIds).not.toContain('minHealthRatio');
+    const riskField = borrowCreate!.fields.find((f) => f.id === 'borrowRisk');
+    expect(riskField?.type).toBe('select');
+    expect(riskField?.options).toEqual(['Safe', 'Balanced', 'Max']);
     expect(borrowCreate?.hiddenFromCreateMenu).toBeFalsy();
     // The manage actions are hidden from create (they live on the Positions borrow card).
     for (const id of ['borrow-deposit-collateral', 'borrow-borrow', 'borrow-repay', 'borrow-withdraw-collateral']) {
@@ -341,20 +348,20 @@ describe('connector drafting helpers', () => {
 
     const trigger = connectorActionFormById('jupiter:trigger-limit-orders');
     expect(trigger?.operationLabel).toBe('Limit orders');
-    expect(trigger?.subActions?.label).toBe('Limit order action');
-    expect(trigger?.subActions?.display).toBe('select');
+    expect(trigger?.subActions?.label).toBe('Order type');
+    expect(trigger?.subActions?.display).toBe('chips');
     expect(trigger?.subActions?.options.map((option) => option.label)).toEqual([
       'Set up order vault',
-      'Limit order',
-      'Take-profit / Stop-loss',
-      'Auto-entry with exits',
+      'Buy',
+      'Sell',
+      'Auto-entry',
       'Edit order trigger',
       'Cancel order',
       'Withdraw cancelled funds',
     ]);
-    // The create dropdown shows ONLY the 3 plain-English order types; vault/edit/cancel/withdraw are hidden.
+    // The create tab bar shows ONLY the 3 plain-English order types; vault/edit/cancel/withdraw are hidden.
     const createMenu = trigger!.subActions!.options.filter((o) => !o.hiddenFromCreateMenu);
-    expect(createMenu.map((o) => o.label)).toEqual(['Limit order', 'Take-profit / Stop-loss', 'Auto-entry with exits']);
+    expect(createMenu.map((o) => o.label)).toEqual(['Buy', 'Sell', 'Auto-entry']);
     for (const id of ['register-vault', 'edit-trigger', 'cancel-order', 'withdraw-order-funds']) {
       expect(trigger!.subActions!.options.find((o) => o.id === id)?.hiddenFromCreateMenu).toBe(true);
     }
@@ -398,20 +405,23 @@ describe('connector drafting helpers', () => {
     const trigger = connectorActionFormById('jupiter:trigger-limit-orders');
     const triggerFields = connectorFormRenderFields(trigger!, { subAction: 'single-limit-stop' });
     expect(triggerFields.find((field) => field.id === 'inputMint')).toMatchObject({
-      label: 'Spend token',
-      type: 'select',
-      defaultValue: WSOL_MINT,
-    });
-    expect(triggerFields.find((field) => field.id === 'outputMint')).toMatchObject({
-      label: 'Receive token',
+      label: 'Pay with',
       type: 'select',
       defaultValue: USDC_MINT,
     });
-    expect(triggerFields.find((field) => field.id === 'triggerMint')).toMatchObject({
-      label: 'Watch price of',
+    expect(triggerFields.find((field) => field.id === 'outputMint')).toMatchObject({
+      label: 'Buy',
       type: 'select',
       defaultValue: WSOL_MINT,
     });
+    const triggerSellFields = connectorFormRenderFields(trigger!, { subAction: 'oco-tpsl' });
+    expect(triggerSellFields.find((field) => field.id === 'inputMint')).toMatchObject({
+      label: 'Sell',
+      type: 'select',
+      defaultValue: WSOL_MINT,
+    });
+    // The watched token is auto-derived from the tab (Buy → outputMint), so there is no manual field.
+    expect(triggerFields.find((field) => field.id === 'triggerMint')).toBeUndefined();
     expect(triggerFields.find((field) => field.id === 'slippageBps')?.label).toBe('Max slippage');
 
     const recurring = connectorActionFormById('jupiter:recurring-dca');
@@ -431,7 +441,50 @@ describe('connector drafting helpers', () => {
       defaultValue: WSOL_MINT,
     });
     expect(recurringFields.map((field) => field.id)).not.toContain('maxFeeBps');
-    expect(recurringFields.find((field) => field.id === 'intervalSeconds')?.label).toBe('Repeat every (seconds)');
+    // Label drops "(seconds)" — the field renders as a days/hours/minutes widget, not a raw-seconds input.
+    expect(recurringFields.find((field) => field.id === 'intervalSeconds')?.label).toBe('Repeat every');
+  });
+
+  it('derives the watched token from the Buy/Sell tab and mirrors one slippage onto both OCO legs', () => {
+    const template = templateById('connector-jupiter-trigger-limit-orders');
+    // Buy: watch the token you acquire (outputMint).
+    const buy = normalizeConnectorDraftParameters(template, {
+      connectorId: 'jupiter',
+      connectorOperationId: 'jupiter:trigger-limit-orders',
+      subAction: 'single-limit-stop',
+      inputMint: 'USDC',
+      outputMint: 'SOL',
+      amount: '100',
+      triggerPriceUsd: '140',
+    });
+    expect(buy.triggerMint).toBe(WSOL_MINT);
+    // Sell: watch the token you sell (inputMint), and one "Max slippage" fans out to both legs.
+    const sell = normalizeConnectorDraftParameters(template, {
+      connectorId: 'jupiter',
+      connectorOperationId: 'jupiter:trigger-limit-orders',
+      subAction: 'oco-tpsl',
+      inputMint: 'SOL',
+      outputMint: 'USDC',
+      amount: '1',
+      takeProfitPriceUsd: '200',
+      stopLossPriceUsd: '120',
+      slippageBps: '50',
+    });
+    expect(sell.triggerMint).toBe(WSOL_MINT);
+    expect(sell.takeProfitSlippageBps).toBe('50');
+    expect(sell.stopLossSlippageBps).toBe('50');
+    // Never swap a token for itself: a SOL sell with the SOL receive default is nudged off SOL.
+    const selfSwap = normalizeConnectorDraftParameters(template, {
+      connectorId: 'jupiter',
+      connectorOperationId: 'jupiter:trigger-limit-orders',
+      subAction: 'oco-tpsl',
+      inputMint: 'SOL',
+      outputMint: 'SOL',
+      amount: '1',
+      takeProfitPriceUsd: '200',
+      stopLossPriceUsd: '120',
+    });
+    expect(selfSwap.outputMint).toBe(USDC_MINT);
   });
 
   it('normalizes Jupiter connector token labels and symbols to executable mints', () => {
@@ -1230,5 +1283,38 @@ describe('input-validation helpers', () => {
     expect(healthFactorError('1.25')).toBe('');
     expect(healthFactorError('0.5')).not.toBe('');
     expect(healthFactorError('abc')).not.toBe('');
+  });
+
+  it('positiveIntegerError requires a whole number >= 1 when present (DCA numberOfOrders)', () => {
+    expect(positiveIntegerError('')).toBe('');
+    expect(positiveIntegerError('10')).toBe('');
+    expect(positiveIntegerError('1')).toBe('');
+    expect(positiveIntegerError('0')).not.toBe('');
+    expect(positiveIntegerError('-3')).not.toBe('');
+    expect(positiveIntegerError('2.5')).not.toBe('');
+    expect(positiveIntegerError('abc')).not.toBe('');
+  });
+
+  it('validates DCA create-time input: numberOfOrders integer >= 1 and minPrice <= maxPrice', () => {
+    const connectedDapps = setConnectedDappEnabled(emptyConnectedDapps(), 'jupiter', true);
+    const env = { connectedDapps, cluster: 'mainnet-beta' as const };
+    const base = {
+      connectorId: 'jupiter',
+      connectorOperationId: 'jupiter:recurring-dca',
+      subAction: 'create-time-dca',
+      dcaDirection: 'buy',
+      inputMint: 'USDC',
+      outputMint: 'SOL',
+      totalAmount: '100',
+      intervalSeconds: '86400',
+      automationWarningAccepted: 'true',
+    };
+    // A well-formed DCA passes.
+    expect(validateConnectorDraftParameters(templateById('connector-jupiter-recurring-dca'), { ...base, numberOfOrders: '10' }, env, 'template').errors).toEqual({});
+    // numberOfOrders must be a whole number >= 1.
+    expect(validateConnectorDraftParameters(templateById('connector-jupiter-recurring-dca'), { ...base, numberOfOrders: '0' }, env, 'template').errors).toHaveProperty('numberOfOrders');
+    expect(validateConnectorDraftParameters(templateById('connector-jupiter-recurring-dca'), { ...base, numberOfOrders: '2.5' }, env, 'template').errors).toHaveProperty('numberOfOrders');
+    // minPrice must not exceed maxPrice.
+    expect(validateConnectorDraftParameters(templateById('connector-jupiter-recurring-dca'), { ...base, numberOfOrders: '10', minPrice: '5', maxPrice: '2' }, env, 'template').errors).toHaveProperty('maxPrice');
   });
 });

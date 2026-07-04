@@ -1203,6 +1203,14 @@ async function handleRequest(
         consumerProtocol?: string;
         includeEma?: boolean;
         includeRawAccount?: boolean;
+        // Jupiter Lend Borrow health-preview (create-form loan-terms estimate). Without these a
+        // vaultId-scoped 'borrow'/'withdraw'/'repay' read cannot simulate projected health.
+        vaultId?: number;
+        positionId?: number;
+        collateralDelta?: string;
+        debtDelta?: string;
+        minHealthRatio?: number;
+        maxLtvBps?: number;
       };
       const connectorSecrets = parseConnectorSecrets(body.connectorSecrets);
       try {
@@ -1260,6 +1268,12 @@ async function handleRequest(
           ...(body.consumerProtocol !== undefined && { consumerProtocol: body.consumerProtocol }),
           ...(body.includeEma !== undefined && { includeEma: body.includeEma }),
           ...(body.includeRawAccount !== undefined && { includeRawAccount: body.includeRawAccount }),
+          ...(body.vaultId !== undefined && { vaultId: body.vaultId }),
+          ...(body.positionId !== undefined && { positionId: body.positionId }),
+          ...(body.collateralDelta !== undefined && { collateralDelta: body.collateralDelta }),
+          ...(body.debtDelta !== undefined && { debtDelta: body.debtDelta }),
+          ...(body.minHealthRatio !== undefined && { minHealthRatio: body.minHealthRatio }),
+          ...(body.maxLtvBps !== undefined && { maxLtvBps: body.maxLtvBps }),
         }));
       } catch (err) {
         writePrepareTransactionError(res, err, connectorSecrets);

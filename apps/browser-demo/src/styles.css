@@ -21203,6 +21203,48 @@ button.danger:hover:not(:disabled) {
   color: #dcffe9;
 }
 
+/* Buy/Sell/Auto-entry: the token the order is about gets an accent frame + a Buying/Selling tag so
+   it's obvious what you're trading. Pairs with the token-field--output dropdown anchoring. */
+.route-app .token-choice-title {
+  align-items: center;
+  display: inline-flex;
+  gap: 7px;
+  min-width: 0;
+  overflow: hidden;
+}
+.route-app .token-choice-title > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.route-app .token-role-tag {
+  background: rgba(63, 189, 131, 0.22);
+  border-radius: 999px;
+  color: #dcffe9;
+  flex: 0 0 auto;
+  font-size: 0.56rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  padding: 2px 7px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.route-app .token-choice-field.token-field--subject {
+  background: rgba(63, 189, 131, 0.08);
+  border: 1px solid rgba(63, 189, 131, 0.45);
+  border-radius: 12px;
+  padding: 9px 10px;
+}
+.route-app .token-portfolio-empty {
+  border: 1px dashed rgba(224, 230, 226, 0.2);
+  border-radius: 10px;
+  color: var(--text-muted, rgba(255, 255, 255, 0.6));
+  font-size: 0.78rem;
+  padding: 12px 10px;
+  text-align: center;
+}
+
 .route-app .token-choice-field input {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.86rem;
@@ -29783,6 +29825,131 @@ button.danger:hover:not(:disabled) {
 .borrow-terms-tile.tone-bad dd { color: #f0726b; }
 .borrow-terms-warnings { color: #f0726b; font-size: 0.76rem; margin: 8px 0 0; padding-left: 16px; }
 
+.borrow-risk-field,
+.borrow-amount-field {
+  grid-column: 1 / -1;
+}
+.borrow-risk-segments {
+  background: var(--surface-soft, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--line, rgba(224, 230, 226, 0.12));
+  border-radius: 12px;
+  display: grid;
+  gap: 3px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 3px;
+}
+.borrow-risk-chip {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
+  color: var(--text, #f2f5f3);
+  cursor: pointer;
+  display: grid;
+  gap: 2px;
+  min-height: 44px;
+  min-width: 0;
+  padding: 7px 5px;
+  text-align: center;
+}
+.borrow-risk-chip:hover:not(:disabled) {
+  background: var(--surface-muted, rgba(255, 255, 255, 0.06));
+}
+.borrow-risk-chip.active,
+.borrow-risk-chip[aria-pressed="true"] {
+  background: var(--accent, rgba(80, 180, 140, 0.9));
+  color: #04120c;
+}
+.borrow-risk-chip strong {
+  font-size: 0.82rem;
+  font-weight: 900;
+  letter-spacing: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.borrow-risk-chip em {
+  color: inherit;
+  font-size: 0.62rem;
+  font-style: normal;
+  font-weight: 760;
+  line-height: 1.15;
+  opacity: 0.78;
+}
+.borrow-risk-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.borrow-amount-sizer {
+  background: rgba(63, 189, 131, 0.07);
+  border: 1px solid rgba(63, 189, 131, 0.22);
+  border-radius: 10px;
+  display: grid;
+  gap: 8px;
+  margin-top: 7px;
+  padding: 9px;
+}
+.borrow-amount-sizer.is-loading {
+  color: var(--text-muted, rgba(255, 255, 255, 0.64));
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+.borrow-amount-sizer-head {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+}
+.borrow-amount-sizer-head strong,
+.borrow-amount-sizer-head span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.borrow-amount-sizer-head strong {
+  color: #dcffe9;
+  font-size: 0.78rem;
+}
+.borrow-amount-sizer-head span {
+  color: var(--text-muted, rgba(255, 255, 255, 0.66));
+  font-size: 0.72rem;
+  font-weight: 760;
+}
+.borrow-amount-chip-row {
+  display: grid;
+  gap: 5px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.borrow-amount-chip {
+  appearance: none;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  border-radius: 999px;
+  color: var(--text, #f2f5f3);
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 900;
+  min-height: 30px;
+  min-width: 0;
+  padding: 0 8px;
+}
+.borrow-amount-chip:hover {
+  border-color: rgba(224, 230, 226, 0.24);
+}
+.borrow-amount-chip.active,
+.borrow-amount-chip[aria-pressed="true"] {
+  background: rgba(63, 189, 131, 0.22);
+  border-color: rgba(63, 189, 131, 0.5);
+  color: #dcffe9;
+}
+.borrow-amount-slider {
+  accent-color: var(--accent, #3ddc97);
+  width: 100%;
+}
+
 .policy-warning {
   padding: 8px 12px;
   border-radius: 8px;
@@ -30291,12 +30458,56 @@ button.danger:hover:not(:disabled) {
   font-size: 0.76rem;
   font-weight: 900;
   letter-spacing: 0;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .connector-subaction-chip em {
   display: none;
+}
+
+/* Buy · Sell · Auto-entry tab bar (Jupiter limit/TP-SL). Full-width 3-up segmented control that
+   replaces both the old template picker and the sub-action dropdown. Stays horizontal on mobile. */
+.connector-subaction-tabs {
+  grid-column: 1 / -1;
+  gap: 0;
+}
+.connector-subaction-tabs .connector-subaction-label {
+  display: none;
+}
+.connector-subaction-tabs-chips {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+  justify-content: stretch;
+  padding: 3px;
+  background: var(--surface-soft, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--line, rgba(224, 230, 226, 0.12));
+  border-radius: 12px;
+}
+.connector-subaction-tabs-chips .connector-subaction-chip {
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
+  min-height: 38px;
+  padding: 8px 6px;
+}
+.connector-subaction-tabs-chips .connector-subaction-chip:hover:not(:disabled) {
+  background: var(--surface-muted, rgba(255, 255, 255, 0.06));
+  border-color: transparent;
+}
+.connector-subaction-tabs-chips .connector-subaction-chip strong {
+  font-size: 0.86rem;
+}
+.connector-subaction-tabs-chips .connector-subaction-chip.active,
+.connector-subaction-tabs-chips .connector-subaction-chip[aria-pressed="true"] {
+  background: var(--accent, rgba(80, 180, 140, 0.9));
+  border-color: transparent;
+  color: #04120c;
+}
+.connector-subaction-tabs-chips .connector-subaction-chip.active strong,
+.connector-subaction-tabs-chips .connector-subaction-chip[aria-pressed="true"] strong {
+  color: #04120c;
 }
 
 .cascading-field .planner-field-hint {
@@ -30313,13 +30524,48 @@ button.danger:hover:not(:disabled) {
   opacity: 0.7;
 }
 
+/* Buy/Sell/Auto-entry order summary — a full-width plain-language read-back just above Confirm. The
+   panel spans the whole width on every surface (the 1-col mobile sheet AND the 2-col desktop/popover
+   grids) instead of being trapped in a cramped half-cell. */
+.trigger-order-readout-panel {
+  grid-column: 1 / -1;
+  background: rgba(63, 189, 131, 0.08);
+  border: 1px solid rgba(63, 189, 131, 0.28);
+  border-radius: 10px;
+  padding: 9px 12px;
+  margin-top: 2px;
+}
+.trigger-order-readout {
+  color: #dcffe9;
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
 .route-app .planner-field:has([data-template-field="memo"]) {
+  grid-column: 1 / -1;
+}
+
+.planner-fields[data-template-id="connector-jupiter-trigger-limit-orders"]:not(.mobile-planner-fields) > .amount-control-field,
+.planner-fields[data-template-id="connector-jupiter-trigger-limit-orders"]:not(.mobile-planner-fields) > *:has([data-template-field="memo"]) {
   grid-column: 1 / -1;
 }
 
 @media (max-width: 720px) {
   .connector-subaction-chips {
     grid-template-columns: minmax(0, 1fr);
+  }
+  /* The Buy·Sell·Auto-entry tab bar must STAY a 3-across segmented control on phones — re-assert it
+     here so the generic 1-col chips rule above (equal specificity, later in source) doesn't stack it. */
+  .connector-subaction-tabs-chips {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 360px) {
+  .connector-subaction-tabs-chips .connector-subaction-chip strong {
+    font-size: 0.78rem;
   }
 }
 
@@ -31479,6 +31725,20 @@ button.danger:hover:not(:disabled) {
     max-height: min(var(--template-menu-max-height, 220px), 42dvh);
     overflow-y: auto;
     top: calc(100% + 6px);
+    z-index: var(--select-picker-menu-z-index, 360);
+  }
+
+  /* Connector / limit-order action sheet: same cap-and-raise as AI drafting so its token, sub-action,
+     and condition dropdowns overlay cleanly instead of an uncapped menu inflating the sheet's scroll
+     and shoving the form. Keeps drop-up so a picker near the bottom opens upward. */
+  .route-app .mobile-rail-sheet.chat-action .select-picker.open,
+  .route-app .mobile-rail-sheet.connector-connect .select-picker.open {
+    z-index: var(--select-picker-z-index, 360);
+  }
+  .route-app .mobile-rail-sheet.chat-action .select-picker-menu,
+  .route-app .mobile-rail-sheet.connector-connect .select-picker-menu {
+    max-height: min(var(--template-menu-max-height, 240px), 44dvh);
+    overflow-y: auto;
     z-index: var(--select-picker-menu-z-index, 360);
   }
 
@@ -38359,6 +38619,19 @@ button.danger:hover:not(:disabled) {
 .chat-connector-form .chat-sheet-fields,
 .chat-connector-form .chat-sheet-fields .planner-fields { grid-template-columns: minmax(0, 1fr); }
 .chat-connector-form .chat-sheet-fields > * { min-width: 0; }
+/* Jupiter limit/TP-SL desktop popover: pair spend|receive and the price fields instead of stacking.
+   Scoped to the popover — the mobile sheet keeps its own .mobile-planner-field-row pairing. The tab
+   bar, amount, slippage, reason, and the order read-out span the full width; everything else pairs. */
+.chat-connector-popover .chat-sheet-fields[data-template-id="connector-jupiter-trigger-limit-orders"] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.chat-connector-popover .chat-sheet-fields[data-template-id="connector-jupiter-trigger-limit-orders"] > .connector-subaction-row,
+.chat-connector-popover .chat-sheet-fields[data-template-id="connector-jupiter-trigger-limit-orders"] > *:has([data-template-field="amount"]),
+.chat-connector-popover .chat-sheet-fields[data-template-id="connector-jupiter-trigger-limit-orders"] > *:has([data-template-field="slippageBps"]),
+.chat-connector-popover .chat-sheet-fields[data-template-id="connector-jupiter-trigger-limit-orders"] > *:has([data-template-field="memo"]) {
+  grid-column: 1 / -1;
+}
 .chat-recurring-form .recurring-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -39408,4 +39681,15 @@ button.danger:hover:not(:disabled) {
 @media (max-width: 899px) {
   .positions-card-actions button { min-height: 44px; }
   .positions-details { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+}
+
+/* Jupiter borrow vault dropdown: overlapping pair of token logos (borrow · collateral) before the
+   label, reusing the self-healing chat-action-logo chip. */
+.cascading-vault-logos {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+.cascading-vault-logos .chat-action-logo + .chat-action-logo {
+  margin-left: -6px;
 }
