@@ -1,0 +1,12 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e6]:
+      - generic [ref=e7]: CP
+      - generic [ref=e8]: ConfigPilotSKU Battle Desk
+  - generic [ref=e9]:
+    - complementary [ref=e10]:
+      - navigation "Scenarios" [ref=e11]:
+        - heading "Scenarios" [level=2] [ref=e12]
+        - list
+    - main [ref=e13]:
+      - generic [ref=e14]: Select a scenario.

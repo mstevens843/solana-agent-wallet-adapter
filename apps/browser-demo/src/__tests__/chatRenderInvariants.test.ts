@@ -51,4 +51,13 @@ describe('chat render invariants (iOS jitter fix)', () => {
   it('RC1: the chat keyboard inset is not re-poked by visualViewport scroll', () => {
     expect(source).not.toContain("visualViewport?.addEventListener('scroll', syncChatKeyboardInset");
   });
+
+  it('RC0: the chat keyboard inset suppresses the phantom iOS visual-viewport source', () => {
+    // The actual root cause the prior fixes missed: on iOS the overlay keyboard never shrinks
+    // innerHeight, so the visual-viewport delta is a PHANTOM inset. applyChatKeyboardInset must pass
+    // suppressVisualViewportKeyboard: IS_IOS_APP so computeMobileRailViewportVars never promotes that
+    // delta to a keyboard source. Dropping this revives the iOS Chat-tab up/down jitter loop.
+    const body = sliceTopLevelFunction('function applyChatKeyboardInset(): void {');
+    expect(body).toContain('suppressVisualViewportKeyboard: IS_IOS_APP');
+  });
 });

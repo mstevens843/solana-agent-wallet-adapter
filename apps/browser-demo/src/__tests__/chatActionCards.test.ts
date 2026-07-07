@@ -474,10 +474,11 @@ describe('DCA sheet Swap-parity: token/amount controls, positioning, copy', () =
     const amountGate = sourceBetween('function isAmountControlField', 'function amountControlFieldInput');
     expect(amountGate).toContain("const isDcaTotal = fieldDef.id === 'totalAmount' && isJupiterDcaCreateTemplate()");
     expect(amountGate).toContain('templateFieldValue(fieldDef.id)');
-    // DCA uses Swap's layout: balance on the right of the input
+    // The amount control now uses Swap's layout for EVERY connector field (no DCA guard):
+    // balance on the right of the input.
     const amountInput = sourceBetween('function amountControlFieldInput', 'function tokenFieldInput');
-    expect(amountInput).toContain('if (isJupiterDcaCreateTemplate())');
     expect(amountInput).toContain('<div class="chat-amount-field">${inputHtml}${balanceReadout}</div>');
+    expect(amountInput).not.toContain('if (isJupiterDcaCreateTemplate())');
   });
 
   it('sizes the sheet dropdown to fit + drops it up when short, so it never scrolls the whole sheet', () => {
@@ -493,6 +494,39 @@ describe('DCA sheet Swap-parity: token/amount controls, positioning, copy', () =
   it('DCA copy has no em-dash and is concise', () => {
     expect(mainSource).toContain("t('Each fill posts a receipt to Done; cancel anytime from Positions.')");
     expect(mainSource).not.toContain('Fills run automatically through Jupiter —');
+  });
+});
+
+describe('amount control normalized to the Swap sheet layout everywhere', () => {
+  it('amountControlFieldInput always renders balance-on-right + standalone % row (no DCA guard)', () => {
+    const amountInput = sourceBetween('function amountControlFieldInput', 'function tokenFieldInput');
+    // Swap-style: input wrapped in .chat-amount-field with the balance reading out on the RIGHT,
+    // then the % quick-fill row on its own line below — for every connector/New-Request amount field.
+    expect(amountInput).toContain('<div class="chat-amount-field">${inputHtml}${balanceReadout}</div>');
+    expect(amountInput).toContain('class="chat-amount-balance"');
+    expect(amountInput).toContain('${pctRow}');
+    expect(amountInput).not.toContain('if (isJupiterDcaCreateTemplate())');
+    expect(amountInput).not.toContain('amount-input-row');
+    expect(amountInput).not.toContain('amount-balance-line');
+  });
+
+  it('recurringAmountControlHtml (Repeat Payments) uses the same Swap-style layout', () => {
+    const recurring = sourceBetween('function recurringAmountControlHtml', 'function fieldInput');
+    expect(recurring).toContain('<div class="chat-amount-field">');
+    expect(recurring).toContain('class="chat-amount-balance"');
+    expect(recurring).not.toContain('recurring-amount-input-row');
+    expect(recurring).not.toContain('amount-balance-line');
+  });
+
+  it('retires the dead .amount-input-row / .amount-balance-line CSS', () => {
+    expect(stylesSource).not.toContain('amount-input-row');
+    expect(stylesSource).not.toContain('amount-balance-line');
+    // the shared Swap classes remain the single source of truth
+    expect(stylesSource).toContain('.chat-amount-field { position: relative; }');
+    // Repeat Payments (recurring) mobile gets the same compact custom-% input as the planner — the
+    // `input.` qualifier outranks the (0,3,1) `.field input` 50px rule so it matches the 40px buttons.
+    expect(stylesSource).toContain('.route-app .mobile-recurring-contract .chat-amount-pcts input.chat-amount-pct-input');
+    expect(stylesSource).toContain('.route-app .mobile-planner-fields .chat-amount-pcts input.chat-amount-pct-input');
   });
 });
 

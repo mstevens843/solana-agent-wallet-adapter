@@ -477,6 +477,40 @@ describe('computeMobileRailViewportVars', () => {
       focusedControlFallbackInset: 395,
     })).toEqual({ vvh: 420, keyboardInset: 340, keyboardOpen: true, source: 'native' });
   });
+
+  it('iOS native: never promotes a phantom visual-viewport delta to a keyboard (anti-jitter)', () => {
+    // iOS overlay keyboard: window.innerHeight does NOT shrink, and ios.contentInset:'automatic'/
+    // scroll makes a phantom 40px visual-viewport delta with the keyboard CLOSED. Suppression must
+    // reject it — this is the primary fix for the iOS Chat-tab up/down oscillation.
+    const vars = computeMobileRailViewportVars({
+      viewportHeight: 760,
+      viewportOffsetTop: 0,
+      innerHeight: 800,
+      suppressVisualViewportKeyboard: true,
+    });
+    expect(vars).toEqual({ vvh: 760, keyboardInset: 0, keyboardOpen: false, source: 'none' });
+    // The write value (what reaches --chat-keyboard-inset) must be 0, so the surface never shrinks.
+    expect(resolveChatKeyboardInset(vars)).toBe(0);
+  });
+
+  it('iOS native: the authoritative native inset still lifts the composer with suppression on', () => {
+    const vars = computeMobileRailViewportVars({
+      viewportHeight: 800,
+      viewportOffsetTop: 0,
+      innerHeight: 800,
+      nativeKeyboardInset: 300,
+      nativeKeyboardVisible: true,
+      suppressVisualViewportKeyboard: true,
+    });
+    expect(vars.source).toBe('native');
+    expect(resolveChatKeyboardInset(vars)).toBe(300);
+  });
+
+  it('mobile web: visual-viewport detection is unchanged without the suppression flag', () => {
+    // No flag (web has no native bridge) → the geometric heuristic remains the sole detector.
+    expect(computeMobileRailViewportVars({ viewportHeight: 480, viewportOffsetTop: 0, innerHeight: 800 }))
+      .toEqual({ vvh: 480, keyboardInset: 320, keyboardOpen: true, source: 'visual-viewport' });
+  });
 });
 
 describe('inferMobileRailFocusedKeyboardInset', () => {

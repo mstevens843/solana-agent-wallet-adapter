@@ -1,0 +1,200 @@
+- main [ref=f1e2]:
+  - generic [ref=f1e3]:
+    - generic "Agentic navigation" [ref=f1e4]:
+      - link "Agentic home" [ref=f1e5] [cursor=pointer]:
+        - /url: /
+        - img [ref=f1e6]
+        - generic [ref=f1e7]: Agentic
+      - navigation "Primary navigation" [ref=f1e8]:
+        - link "Home" [ref=f1e9] [cursor=pointer]:
+          - /url: /
+          - generic [ref=f1e10]: Home
+        - link "Docs" [ref=f1e11] [cursor=pointer]:
+          - /url: /docs
+          - generic [ref=f1e12]: Docs
+        - link "Builders" [ref=f1e13] [cursor=pointer]:
+          - /url: /builders
+          - generic [ref=f1e14]: Builders
+        - link "CLI" [ref=f1e15] [cursor=pointer]:
+          - /url: /cli
+          - generic [ref=f1e16]: CLI
+        - link "Desktop App" [ref=f1e17] [cursor=pointer]:
+          - /url: /desktop
+          - generic [ref=f1e18]: Desktop App
+        - link "Launch Demo" [ref=f1e19] [cursor=pointer]:
+          - /url: /demo
+          - generic [ref=f1e20]: Launch Demo
+        - link "Launch App" [ref=f1e21] [cursor=pointer]:
+          - /url: /app
+          - generic [ref=f1e22]: Launch App
+    - region "Let agents use your Solana wallet without giving them one." [ref=f1e23]:
+      - generic [ref=f1e24]:
+        - generic "Network and signing layer" [ref=f1e25]:
+          - generic [ref=f1e28]: Solana
+          - generic "Wallet Standard" [ref=f1e29]:
+            - generic [ref=f1e31]: Wallet Standard
+          - generic "Mobile Wallet Adapter" [ref=f1e32]:
+            - generic [ref=f1e34]: Mobile Wallet Adapter
+        - paragraph [ref=f1e35]: Wallet authority for agents
+        - heading "Let agents use your Solana wallet without giving them one." [level=1] [ref=f1e36]
+        - paragraph [ref=f1e37]: Agentic gives Claude, Codex, local MCP servers, and app runtimes a single approval path through the wallet you already trust. Agents prepare the action; your wallet remains the signer.
+        - generic [ref=f1e38]:
+          - generic "Runtime command deck" [ref=f1e39]:
+            - generic "Choose runtime path" [ref=f1e40]:
+              - button "No install One-shot CLI Start the local approval app from npm." [pressed] [ref=f1e41] [cursor=pointer]:
+                - generic [ref=f1e42]: No install
+                - strong [ref=f1e43]: One-shot CLI
+                - generic [ref=f1e44]: Start the local approval app from npm.
+              - button "Reusable Install once Keep the approval app available from any terminal." [ref=f1e45] [cursor=pointer]:
+                - generic [ref=f1e46]: Reusable
+                - strong [ref=f1e47]: Install once
+                - generic [ref=f1e48]: Keep the approval app available from any terminal.
+              - button "App UI Desktop App Use bundled controls, logs, and diagnostics." [ref=f1e49] [cursor=pointer]:
+                - generic [ref=f1e50]: App UI
+                - strong [ref=f1e51]: Desktop App
+                - generic [ref=f1e52]: Use bundled controls, logs, and diagnostics.
+            - generic [ref=f1e53]:
+              - generic [ref=f1e54]:
+                - generic [ref=f1e55]: $
+                - code [ref=f1e56]: npm exec @solana-agent-wallet-adapter/cli -- app
+              - generic [ref=f1e58]: No install
+              - button "Copy" [ref=f1e59] [cursor=pointer]
+          - link "Launch App" [ref=f1e60] [cursor=pointer]:
+            - /url: /app
+          - link "Launch Demo" [ref=f1e61] [cursor=pointer]:
+            - /url: /demo
+        - generic "Agent runtimes" [ref=f1e62]:
+          - generic [ref=f1e65]: Claude
+          - generic [ref=f1e68]: Codex
+          - generic [ref=f1e71]: Gemini
+          - generic [ref=f1e73]: MCP
+          - generic [ref=f1e76]: Vercel AI
+          - generic [ref=f1e79]: Solana Agent Kit
+        - generic "Supported wallet examples" [ref=f1e80]:
+          - generic [ref=f1e83]: Phantom
+          - generic [ref=f1e86]: Solflare
+          - generic [ref=f1e89]: Backpack
+          - generic [ref=f1e92]: Jupiter Mobile
+          - generic [ref=f1e95]: Seed Vault
+          - generic [ref=f1e98]: Wallet Standard / MWA
+      - complementary "Agentic terminal preview" [ref=f1e99]:
+        - generic [ref=f1e100]:
+          - strong [ref=f1e105]: agentic
+          - generic [ref=f1e106]:
+            - paragraph [ref=f1e107]: $ npm exec @solana-agent-wallet-adapter/cli -- app
+            - paragraph [ref=f1e109]: Bridge starts from terminal
+            - paragraph [ref=f1e110]: Wallet host opens for Phantom, Backpack, or Solflare
+            - paragraph [ref=f1e111]: agent prepare swap SOL to USDC
+            - paragraph [ref=f1e112]: wallet user approval required
+            - paragraph [ref=f1e113]: result no private key handed to agent
+        - generic "Authority model" [ref=f1e114]:
+          - generic [ref=f1e115]:
+            - generic [ref=f1e116]: Agent requests
+            - strong [ref=f1e117]: Intent, route, limits, and transaction bytes.
+          - generic [ref=f1e118]:
+            - generic [ref=f1e119]: Wallet approves
+            - strong [ref=f1e120]: Existing user wallet signs.
+          - generic [ref=f1e121]:
+            - generic [ref=f1e122]: Adapter records
+            - strong [ref=f1e123]: Receipt, policy context, bridge state, and evidence receipts.
+    - region "Solana lacked a universal agent-to-wallet approval layer." [ref=f1e124]:
+      - generic [ref=f1e125]:
+        - paragraph [ref=f1e126]: The gap
+        - heading "Solana lacked a universal agent-to-wallet approval layer." [level=2] [ref=f1e127]:
+          - generic [ref=f1e128]: Solana lacked a universal agent-to-wallet approval layer.
+        - paragraph [ref=f1e129]:
+          - text: Private keys inside agents are unsafe.
+          - text: Funded agent wallets fragment users.
+          - text: Single-wallet flows do not scale.
+        - paragraph [ref=f1e130]: Agentic is the multi-wallet approval layer.
+        - paragraph [ref=f1e131]:
+          - text: Agents prepare.
+          - strong [ref=f1e132]: Your wallet signs.
+      - generic [ref=f1e133]:
+        - generic "Current signing models" [ref=f1e134]:
+          - article [ref=f1e135]:
+            - generic [ref=f1e136]:
+              - strong [ref=f1e137]: Private-key MCP
+              - generic [ref=f1e138]: Custody
+            - paragraph [ref=f1e139]: SOLANA_PRIVATE_KEY=... makes the agent or server the signer.
+          - article [ref=f1e140]:
+            - generic [ref=f1e141]:
+              - strong [ref=f1e142]: Phantom MCP
+              - generic [ref=f1e143]: Separate signer
+            - paragraph [ref=f1e144]: Creates a new dedicated agent wallet, then asks the user to fund it.
+          - article [ref=f1e145]:
+            - generic [ref=f1e146]:
+              - strong [ref=f1e147]: Read-only / link MCP
+              - generic [ref=f1e148]: No generic signing
+            - paragraph [ref=f1e149]: Can quote or hand off to a product page, but has no reusable signing backend.
+        - paragraph [ref=f1e150]: "Agentic routes each request to the user's existing Solana wallet: Phantom, Solflare, Backpack, Seed Vault, Wallet Standard, MWA, and iOS wallet links. The agent gets the approved result, never the key."
+    - region "Use the wallet users already picked." [ref=f1e151]:
+      - generic [ref=f1e152]:
+        - paragraph [ref=f1e153]: Wallet directory
+        - heading "Use the wallet users already picked." [level=2] [ref=f1e154]
+        - paragraph [ref=f1e155]: Agentic targets Solana wallet authority through Wallet Standard, Mobile Wallet Adapter, Seed Vault, and compatible provider surfaces. Discovered wallets use their provider-supplied icons.
+      - generic [ref=f1e156]:
+        - article [ref=f1e157]:
+          - generic [ref=f1e160]:
+            - heading "Phantom" [level=3] [ref=f1e161]
+            - text: Supported path
+          - paragraph [ref=f1e162]: Browser and mobile approvals through the user-owned Phantom signer.
+        - article [ref=f1e163]:
+          - generic [ref=f1e166]:
+            - heading "Solflare" [level=3] [ref=f1e167]
+            - text: Supported path
+          - paragraph [ref=f1e168]: Wallet Standard signing without moving custody into an agent runtime.
+        - article [ref=f1e169]:
+          - generic [ref=f1e172]:
+            - heading "Backpack" [level=3] [ref=f1e173]
+            - text: Supported path
+          - paragraph [ref=f1e174]: Installed wallet approval for agent-prepared messages and transactions.
+        - article [ref=f1e175]:
+          - generic [ref=f1e178]:
+            - heading "Jupiter Mobile" [level=3] [ref=f1e179]
+            - text: Supported path
+          - paragraph [ref=f1e180]: Mobile approval path for swap-aware wallet flows and prepared actions.
+        - article [ref=f1e181]:
+          - generic [ref=f1e184]:
+            - heading "Seed Vault" [level=3] [ref=f1e185]
+            - text: Supported path
+          - paragraph [ref=f1e186]: Android hardware-backed custody through Mobile Wallet Adapter surfaces.
+        - article [ref=f1e187]:
+          - generic [ref=f1e190]:
+            - heading "Wallet Standard / MWA" [level=3] [ref=f1e191]
+            - text: Adapter surface
+          - paragraph [ref=f1e192]: One adapter surface for browser wallets, Android MWA, and wallet in-app browsers.
+      - generic [ref=f1e193]:
+        - button "Discover Wallets" [ref=f1e194] [cursor=pointer]
+        - generic [ref=f1e195]: Provider icons appear after discovery.
+    - region "Open the real wallet approval workspace." [ref=f1e196]:
+      - generic [ref=f1e197]:
+        - paragraph [ref=f1e198]: Approval workspace
+        - heading "Open the real wallet approval workspace." [level=2] [ref=f1e199]
+        - paragraph [ref=f1e200]: Launch App opens the browser and mobile-web approval surface. The demo stays available when you want a guided preview before connecting a wallet.
+      - generic [ref=f1e201]:
+        - link "Launch App" [ref=f1e202] [cursor=pointer]:
+          - /url: /app
+        - link "Preview Demo" [ref=f1e203] [cursor=pointer]:
+          - /url: /demo
+    - generic "Agentic footer" [ref=f1e204]:
+      - generic [ref=f1e205]:
+        - generic [ref=f1e206]:
+          - img [ref=f1e207]
+          - text: Agentic
+        - paragraph [ref=f1e208]: Render serves the web app and hosted BYOK AI proxy. CLI, Desktop App, local bridge, and wallet approvals run on your device.
+        - paragraph [ref=f1e209]:
+          - generic [ref=f1e210]: SolPulse LLC
+          - link "support@solpulse.trade" [ref=f1e211] [cursor=pointer]:
+            - /url: mailto:support@solpulse.trade
+      - navigation "Footer navigation" [ref=f1e212]:
+        - link "Docs" [ref=f1e213] [cursor=pointer]:
+          - /url: /docs
+        - link "Releases" [ref=f1e214] [cursor=pointer]:
+          - /url: https://github.com/mstevens843/solana-agent-wallet-adapter/releases
+        - link "Terms" [ref=f1e215] [cursor=pointer]:
+          - /url: /terms
+        - link "Privacy" [ref=f1e216] [cursor=pointer]:
+          - /url: /privacy
+        - link "Delete Account" [ref=f1e217] [cursor=pointer]:
+          - /url: /delete-account

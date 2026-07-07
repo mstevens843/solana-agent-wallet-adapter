@@ -107,6 +107,16 @@ export interface MobileRailViewportInput {
   nativeKeyboardVisible?: boolean;
   /** Last-resort CSS px estimate while a text control is focused and no keyboard metric is available. */
   focusedControlFallbackInset?: number;
+  /**
+   * When true, the geometric visual-viewport heuristic (innerHeight − visualViewport.height −
+   * offsetTop) is NOT trusted as a keyboard source. Set on iOS native, where the keyboard is an
+   * OVERLAY (window.innerHeight never shrinks) and ios.contentInset:'automatic'/scroll offset make
+   * that delta a PHANTOM inset with the keyboard CLOSED — the historic iOS Chat jitter driver. The
+   * authoritative source there is the native keyboardInsetChange bridge (see nativeKeyboardInset/
+   * nativeKeyboardVisible). Leave false for mobile web, where visual-viewport is the ONLY keyboard
+   * detector and works correctly (no contentInset artifact).
+   */
+  suppressVisualViewportKeyboard?: boolean;
 }
 
 export type MobileRailViewportMetricSource =
@@ -149,12 +159,22 @@ export function computeMobileRailViewportVars(input: MobileRailViewportInput): M
     !useLayoutViewportResize &&
     nativeKeyboardInset > 0 &&
     input.nativeKeyboardVisible !== false;
-  const useVisualKeyboardInset = !useLayoutViewportResize && !useNativeKeyboardInset && visualKeyboardInset > 0;
+  // suppressVisualViewportKeyboard (iOS native): the overlay keyboard never shrinks innerHeight, so
+  // a nonzero visualKeyboardInset here is a PHANTOM produced by contentInset/scroll, not a keyboard.
+  // Refusing to promote it to a source is the primary fix for the iOS Chat-tab jitter loop.
+  const useVisualKeyboardInset =
+    !useLayoutViewportResize &&
+    !useNativeKeyboardInset &&
+    input.suppressVisualViewportKeyboard !== true &&
+    visualKeyboardInset > 0;
   const useFocusedControlFallback =
     !useLayoutViewportResize &&
     !useNativeKeyboardInset &&
     !useVisualKeyboardInset &&
-    visualKeyboardInset === 0 &&
+    // When the visual-viewport source is suppressed, the phantom visualKeyboardInset may be >0 but is
+    // ignored — still allow the focus-only lift so a focused sheet control rises before the native
+    // bridge reports (the chat path passes focusedControlFallbackInset:0, so this only aids the sheet).
+    (visualKeyboardInset === 0 || input.suppressVisualViewportKeyboard === true) &&
     focusedControlFallbackInset > 0;
   let rawHeight = viewportRawHeight;
   let keyboardInset = 0;

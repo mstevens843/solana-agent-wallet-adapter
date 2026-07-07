@@ -10391,6 +10391,16 @@ function syncBodyScrollLockDatasets(route: AppRoute | null): void {
   } else {
     delete document.body.dataset.expandNoteSheet;
   }
+  // iOS-only: lock the OUTER webview scroll while on the Chat tab. On iOS WKWebView with
+  // ios.contentInset:'automatic', a scrollable body whose 100dvh content overflows the inset frame
+  // lets the OS endlessly re-adjust adjustedContentInset (panning the visual viewport → the "whole
+  // screen jitters" report). Pinning body to a static, non-scrolling frame removes what the OS pumps;
+  // the inner .chat-transcript keeps its own scroll. Android/web never get the flag → unchanged.
+  if (IS_IOS_APP && mobileViewport && state.activeTab === 'chat') {
+    document.body.dataset.chatRoute = '1';
+  } else {
+    delete document.body.dataset.chatRoute;
+  }
 }
 
 function reconcileBodyScrollLockDatasetsAfterRender(): void {
@@ -10402,6 +10412,11 @@ function reconcileBodyScrollLockDatasetsAfterRender(): void {
   if (document.body.dataset.expandNoteSheet && !document.querySelector('[data-expand-note-root]')) {
     state.activeExpandNoteField = null;
     delete document.body.dataset.expandNoteSheet;
+  }
+  // Belt-and-suspenders: if the chat panel is no longer mounted (tab switch, chat→overview
+  // auto-redirect) restore normal outer scroll even if a render path missed clearing the flag.
+  if (document.body.dataset.chatRoute && !document.querySelector('[data-chat-scroll]')) {
+    delete document.body.dataset.chatRoute;
   }
 }
 
@@ -35550,9 +35565,6 @@ function amountControlFieldInput(fieldDef: AgentPlanTemplateField, value: string
       <button type="button" data-template-amount-unit="usd" data-template-amount-field="${escapeHtml(fieldDef.id)}" class="${mode === 'usd' ? 'active' : ''}"${hasPrice ? '' : ' disabled'}>$</button>
       <button type="button" data-template-amount-unit="token" data-template-amount-field="${escapeHtml(fieldDef.id)}" class="${mode === 'token' ? 'active' : ''}">${escapeHtml(t('Token'))}</button>
     </span>`;
-  const balanceLine = asset
-    ? `<span class="amount-balance-line">${escapeHtml(tf('Balance {amount} · {usd}', { amount: `${formatChatCompactAmount(asset.amount)} ${asset.symbol}`, usd: formatChatCompactUsd(asset.valueUsd) || '-' }))}</span>`
-    : '';
   const pctBtn = (p: string): string =>
     `<button type="button" class="chat-amount-pct" data-template-pct="${p}" data-template-amount-field="${escapeHtml(fieldDef.id)}">${escapeHtml(`${p}%`)}</button>`;
   const pctRow = asset ? `
@@ -35567,30 +35579,16 @@ function amountControlFieldInput(fieldDef: AgentPlanTemplateField, value: string
     ? `data-template-amount-usd="${escapeHtml(fieldDef.id)}"`
     : `data-template-field="${escapeHtml(fieldDef.id)}"`;
   const inputHtml = `<input id="tpl-amount-${escapeHtml(fieldDef.id)}" ${inputAttr} value="${escapeHtml(display)}" placeholder="${escapeHtml(mode === 'usd' ? '$0.00' : (fieldDef.placeholder ? t(fieldDef.placeholder) : '0.00'))}" inputmode="decimal" autocomplete="off" ${disabled} />`;
-  // DCA matches the Swap sheet exactly: the balance reads out on the RIGHT of the input (compact, mode-aware),
-  // and the 50/100/custom-% row sits on its own line below. Scoped to DCA so the shared recurring/trigger
-  // amount layouts (which style .amount-input-row) are untouched.
-  if (isJupiterDcaCreateTemplate()) {
-    const balanceReadout = asset
-      ? `<span class="chat-amount-balance">${escapeHtml(mode === 'usd' ? (formatChatCompactUsd(asset.valueUsd) || '') : `${formatChatCompactAmount(asset.amount)} ${asset.symbol}`)}</span>`
-      : '';
-    return `
-      <label class="field compact planner-field amount-control-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
-        <span class="token-choice-head"><span>${escapeHtml(label)}</span>${unitPill}</span>
-        <div class="chat-amount-field">${inputHtml}${balanceReadout}</div>
-        ${pctRow}
-        ${error}
-      </label>
-    `;
-  }
+  // Normalized to the chat Swap sheet everywhere: the mode-aware balance reads out on the RIGHT of the input
+  // (compact), and the 50/100/custom-% row sits on its own line below.
+  const balanceReadout = asset
+    ? `<span class="chat-amount-balance">${escapeHtml(mode === 'usd' ? (formatChatCompactUsd(asset.valueUsd) || '') : `${formatChatCompactAmount(asset.amount)} ${asset.symbol}`)}</span>`
+    : '';
   return `
     <label class="field compact planner-field amount-control-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
       <span class="token-choice-head"><span>${escapeHtml(label)}</span>${unitPill}</span>
-      <div class="amount-input-row">
-        ${inputHtml}
-        ${pctRow}
-      </div>
-      ${balanceLine}
+      <div class="chat-amount-field">${inputHtml}${balanceReadout}</div>
+      ${pctRow}
       ${error}
     </label>
   `;
@@ -43708,6 +43706,9 @@ function syncMobileRailSheetViewport(): void {
     nativeKeyboardInset: measuredKeyboardInset,
     nativeKeyboardVisible: measuredKeyboardVisible,
     focusedControlFallbackInset,
+    // On iOS the native keyboardInsetChange bridge is authoritative; the phantom visual-viewport
+    // delta must not drive the sheet inset either (same iOS jitter family, --mobile-rail-* vars).
+    suppressVisualViewportKeyboard: IS_IOS_APP,
   });
   // A real keyboard metric won this measurement → the focus-only fallback is no longer needed
   // and must stop firing so a later dismiss (focus retained) can settle the sheet back down.
@@ -43772,6 +43773,9 @@ function applyChatKeyboardInset(): void {
     nativeKeyboardInset: Math.max(nativeKeyboardInset, virtualKeyboardInset),
     nativeKeyboardVisible: nativeKeyboardVisible || virtualKeyboardVisible,
     focusedControlFallbackInset: 0,
+    // On iOS the native keyboardInsetChange bridge is authoritative; never let the phantom
+    // visual-viewport delta write --chat-keyboard-inset (the iOS Chat jitter driver).
+    suppressVisualViewportKeyboard: IS_IOS_APP,
   });
   const inset = resolveChatKeyboardInset(vars);
   if (!shouldWriteChatKeyboardInset(lastChatKeyboardInsetPx, inset, CHAT_KEYBOARD_INSET_EPSILON_PX)) return;
@@ -71320,9 +71324,6 @@ function recurringAmountControlHtml(value: string, label: string): string {
       <button type="button" data-recurring-amount-unit="usd" class="${mode === 'usd' ? 'active' : ''}"${hasPrice ? '' : ' disabled'}>$</button>
       <button type="button" data-recurring-amount-unit="token" class="${mode === 'token' ? 'active' : ''}">${escapeHtml(t('Token'))}</button>
     </span>`;
-  const balanceLine = asset
-    ? `<span class="amount-balance-line">${escapeHtml(tf('Balance {amount} · {usd}', { amount: `${formatChatCompactAmount(asset.amount)} ${asset.symbol}`, usd: formatChatCompactUsd(asset.valueUsd) || '-' }))}</span>`
-    : '';
   const pctBtn = (p: string): string => `<button type="button" class="chat-amount-pct" data-recurring-pct="${p}">${escapeHtml(`${p}%`)}</button>`;
   const pctRow = asset ? `
     <div class="chat-amount-pcts">
@@ -71334,14 +71335,19 @@ function recurringAmountControlHtml(value: string, label: string): string {
   // $ mode also carries id=recurringAmount so the chat rail-sheet focus snapshot can restore the
   // caret/keyboard on a re-render (it restores by element id only).
   const inputAttr = mode === 'usd' ? 'id="recurringAmount" data-recurring-amount-usd="1"' : 'id="recurringAmount" data-recurring-field="amount"';
+  // Normalized to the chat Swap sheet: the mode-aware balance reads out on the RIGHT of the input (compact),
+  // and the 50/100/custom-% row sits on its own line below.
+  const balanceReadout = asset
+    ? `<span class="chat-amount-balance">${escapeHtml(mode === 'usd' ? (formatChatCompactUsd(asset.valueUsd) || '') : `${formatChatCompactAmount(asset.amount)} ${asset.symbol}`)}</span>`
+    : '';
   return `
     <label class="field compact amount-control-field ${state.recurringErrors.recurringAmount ? 'field-error' : ''}">
       <span class="token-choice-head"><span>${escapeHtml(label)}</span>${unitPill}</span>
-      <div class="amount-input-row recurring-amount-input-row">
+      <div class="chat-amount-field">
         <input ${inputAttr} type="text" value="${escapeHtml(display)}" placeholder="${escapeHtml(mode === 'usd' ? '$0.00' : '0.00')}" inputmode="decimal" autocomplete="off" ${disabled} />
-        ${pctRow}
+        ${balanceReadout}
       </div>
-      ${balanceLine}
+      ${pctRow}
       ${fieldError('recurringAmount')}
     </label>
   `;

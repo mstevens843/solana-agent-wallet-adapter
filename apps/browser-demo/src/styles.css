@@ -24829,36 +24829,6 @@ button.danger:hover:not(:disabled) {
   padding-inline: 6px;
 }
 
-.route-app .recurring-payment-section .amount-control-field .amount-input-row {
-  gap: 6px;
-}
-
-.route-app .recurring-payment-section .amount-control-field .amount-input-row > input {
-  flex: 1 1 64px;
-  max-width: 108px;
-  min-width: 54px;
-}
-
-.route-app .recurring-payment-section .amount-control-field .amount-input-row .chat-amount-pcts {
-  gap: 4px;
-}
-
-.route-app .recurring-payment-section .amount-control-field .amount-input-row .chat-amount-pct {
-  font-size: 0.78rem;
-  min-height: 40px;
-  padding-inline: 8px;
-}
-
-.route-app .recurring-payment-section .amount-control-field .amount-input-row .chat-amount-pct-input {
-  min-width: 58px;
-  width: 68px;
-}
-
-.route-app .recurring-payment-section .amount-control-field .amount-input-row .chat-amount-pct-apply {
-  min-width: 34px;
-  padding-inline: 8px;
-}
-
 @media (min-width: 900px) and (max-width: 1000px) {
   .route-app .recurring-payment-section .recurring-grid:not(.recurring-swap-grid),
   .route-app .recurring-payment-section .recurring-swap-grid {
@@ -31574,6 +31544,19 @@ button.danger:hover:not(:disabled) {
     overflow: hidden;
   }
 
+  /* iOS Chat tab: pin the OUTER webview to a static, non-scrolling frame so
+     ios.contentInset:'automatic' has no scroll overflow to pump — the OS-level engine behind the
+     iOS Chat "whole screen jitters up/down" loop. The [data-chat-route] flag is written from JS
+     only on iOS native (IS_IOS_APP, see syncBodyScrollLockDatasets); the inner .chat-transcript
+     keeps its own scroll. position:fixed nav/dock are viewport-anchored, so overflow:hidden here
+     does not clip them. Android/web never receive the flag. */
+  body[data-chat-route],
+  body[data-chat-route]:has(.shell.ios-native-shell) {
+    height: 100svh;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
   .route-app .mobile-rail-sheet-scrim {
     animation: mobile-rail-sheet-scrim-in 180ms ease-out both;
     background: rgba(5, 7, 6, 0.76);
@@ -32784,25 +32767,6 @@ button.danger:hover:not(:disabled) {
     font-size: 0.55rem;
     min-height: 20px;
     padding: 0 5px;
-  }
-
-  .route-app .mobile-recurring-contract .amount-control-field .amount-input-row {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .route-app .mobile-recurring-contract .amount-control-field .amount-input-row .chat-amount-pcts {
-    display: grid;
-    gap: 6px;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    width: 100%;
-  }
-
-  .route-app .mobile-recurring-contract .amount-control-field .amount-input-row .chat-amount-pct,
-  .route-app .mobile-recurring-contract .amount-control-field .amount-input-row .chat-amount-pct-input {
-    min-width: 0;
-    width: 100%;
   }
 
   .route-app .mobile-recurring-contract .recurring-time-controls {
@@ -39104,9 +39068,12 @@ button.danger:hover:not(:disabled) {
 }
 .chat-amount-pct-input:focus { border-color: var(--accent); }
 .chat-amount-pct-apply { flex: 0 0 auto; min-width: 40px; text-align: center; }
-/* Keep the % quick-fill row compact (override the 50px planner-input height on mobile). */
+/* Keep the % quick-fill row compact so the custom-% input matches the 50/100 buttons (40px),
+   like the Swap sheet. The `input.` + .route-app qualifiers outrank the (0,3,1) `.field input` /
+   `.planner-field input` 50px mobile rules that would otherwise stretch this input to 50px. */
 .chat-amount-pcts .chat-amount-pct { min-height: 40px; }
-.mobile-planner-fields .chat-amount-pcts .chat-amount-pct-input { min-height: 40px; padding: 6px 10px; }
+.route-app .mobile-planner-fields .chat-amount-pcts input.chat-amount-pct-input { min-height: 40px; padding: 6px 10px; }
+.route-app .mobile-recurring-contract .chat-amount-pcts input.chat-amount-pct-input { min-height: 40px; padding: 6px 10px; }
 /* "+ Add a note" collapsed toggle (swap). */
 .chat-sheet-add-note {
   align-self: flex-start;
@@ -39121,63 +39088,12 @@ button.danger:hover:not(:disabled) {
 }
 .chat-sheet-add-note:hover { border-color: var(--accent); color: var(--text); }
 
-/* New Request / Repeat amount control: pill in the header, balance line, % quick-fills. */
+/* New Request / Repeat amount control wrapper: unit pill in the header, then the
+   .chat-amount-field (input + balance-on-right) and the .chat-amount-pcts row below,
+   matching the chat Swap sheet. */
 .amount-control-field { display: grid; gap: 6px; }
-.amount-balance-line { color: var(--muted); font-size: 0.74rem; font-weight: 700; }
 /* Slippage Auto|Custom field: the disabled "Auto" input reads as muted/placeholder, not an error. */
 .slippage-control-field .slippage-auto-input { color: var(--muted); opacity: 0.85; }
-/* Desktop: the amount input + the 50/100/Custom%/% quick-fills share ONE row (input shrinks),
-   with the balance line below. Scoped to .amount-control-field so the chat/recurring amount
-   inputs (which reuse .chat-amount-pcts) are untouched. */
-.amount-control-field .amount-input-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.amount-control-field .amount-input-row > input { flex: 1 1 auto; min-width: 0; }
-.amount-control-field .amount-input-row .chat-amount-pcts { flex: 0 0 auto; margin: 0; }
-.amount-control-field .amount-input-row .chat-amount-pct-input { flex: 0 0 auto; width: 74px; min-width: 54px; }
-/* Mobile/native: back to the stacked layout (input, then quick-fills row, then balance). */
-.route-app .mobile-planner-fields .amount-control-field .amount-input-row { flex-direction: column; align-items: stretch; gap: 6px; }
-.route-app .mobile-planner-fields .amount-control-field .amount-input-row .chat-amount-pct-input { flex: 1 1 auto; width: auto; }
-
-/* ============================================================================
-   Native (Android + iOS app shells) New Request compaction.
-   Scoped to .android-shell / .ios-native-shell so plain web + narrow desktop are
-   untouched. These overrides win on specificity (the extra shell class) — no !important
-   except where the underlying rule itself is !important.
-   ============================================================================ */
-
-/* Amount: one row again — input + 50/100/Custom%/% — undoing the .mobile-planner-fields
-   column stack above. The balance line is a sibling after .amount-input-row, so it stays
-   on its own line below automatically. */
-.route-app.android-shell .mobile-planner-fields .amount-control-field .amount-input-row,
-.route-app.ios-native-shell .mobile-planner-fields .amount-control-field .amount-input-row {
-  flex-direction: row;
-  align-items: center;
-  flex-wrap: nowrap;
-  gap: 6px;
-}
-.route-app.android-shell .mobile-planner-fields .amount-control-field .amount-input-row > input,
-.route-app.ios-native-shell .mobile-planner-fields .amount-control-field .amount-input-row > input {
-  flex: 1 1 auto;
-  min-width: 0;
-  max-width: none;
-}
-.route-app.android-shell .mobile-planner-fields .amount-control-field .amount-input-row .chat-amount-pcts,
-.route-app.ios-native-shell .mobile-planner-fields .amount-control-field .amount-input-row .chat-amount-pcts {
-  flex: 0 0 auto;
-  flex-wrap: nowrap;
-  gap: 4px;
-  margin: 0;
-}
-.route-app.android-shell .mobile-planner-fields .amount-control-field .amount-input-row .chat-amount-pct,
-.route-app.ios-native-shell .mobile-planner-fields .amount-control-field .amount-input-row .chat-amount-pct {
-  min-height: 40px;
-  padding-inline: 8px;
-}
-.route-app.android-shell .mobile-planner-fields .amount-control-field .amount-input-row .chat-amount-pct-input,
-.route-app.ios-native-shell .mobile-planner-fields .amount-control-field .amount-input-row .chat-amount-pct-input {
-  flex: 0 0 auto;
-  width: 52px;
-  min-width: 44px;
-}
 
 /* Compact slippage gear chip + popover. The chip replaces the full slippage row; the popover
    reuses the .action-picker / .template-picker-menu skeleton (positioning + z-index inherited). */
@@ -39215,50 +39131,6 @@ button.danger:hover:not(:disabled) {
 }
 .route-app .slippage-popover-body .token-choice-head { gap: 10px; }
 .route-app .slippage-popover-body input { width: 100%; }
-
-/* ============================================================================
-   Native (Android + iOS app shells) Repeat Payments compaction.
-   Mirrors the New Request fixes onto the separate recurring render path
-   (.mobile-recurring-controls / .mobile-recurring-contract). Native-scoped only.
-   ============================================================================ */
-
-/* Amount: one row again (input + 50/100/Custom%/%), balance stays on its own line below —
-   undoes the .mobile-recurring-contract column stack. */
-.route-app.android-shell .mobile-recurring-contract .amount-control-field .amount-input-row,
-.route-app.ios-native-shell .mobile-recurring-contract .amount-control-field .amount-input-row {
-  flex-direction: row;
-  align-items: center;
-  flex-wrap: nowrap;
-  gap: 6px;
-}
-.route-app.android-shell .mobile-recurring-contract .amount-control-field .amount-input-row > input,
-.route-app.ios-native-shell .mobile-recurring-contract .amount-control-field .amount-input-row > input {
-  flex: 1 1 auto;
-  min-width: 0;
-  max-width: none;
-}
-.route-app.android-shell .mobile-recurring-contract .amount-control-field .amount-input-row .chat-amount-pcts,
-.route-app.ios-native-shell .mobile-recurring-contract .amount-control-field .amount-input-row .chat-amount-pcts {
-  display: flex;
-  flex: 0 0 auto;
-  flex-wrap: nowrap;
-  gap: 4px;
-  margin: 0;
-  width: auto;
-}
-.route-app.android-shell .mobile-recurring-contract .amount-control-field .amount-input-row .chat-amount-pct,
-.route-app.ios-native-shell .mobile-recurring-contract .amount-control-field .amount-input-row .chat-amount-pct {
-  min-height: 40px;
-  min-width: 0;
-  padding-inline: 8px;
-  width: auto;
-}
-.route-app.android-shell .mobile-recurring-contract .amount-control-field .amount-input-row .chat-amount-pct-input,
-.route-app.ios-native-shell .mobile-recurring-contract .amount-control-field .amount-input-row .chat-amount-pct-input {
-  flex: 0 0 auto;
-  min-width: 44px;
-  width: 52px;
-}
 
 /* Token-field LIST dropdown opens WIDER than the (half-width) field so logo+symbol+name+price
    render without truncation. Anchored per FROM/TO so it grows on-screen (mirrors the existing
@@ -39485,6 +39357,21 @@ button.danger:hover:not(:disabled) {
       - max(var(--bottom-dock-clearance), var(--chat-keyboard-inset, 0px))
     );
     min-height: 240px;
+  }
+  /* iOS native: use the STATIC small-viewport unit (100svh) instead of 100dvh so the surface height
+     cannot flicker as ios.contentInset:'automatic' adjusts the visible frame, and clamp the keyboard
+     term so no --chat-keyboard-inset value (phantom or real) can over-shrink the surface. Pairs with
+     the body[data-chat-route] outer scroll-lock to make the iOS Chat route a fixed, non-scrolling
+     frame. min-height:240px is inherited from the base .route-app .chat-surface rule above. */
+  .route-app.ios-native-shell .chat-surface {
+    height: calc(
+      100svh
+      - var(--mobile-nav-safe-top, 0px)
+      - var(--mobile-nav-top-gap, 8px)
+      - var(--mobile-nav-height, 58px)
+      - var(--mobile-content-gap, 10px)
+      - max(var(--bottom-dock-clearance), min(var(--chat-keyboard-inset, 0px), 60svh))
+    );
   }
   .route-app .chat-composer { margin-bottom: 10px; }
 }
