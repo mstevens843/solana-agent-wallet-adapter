@@ -26138,6 +26138,39 @@ button.danger:hover:not(:disabled) {
     width: 100%;
   }
 
+  /* iOS-only: pin the /app top nav so it NEVER drifts. On /app the base rule above makes the nav
+     position:static, so on tabs taller than the viewport the body (the sole iOS scroller) scrolls
+     and the in-flow nav rides up off-screen. These three higher-specificity .ios-native-shell rules
+     take the nav out of flow (fixed/viewport-anchored) and add its 58px band back into the shell
+     top padding, so every tab's content offset is byte-for-byte unchanged — only the nav's paint
+     flips from scroll-with-body to viewport-pinned. Android/web untouched (base rules unedited). */
+  .route-app.ios-native-shell {
+    padding-top: calc(
+      var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap)
+      + var(--app-nav-h) + var(--mobile-content-gap)
+    );
+  }
+
+  .route-app.ios-native-shell .homepage-nav[data-layout="app-nav"] {
+    position: fixed;
+    top: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap));
+    left: calc(var(--app-shell-pad-x) + env(safe-area-inset-left, 0px));
+    right: calc(var(--app-shell-pad-x) + env(safe-area-inset-right, 0px));
+    width: auto;
+    z-index: 100;
+  }
+
+  /* Re-enable the top backdrop mask (base .route-app.shell::before is display:none) so body content
+     cannot peek around/under the inset fixed nav pill. Height uses --app-nav-h (58px) to match the
+     reserved padding above exactly. 3 classes beats the 2-class display:none rule. */
+  .route-app.ios-native-shell.shell::before {
+    display: block;
+    height: calc(
+      var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap)
+      + var(--app-nav-h) + var(--mobile-content-gap)
+    );
+  }
+
   .route-app .homepage-brand {
     max-width: 44px;
     overflow: hidden;
@@ -31471,10 +31504,31 @@ button.danger:hover:not(:disabled) {
     display: grid;
     gap: 6px;
     left: 0 !important;
-    max-height: min(72dvh, 440px);
+    /* Cap derived from the REAL space between the dock top and the top nav/safe-area (was a hard
+       min(72dvh,440px) that clipped the ~506px, 8-item list so Skills/Sessions fell below the fold
+       and were untappable on iOS). Subtracts the fixed dock (--bottom-dock-clearance) and the top
+       nav band (--app-nav-h etc.) once, so on tall phones all items fit and on small phones the menu
+       is exactly the free height and scrolls cleanly — never clipped past the nav/dock. */
+    max-height: min(
+      80dvh,
+      calc(
+        100dvh
+        - var(--bottom-dock-clearance)
+        - var(--mobile-nav-safe-top)
+        - var(--mobile-nav-top-gap)
+        - var(--app-nav-h)
+        - var(--mobile-content-gap)
+      )
+    );
     max-width: none;
     min-width: 0;
     overflow-y: auto;
+    /* Reliable inner scroll in iOS WKWebView: without these a touch-drag is swallowed / chained to
+       the body (locked on the chat route) instead of scrolling the menu. overscroll-behavior:contain
+       also stops the menu scroll chaining into the body[data-chat-route] lock. */
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
     padding: 8px;
     position: absolute;
     right: 0 !important;

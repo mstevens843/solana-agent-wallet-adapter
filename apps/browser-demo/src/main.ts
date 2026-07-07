@@ -10629,6 +10629,10 @@ function renderWorkspace(): void {
     morphElement(toastRoot, `<div id="toast-root">${toastStack()}</div>`, {});
   }
 
+  // Keep the persistent iOS bottom dock refreshed in place on the morph path too (it lives outside
+  // the morphed #workspace since appWorkspace() no longer emits it on iOS).
+  syncPersistentBottomDock(route);
+
   // Re-bind everything idempotently. bind()'s inline + picker/sheet handlers use bindOnce; the
   // sheets' AbortControllers were aborted above and are re-armed here. The wallet rail can be
   // inserted by the morph path, so its specialized binders must run here too.
@@ -10771,6 +10775,9 @@ function render(): void {
   lastRenderedChatOutsideWorkspaceHtml = outsideWorkspaceHtml;
   lastRenderedPageShellModalSignature = pageShellModalSignature();
   reconcileBodyScrollLockDatasetsAfterRender();
+  // Re-home the persistent iOS bottom dock into the freshly-rebuilt `.shell` (synchronous, pre-paint,
+  // so no dock blink) BEFORE bind() so its [data-tab]/more-menu handlers get (idempotently) wired.
+  syncPersistentBottomDock(route);
   flushPendingSpendNavigation();
   bind();
   bindConnectorConnectSurface();
@@ -15194,7 +15201,7 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
         </section>
         ${SHOW_DEV_CONTROLS ? contextPanel() : requestContextDetails()}
       </section>
-      ${androidBottomTabDock()}
+      ${isIosAppShellSurface() ? '' : androidBottomTabDock()}
       ${mobileRailBottomSheet()}
       ${expandNoteBottomSheet()}
     </section>
@@ -15207,6 +15214,41 @@ function androidBottomTabDock(): string {
       ${workspaceTabSelectMobile()}
     </div>
   `;
+}
+
+// iOS-only: the bottom dock lives in a PERSISTENT node re-homed into the freshly-rebuilt `.shell` on
+// every render instead of being recreated inside #workspace. Recreating a backdrop-filter:blur(14px)
+// element is what made the dock blink on every non-chat tab tap on iOS (non-chat taps take the full
+// appRoot.innerHTML rebuild). Keeping the SAME node preserves its blur layer + bindOnce handlers, so
+// the dock never blinks — WITHOUT widening the (deliberately reverted) whole-app morph, which would
+// skip tab-gated hydration (inbox swap-quotes / token-market / release-download).
+//
+// STACKING DEPENDENCY: the dock stays a child of `.shell` so `.route-app .android-bottom-tab-dock`
+// still matches and it stays inside #app's single isolate stacking context (dock z:240 < sheets
+// z:320 < modals z:520). This relies on `.shell` / `#workspace` NEVER becoming stacking contexts
+// (no transform/isolation/contain/z-index on them today — Fix 2's `::before` puts z-index on the
+// pseudo-element, not on `.shell`). If that ever changes, the dock could paint over sheets/modals.
+let persistentBottomDockEl: HTMLElement | null = null;
+function syncPersistentBottomDock(route: AppRoute | null): void {
+  if (!appRoot || typeof document === 'undefined') return;
+  const wantsDock = route === '/app' && isIosAppShellSurface();
+  if (!wantsDock) {
+    persistentBottomDockEl?.parentElement?.removeChild(persistentBottomDockEl);
+    return;
+  }
+  const shell = appRoot.querySelector('.shell');
+  if (!shell) return;
+  if (!persistentBottomDockEl) {
+    const holder = document.createElement('div');
+    holder.innerHTML = androidBottomTabDock();
+    persistentBottomDockEl = holder.firstElementChild as HTMLElement | null;
+    if (!persistentBottomDockEl) return;
+  }
+  // Move the LIVE node into the new shell (never recreate) — a fresh full render destroyed the old
+  // shell but our JS reference kept this node (and its handlers) alive.
+  if (persistentBottomDockEl.parentElement !== shell) shell.appendChild(persistentBottomDockEl);
+  // Refresh active-tab highlight / More-menu open state in place (no blink — same node).
+  morphElement(persistentBottomDockEl, androidBottomTabDock(), {});
 }
 
 function mobileRailBottomSheet(): string {
@@ -70505,6 +70547,13 @@ function isAndroidAppShellSurface(): boolean {
 
 function isNativeAppShellSurface(): boolean {
   return isAndroidAppShellSurface() || IS_IOS_APP || state.iosNativeEnvironment.isIosNative;
+}
+
+// iOS-only surface predicate — matches exactly what the `.ios-native-shell` CSS class encodes.
+// Deliberately NARROWER than isNativeAppShellSurface() (which also matches Android): the persistent
+// bottom-dock hoist must NOT change Android's DOM/render path.
+function isIosAppShellSurface(): boolean {
+  return IS_IOS_APP || state.iosNativeEnvironment.isIosNative;
 }
 
 function resetNativeAppScrollToTop(): void {
