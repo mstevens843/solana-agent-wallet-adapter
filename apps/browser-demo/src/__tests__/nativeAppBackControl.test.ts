@@ -42,11 +42,11 @@ describe('native /app top navigation', () => {
     expect(mobileRouteApp).toContain('.route-app .homepage-nav[data-layout="app-nav"]');
     expect(mobileRouteApp).toContain('position: static');
     expect(mobileRouteApp).not.toContain('--app-native-top-clear');
-    // iOS /app now PINS the nav (position:fixed + a reserved padding band) so it never drifts up on
-    // tall tabs — the intended fix, distinct from the removed back-overlay/sticky hack. The base rule
-    // above (static, for web/Android) is deliberately left in place; only iOS gets the fixed override.
+    // iOS /app pins the nav with position:sticky (in-flow, no padding band, no backdrop mask) so it
+    // never drifts up on tall tabs — the proven fix (927a9f3), uniform on every tab. The base rule
+    // above (static, for web/Android) is deliberately left in place; only iOS gets the sticky override.
     expect(mobileRouteApp).toContain('.route-app.ios-native-shell .homepage-nav[data-layout="app-nav"]');
-    expect(mobileRouteApp).toContain('position: fixed');
+    expect(mobileRouteApp).toContain('position: sticky');
     expect(mobileRouteApp).not.toContain('.native-app-back-control');
   });
 
@@ -62,32 +62,27 @@ describe('native /app top navigation', () => {
     expect(stylesSource).not.toContain('.route-app.android-shell .chat-surface,\n  .route-app.ios-native-shell .chat-surface');
   });
 
-  it('keeps the Chat morph fast path scoped to /app Chat updates', () => {
+  it('morphs the whole #workspace in place on iOS /app (no full-rebuild dock/nav flash)', () => {
     const canMorphActiveTab = sourceBetween('function canMorphActiveTab', 'function applyChatAutoscrollAfterRender');
 
     expect(canMorphActiveTab).toContain("currentRoute() !== '/app'");
+    // The gate still short-circuits for non-chat/non-sheet EXCEPT on iOS native, where every /app tab
+    // morphs so tab switches never rebuild the backdrop-filter dock/nav (the WKWebView blink).
     expect(canMorphActiveTab).toContain("state.activeTab !== 'chat'");
+    expect(canMorphActiveTab).toContain('!isIosAppShellSurface()');
     expect(canMorphActiveTab).toContain("document.getElementById('workspace')");
   });
-});
 
-describe('iOS persistent bottom dock (no blink on non-chat tab taps)', () => {
-  it('hoists the dock to a persistent node on iOS instead of recreating it in #workspace', () => {
-    // The bottom-tab blink was the full-render rebuild recreating the backdrop-filter:blur dock inside
-    // #workspace. On iOS the dock must be emitted OUT of appWorkspace and re-homed as a persistent node.
-    expect(mainSource).toContain("isIosAppShellSurface() ? '' : androidBottomTabDock()");
-    expect(mainSource).toContain('function syncPersistentBottomDock');
-
-    const body = sourceBetween('function syncPersistentBottomDock', 'function mobileRailBottomSheet');
-    // MOVE + morph the same live node in place — never recreate (recreation is the blink).
-    expect(body).toContain('shell.appendChild(persistentBottomDockEl)');
-    expect(body).toContain('morphElement(persistentBottomDockEl');
-    // iOS-only scope: must NOT use isNativeAppShellSurface() (that also matches Android).
-    expect(body).toContain('isIosAppShellSurface()');
-  });
-
-  it('re-homes the dock on BOTH render paths (full + morph)', () => {
-    const occurrences = mainSource.split('syncPersistentBottomDock(route)').length - 1;
-    expect(occurrences).toBeGreaterThanOrEqual(2);
+  it('keys the toggling #workspace children so morph never destroys .workspace or the dock', () => {
+    // The intro <div> toggles in/out on the Home tab (and the tx-modal scrim at position 0), shifting
+    // sibling positions. Without stable keys morphdom would remove+recreate .workspace and the
+    // backdrop-filter dock on every Home transition — a worse blink than the bug.
+    const renderWorkspace = sourceBetween('function renderWorkspace', 'function render(');
+    expect(renderWorkspace).toContain("=== 'app-intro'");
+    expect(renderWorkspace).toContain("=== 'app-shell'");
+    expect(renderWorkspace).toContain("=== 'android-bottom-tab-dock'");
+    // The dock is emitted INSIDE #workspace for all shells (no persistent re-parent hack).
+    expect(mainSource).not.toContain('function syncPersistentBottomDock');
+    expect(mainSource).not.toContain("isIosAppShellSurface() ? '' : androidBottomTabDock()");
   });
 });

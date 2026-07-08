@@ -10490,9 +10490,10 @@ function canMorphActiveTab(): boolean {
   if (!appRoot || typeof document === 'undefined') return false;
   if (currentRoute() !== '/app') return false;
   const sheetOpen = Boolean(state.activeMobileRailSheet);
-  // Off the Chat tab, only morph while a bottom sheet is open (the overview tab's own controls
-  // never needed morphing); the Chat tab always morphs.
-  if (state.activeTab !== 'chat' && !sheetOpen) return false;
+  // Off the Chat tab, only morph while a bottom sheet is open — EXCEPT on iOS native, where EVERY
+  // /app tab morphs so tab switches never rebuild the backdrop-filter dock/nav (the WKWebView blink).
+  // Web/Android keep the full render path for non-chat/non-sheet tabs (isIosAppShellSurface() false).
+  if (state.activeTab !== 'chat' && !sheetOpen && !isIosAppShellSurface()) return false;
   const workspace = document.getElementById('workspace');
   // Require the existing active panel so this is an in-tab update, not a first paint.
   // Route changes and anything OUTSIDE #workspace (a toast / a wallet overlay) take the
@@ -10551,6 +10552,10 @@ function renderWorkspace(): void {
   if (!workspace) return;
   const onChatTab = state.activeTab === 'chat';
 
+  // Leaving Chat via the (iOS-widened) morph path must cancel an in-flight stream, mirroring render()
+  // — otherwise it keeps appending to a transcript the morph just replaced. Idempotent.
+  if (!onChatTab && chatStreamActive()) cancelChatStream();
+
   // In-tab bookkeeping mirroring render(): keep the connector surface consistent and run the
   // sheet/expand-note lifecycle predicates.
   reconcileChatConnectorSession();
@@ -10597,7 +10602,18 @@ function renderWorkspace(): void {
     getNodeKey: (node) => {
       const el = node as Element;
       if (!el || el.nodeType !== 1 || typeof el.getAttribute !== 'function') return undefined;
-      return el.getAttribute('id') || el.getAttribute('data-chat-msg-id') || undefined;
+      const idKey = el.getAttribute('id') || el.getAttribute('data-chat-msg-id');
+      if (idKey) return idKey;
+      // Stable keys for the toggling DIRECT children of #workspace: the intro <div> appears/disappears
+      // on the Home tab and the tx-modal scrim toggles in at position 0, shifting sibling positions.
+      // Without these keys morphdom matches by position and would remove+recreate .workspace and the
+      // backdrop-filter dock on every such toggle — a WORSE blink than the bug this morph fixes. Each
+      // value is unique among rendered nodes (app-intro / app-shell / the dock).
+      const layout = el.getAttribute('data-layout');
+      if (layout === 'app-intro' || layout === 'app-shell' || layout === 'android-bottom-tab-dock') {
+        return 'layout:' + layout;
+      }
+      return undefined;
     },
     onBeforeElUpdated: (fromEl) => {
       if (fromEl.nodeType === 1 && typeof fromEl.matches === 'function' && fromEl.matches(WORKSPACE_MORPH_SKIP_SELECTOR)) {
@@ -10629,10 +10645,6 @@ function renderWorkspace(): void {
     morphElement(toastRoot, `<div id="toast-root">${toastStack()}</div>`, {});
   }
 
-  // Keep the persistent iOS bottom dock refreshed in place on the morph path too (it lives outside
-  // the morphed #workspace since appWorkspace() no longer emits it on iOS).
-  syncPersistentBottomDock(route);
-
   // Re-bind everything idempotently. bind()'s inline + picker/sheet handlers use bindOnce; the
   // sheets' AbortControllers were aborted above and are re-armed here. The wallet rail can be
   // inserted by the morph path, so its specialized binders must run here too.
@@ -10659,6 +10671,13 @@ function renderWorkspace(): void {
     syncChatKeyboardInset();
   }
   updateTabTitleBadge();
+
+  // Data side-effects the full render() path runs — required now that iOS morphs non-chat tabs.
+  // Each is internally gated (route/tab) + de-duped (scheduled/in-flight guard), so calling them on
+  // every morph is safe and a no-op off their target tab.
+  flushPendingSpendNavigation();
+  scheduleInboxSwapQuoteHydration();
+  scheduleVisibleTokenMarketHydration();
 
   lastRenderedMobileRailSheet = state.activeMobileRailSheet;
   suppressMobileRailSheetEnterAnimation = false;
@@ -10775,9 +10794,6 @@ function render(): void {
   lastRenderedChatOutsideWorkspaceHtml = outsideWorkspaceHtml;
   lastRenderedPageShellModalSignature = pageShellModalSignature();
   reconcileBodyScrollLockDatasetsAfterRender();
-  // Re-home the persistent iOS bottom dock into the freshly-rebuilt `.shell` (synchronous, pre-paint,
-  // so no dock blink) BEFORE bind() so its [data-tab]/more-menu handlers get (idempotently) wired.
-  syncPersistentBottomDock(route);
   flushPendingSpendNavigation();
   bind();
   bindConnectorConnectSurface();
@@ -15201,7 +15217,7 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
         </section>
         ${SHOW_DEV_CONTROLS ? contextPanel() : requestContextDetails()}
       </section>
-      ${isIosAppShellSurface() ? '' : androidBottomTabDock()}
+      ${androidBottomTabDock()}
       ${mobileRailBottomSheet()}
       ${expandNoteBottomSheet()}
     </section>
@@ -15214,41 +15230,6 @@ function androidBottomTabDock(): string {
       ${workspaceTabSelectMobile()}
     </div>
   `;
-}
-
-// iOS-only: the bottom dock lives in a PERSISTENT node re-homed into the freshly-rebuilt `.shell` on
-// every render instead of being recreated inside #workspace. Recreating a backdrop-filter:blur(14px)
-// element is what made the dock blink on every non-chat tab tap on iOS (non-chat taps take the full
-// appRoot.innerHTML rebuild). Keeping the SAME node preserves its blur layer + bindOnce handlers, so
-// the dock never blinks — WITHOUT widening the (deliberately reverted) whole-app morph, which would
-// skip tab-gated hydration (inbox swap-quotes / token-market / release-download).
-//
-// STACKING DEPENDENCY: the dock stays a child of `.shell` so `.route-app .android-bottom-tab-dock`
-// still matches and it stays inside #app's single isolate stacking context (dock z:240 < sheets
-// z:320 < modals z:520). This relies on `.shell` / `#workspace` NEVER becoming stacking contexts
-// (no transform/isolation/contain/z-index on them today — Fix 2's `::before` puts z-index on the
-// pseudo-element, not on `.shell`). If that ever changes, the dock could paint over sheets/modals.
-let persistentBottomDockEl: HTMLElement | null = null;
-function syncPersistentBottomDock(route: AppRoute | null): void {
-  if (!appRoot || typeof document === 'undefined') return;
-  const wantsDock = route === '/app' && isIosAppShellSurface();
-  if (!wantsDock) {
-    persistentBottomDockEl?.parentElement?.removeChild(persistentBottomDockEl);
-    return;
-  }
-  const shell = appRoot.querySelector('.shell');
-  if (!shell) return;
-  if (!persistentBottomDockEl) {
-    const holder = document.createElement('div');
-    holder.innerHTML = androidBottomTabDock();
-    persistentBottomDockEl = holder.firstElementChild as HTMLElement | null;
-    if (!persistentBottomDockEl) return;
-  }
-  // Move the LIVE node into the new shell (never recreate) — a fresh full render destroyed the old
-  // shell but our JS reference kept this node (and its handlers) alive.
-  if (persistentBottomDockEl.parentElement !== shell) shell.appendChild(persistentBottomDockEl);
-  // Refresh active-tab highlight / More-menu open state in place (no blink — same node).
-  morphElement(persistentBottomDockEl, androidBottomTabDock(), {});
 }
 
 function mobileRailBottomSheet(): string {
@@ -44136,8 +44117,11 @@ function bindMobileExpandNoteSourceFields(): void {
       source.blur();
       openExpandNoteSheet(ref);
     };
-    source.addEventListener('pointerdown', openFromSource);
-    source.addEventListener('focus', openFromSource);
+    // bindOnce (not raw addEventListener): under the iOS whole-workspace morph these source nodes
+    // persist across renders, so a raw listener would stack duplicates each morph. bindOnce keys per
+    // (element,type) and refreshes to the newest closure.
+    bindOnce(source, 'pointerdown', openFromSource);
+    bindOnce(source, 'focus', openFromSource);
   }
 }
 
