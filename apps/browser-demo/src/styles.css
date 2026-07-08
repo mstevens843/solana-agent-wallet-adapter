@@ -26140,13 +26140,16 @@ button.danger:hover:not(:disabled) {
 
   /* iOS-only: pin the /app top nav so it never drifts. On /app the base rule above makes the nav
      position:static, so on tabs taller than the viewport the body (the sole iOS scroller) scrolls
-     and the in-flow nav rides up off-screen. `sticky` keeps the nav IN FLOW (no padding surgery, no
-     backdrop mask) but pins it to the top on scroll — uniform on every tab, matching the short tabs.
-     The nav's own opaque bg (rgba(5,8,7,0.94)+blur) covers content scrolling under it. This is the
-     proven fix (shipped in 927a9f3, dropped only as collateral). Android/web keep the static base. */
+     and the in-flow nav rides up off-screen. `sticky` keeps the nav IN FLOW (so contentInset still
+     places it below the notch AT REST on short tabs) but pins it to the top on scroll.
+     STOPGAP: use env(safe-area-inset-top) — NOT --mobile-nav-safe-top (forced to 0 on iOS to avoid
+     double-counting contentInset:'automatic') — in the STUCK offset, because env() reaches the full
+     notch once scrolled, so the pinned nav sits BELOW the notch instead of at 8px under it. This is
+     scroll-state-sensitive by nature; the deterministic fix is contentInset:'never' + a new binary
+     (then this reverts to --mobile-nav-safe-top). Android/web keep the static base. */
   .route-app.ios-native-shell .homepage-nav[data-layout="app-nav"] {
     position: sticky;
-    top: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap));
+    top: calc(env(safe-area-inset-top, 0px) + var(--mobile-nav-top-gap));
     z-index: 120;
   }
 
@@ -31508,7 +31511,10 @@ button.danger:hover:not(:disabled) {
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
     touch-action: pan-y;
-    padding: 8px;
+    /* Extra bottom padding keeps the LAST item (Sessions) off the scroll/clip edge so its full tap
+       target stays inside the menu (paired with the geometric in-menu dismiss guard in
+       bindMobileMoreMenu) — otherwise a tap on it lands past the fold and dismisses the menu. */
+    padding: 8px 8px 16px;
     position: absolute;
     right: 0 !important;
     top: auto !important;
@@ -39396,10 +39402,17 @@ button.danger:hover:not(:disabled) {
      term so no --chat-keyboard-inset value (phantom or real) can over-shrink the surface. Pairs with
      the body[data-chat-route] outer scroll-lock to make the iOS Chat route a fixed, non-scrolling
      frame. min-height:240px is inherited from the base .route-app .chat-surface rule above. */
+  /* STOPGAP: the chat tab is scroll-locked (body[data-chat-route]{overflow:hidden}) so
+     contentInset:'automatic' provides NO notch offset here — supply it explicitly so the sticky nav
+     and chat-surface sit below the notch. Reverts to --mobile-nav-safe-top once contentInset:'never'
+     ships (Phase 2). */
+  body[data-chat-route]:has(.shell.ios-native-shell) .route-app.ios-native-shell {
+    padding-top: calc(env(safe-area-inset-top, 0px) + var(--mobile-nav-top-gap));
+  }
   .route-app.ios-native-shell .chat-surface {
     height: calc(
       100svh
-      - var(--mobile-nav-safe-top, 0px)
+      - env(safe-area-inset-top, 0px)
       - var(--mobile-nav-top-gap, 8px)
       - var(--mobile-nav-height, 58px)
       - var(--mobile-content-gap, 10px)

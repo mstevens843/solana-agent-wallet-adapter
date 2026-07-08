@@ -43971,6 +43971,20 @@ function bindMobileMoreMenu(): void {
   const onPointerDown = (event: PointerEvent): void => {
     const target = event.target;
     if (target instanceof Element && target.closest('[data-more-menu]')) return;
+    // The LAST drop-up item (Sessions) sits at the scroll/clip edge just above the fixed dock, so a
+    // tap on it can resolve to a node OUTSIDE [data-more-menu] — which would dismiss the menu before
+    // the button's click fires (the "Sessions won't open" bug). Treat any pointer inside the menu's
+    // bounding box as inside, so the item's click still navigates.
+    const menu = document.querySelector('[data-more-menu] .workspace-bottom-more-menu');
+    if (menu) {
+      const rect = menu.getBoundingClientRect();
+      if (
+        event.clientX >= rect.left && event.clientX <= rect.right &&
+        event.clientY >= rect.top && event.clientY <= rect.bottom
+      ) {
+        return;
+      }
+    }
     window.removeEventListener('pointerdown', onPointerDown, true);
     state.moreMenuOpen = false;
     render();
