@@ -18614,6 +18614,10 @@ button.danger:hover:not(:disabled) {
     --mobile-nav-safe-top: 0px;
   }
 
+  .shell.ios-native-shell.ios-css-safe-area {
+    --mobile-nav-safe-top: env(safe-area-inset-top, 0px);
+  }
+
   .homepage-shell {
     gap: 12px;
   }
@@ -26138,16 +26142,25 @@ button.danger:hover:not(:disabled) {
     width: 100%;
   }
 
-  /* iOS-only: pin the /app top nav so it never drifts. On /app the base rule above makes the nav
-     position:static, so on tabs taller than the viewport the body (the sole iOS scroller) scrolls
-     and the in-flow nav rides up off-screen. `sticky` keeps the nav IN FLOW (no padding surgery, no
-     backdrop mask) but pins it to the top on scroll — uniform on every tab, matching the short tabs.
-     The nav's own opaque bg (rgba(5,8,7,0.94)+blur) covers content scrolling under it. This is the
-     proven fix (shipped in 927a9f3, dropped only as collateral). Android/web keep the static base. */
+  /* Legacy iOS binaries still use ios.contentInset:'automatic'. Keep their /app nav in flow and
+     sticky so the live Render bundle does not double-apply safe-area padding on installed builds. */
   .route-app.ios-native-shell .homepage-nav[data-layout="app-nav"] {
     position: sticky;
     top: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap));
     z-index: 120;
+  }
+
+  .route-app.ios-native-shell.ios-css-safe-area {
+    padding-top: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap) + var(--app-nav-h) + var(--mobile-content-gap));
+  }
+
+  .route-app.ios-native-shell.ios-css-safe-area .homepage-nav[data-layout="app-nav"] {
+    left: calc(var(--app-shell-pad-x) + env(safe-area-inset-left, 0px));
+    position: fixed;
+    right: calc(var(--app-shell-pad-x) + env(safe-area-inset-right, 0px));
+    top: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap));
+    width: auto;
+    z-index: 245;
   }
 
   .route-app .homepage-brand {
@@ -31580,12 +31593,12 @@ button.danger:hover:not(:disabled) {
     overflow: hidden;
   }
 
-  /* iOS Chat tab: pin the OUTER webview to a static, non-scrolling frame so
-     ios.contentInset:'automatic' has no scroll overflow to pump — the OS-level engine behind the
-     iOS Chat "whole screen jitters up/down" loop. The [data-chat-route] flag is written from JS
-     only on iOS native (IS_IOS_APP, see syncBodyScrollLockDatasets); the inner .chat-transcript
-     keeps its own scroll. position:fixed nav/dock are viewport-anchored, so overflow:hidden here
-     does not clip them. Android/web never receive the flag. */
+  /* iOS Chat tab: pin the OUTER webview to a static, non-scrolling frame. Legacy iOS binaries used
+     native automatic insets that could jitter when the body scrolled; new binaries use CSS safe
+     areas, but keep the same single-scroll-owner chat frame. The [data-chat-route] flag is written
+     from JS only on iOS native (IS_IOS_APP, see syncBodyScrollLockDatasets); the inner
+     .chat-transcript keeps its own scroll. position:fixed nav/dock are viewport-anchored, so
+     overflow:hidden here does not clip them. Android/web never receive the flag. */
   body[data-chat-route],
   body[data-chat-route]:has(.shell.ios-native-shell) {
     height: 100svh;
@@ -39394,11 +39407,11 @@ button.danger:hover:not(:disabled) {
     );
     min-height: 240px;
   }
-  /* iOS native: use the STATIC small-viewport unit (100svh) instead of 100dvh so the surface height
-     cannot flicker as ios.contentInset:'automatic' adjusts the visible frame, and clamp the keyboard
-     term so no --chat-keyboard-inset value (phantom or real) can over-shrink the surface. Pairs with
-     the body[data-chat-route] outer scroll-lock to make the iOS Chat route a fixed, non-scrolling
-     frame. min-height:240px is inherited from the base .route-app .chat-surface rule above. */
+  /* iOS native: use the STATIC small-viewport unit (100svh) instead of 100dvh so browser chrome /
+     keyboard changes cannot flicker the chat surface height, and clamp the keyboard term so no
+     --chat-keyboard-inset value (phantom or real) can over-shrink the surface. Pairs with the
+     body[data-chat-route] outer scroll-lock to make the iOS Chat route a fixed, non-scrolling frame.
+     min-height:240px is inherited from the base .route-app .chat-surface rule above. */
   .route-app.ios-native-shell .chat-surface {
     height: calc(
       100svh

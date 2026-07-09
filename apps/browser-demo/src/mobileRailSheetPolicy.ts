@@ -110,11 +110,11 @@ export interface MobileRailViewportInput {
   /**
    * When true, the geometric visual-viewport heuristic (innerHeight − visualViewport.height −
    * offsetTop) is NOT trusted as a keyboard source. Set on iOS native, where the keyboard is an
-   * OVERLAY (window.innerHeight never shrinks) and ios.contentInset:'automatic'/scroll offset make
-   * that delta a PHANTOM inset with the keyboard CLOSED — the historic iOS Chat jitter driver. The
-   * authoritative source there is the native keyboardInsetChange bridge (see nativeKeyboardInset/
-   * nativeKeyboardVisible). Leave false for mobile web, where visual-viewport is the ONLY keyboard
-   * detector and works correctly (no contentInset artifact).
+   * OVERLAY (window.innerHeight never shrinks). Legacy iOS binaries also had native automatic
+   * insets/scroll offsets that could turn that delta into a PHANTOM inset with the keyboard CLOSED —
+   * the historic iOS Chat jitter driver. The authoritative source there is the native
+   * keyboardInsetChange bridge (see nativeKeyboardInset/nativeKeyboardVisible). Leave false for
+   * mobile web, where visual-viewport is the ONLY keyboard detector and works correctly.
    */
   suppressVisualViewportKeyboard?: boolean;
 }
@@ -160,8 +160,8 @@ export function computeMobileRailViewportVars(input: MobileRailViewportInput): M
     nativeKeyboardInset > 0 &&
     input.nativeKeyboardVisible !== false;
   // suppressVisualViewportKeyboard (iOS native): the overlay keyboard never shrinks innerHeight, so
-  // a nonzero visualKeyboardInset here is a PHANTOM produced by contentInset/scroll, not a keyboard.
-  // Refusing to promote it to a source is the primary fix for the iOS Chat-tab jitter loop.
+  // the native bridge is the stable source. Legacy automatic insets could also produce phantom
+  // visual deltas here, so never promote this path to the iOS keyboard source.
   const useVisualKeyboardInset =
     !useLayoutViewportResize &&
     !useNativeKeyboardInset &&

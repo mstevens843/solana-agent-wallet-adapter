@@ -117,10 +117,13 @@ public class AgenticSystemPlugin: CAPPlugin, CAPBridgedPlugin {
                 "batteryPercent": battery >= 0 ? Int(battery * 100) : -1,
                 "networkType": AgenticNetworkMonitor.shared.current,
                 "packageName": bundleId,
+                "webViewContentInset": "never",
+                "layoutContract": "ios-css-safe-area-v1",
             ]
             AgenticIOSLog.info("AgenticSystem", "systemInfo", "DONE", "snapshot", [
                 "packageName": bundleId,
                 "sdkInt": String(sdkInt),
+                "layoutContract": "ios-css-safe-area-v1",
                 "network": AgenticNetworkMonitor.shared.current,
             ])
             call.resolve(info)

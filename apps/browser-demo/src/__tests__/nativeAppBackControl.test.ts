@@ -34,24 +34,30 @@ describe('native /app top navigation', () => {
     expect(mainSource).not.toContain('bindNativeAppBackControl');
   });
 
-  it('uses the pre-overlay mobile /app top spacing with an iOS-pinned nav', () => {
+  it('keeps legacy iOS on sticky /app nav and gates fixed nav to CSS-safe-area binaries', () => {
     const mobileRouteApp = cssBetween('@media (max-width: 899px)', '.route-app .homepage-brand');
 
-    // Base (web/Android) app-nav rule is untouched: pre-overlay 8px band + position:static.
+    // Base (web/Android/legacy iOS) app-nav rule is untouched: pre-overlay band + position:static.
     expect(mobileRouteApp).toContain('calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap))');
     expect(mobileRouteApp).toContain('.route-app .homepage-nav[data-layout="app-nav"]');
     expect(mobileRouteApp).toContain('position: static');
     expect(mobileRouteApp).not.toContain('--app-native-top-clear');
-    // iOS /app pins the nav with position:sticky (in-flow, no padding band, no backdrop mask) so it
-    // never drifts up on tall tabs — the proven fix (927a9f3), uniform on every tab. The base rule
-    // above (static, for web/Android) is deliberately left in place; only iOS gets the sticky override.
+    // Legacy iOS binaries still use native automatic insets, so Render keeps the old sticky fallback.
     expect(mobileRouteApp).toContain('.route-app.ios-native-shell .homepage-nav[data-layout="app-nav"]');
     expect(mobileRouteApp).toContain('position: sticky');
+    // New iOS binaries report the ios-css-safe-area contract and get a fixed nav + content padding.
+    expect(mobileRouteApp).toContain('.route-app.ios-native-shell.ios-css-safe-area');
+    expect(mobileRouteApp).toContain('.route-app.ios-native-shell.ios-css-safe-area .homepage-nav[data-layout="app-nav"]');
+    expect(mobileRouteApp).toContain('position: fixed');
+    expect(mobileRouteApp).toContain('calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap) + var(--app-nav-h) + var(--mobile-content-gap))');
     expect(mobileRouteApp).not.toContain('.native-app-back-control');
   });
 
-  it('does not add an iOS-only /app safe-area offset above the standard nav', () => {
+  it('gates iOS safe-area ownership behind the new native layout contract', () => {
     expect(stylesSource).toContain('.shell.ios-native-shell {\n    --mobile-nav-safe-top: 0px;\n  }');
+    expect(stylesSource).toContain('.shell.ios-native-shell.ios-css-safe-area {\n    --mobile-nav-safe-top: env(safe-area-inset-top, 0px);\n  }');
+    expect(mainSource).toContain("layoutContract?: 'ios-css-safe-area-v1'");
+    expect(mainSource).toContain("state.iosLayoutContract === 'css-safe-area-v1'");
     expect(stylesSource).not.toContain('--mobile-nav-safe-top: max(62px, env(safe-area-inset-top, 0px));');
   });
 

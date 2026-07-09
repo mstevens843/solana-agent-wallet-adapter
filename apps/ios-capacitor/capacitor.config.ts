@@ -23,7 +23,7 @@ const config: CapacitorConfig = {
       }
     : {}),
   ios: {
-    contentInset: 'automatic',
+    contentInset: 'never',
   },
   plugins: {
     SplashScreen: {

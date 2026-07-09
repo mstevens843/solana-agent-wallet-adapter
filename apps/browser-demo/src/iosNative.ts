@@ -204,6 +204,8 @@ interface AgenticSystemInfo {
   batteryPercent: number;
   networkType: string;
   packageName: string;
+  webViewContentInset?: 'automatic' | 'scrollableAxes' | 'never' | 'always';
+  layoutContract?: 'ios-css-safe-area-v1';
 }
 
 interface AgenticSystemPlugin {

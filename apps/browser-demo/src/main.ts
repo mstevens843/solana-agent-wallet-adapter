@@ -1566,6 +1566,15 @@ interface AgenticAndroidBridge {
 }
 
 interface IosSystemClipboardBridge {
+  systemInfo?: () =>
+    | Promise<{
+        webViewContentInset?: 'automatic' | 'scrollableAxes' | 'never' | 'always';
+        layoutContract?: 'ios-css-safe-area-v1';
+      }>
+    | {
+        webViewContentInset?: 'automatic' | 'scrollableAxes' | 'never' | 'always';
+        layoutContract?: 'ios-css-safe-area-v1';
+      };
   clipboardWrite?: (options: { text: string; label?: string }) => Promise<{ ok?: boolean }> | { ok?: boolean };
   clipboardRead?: () => Promise<{ text?: string }> | { text?: string };
   keyboardMetrics?: () =>
@@ -1576,6 +1585,8 @@ interface IosSystemClipboardBridge {
     listener: (event: { keyboardInset?: number; visible?: boolean }) => void,
   ) => Promise<{ remove: () => Promise<void> }> | { remove: () => Promise<void> };
 }
+
+type IosLayoutContract = 'legacy-auto-inset' | 'css-safe-area-v1';
 
 // DeviceAgentStatus / DeviceAgentRuntimeState / DeviceAgentRuntimeKind are imported
 // from ./deviceAgentClient.js — the canonical contract owner. See `parseDeviceAgentStatus`
@@ -3568,6 +3579,7 @@ interface DemoState {
   tauriNativeEnvironment: TauriNativeEnvironment;
   tauriBridgeStatus: TauriBridgeStatus | null;
   iosNativeEnvironment: IosNativeEnvironment;
+  iosLayoutContract: IosLayoutContract;
   iosWallets: ReadonlyArray<IosNativeWalletOption>;
   selectedIosWalletId: IosNativeWalletId;
   // Resolved notification permission for the Jupiter WalletConnect return
@@ -4765,6 +4777,7 @@ const state: DemoState = {
   tauriNativeEnvironment: initialTauriNativeEnvironment,
   tauriBridgeStatus: null,
   iosNativeEnvironment: initialIosNativeEnvironment,
+  iosLayoutContract: 'legacy-auto-inset',
   iosWallets: listIosNativeWalletOptions(),
   selectedIosWalletId: persisted.selectedIosWalletId ?? 'phantom',
   iosAuthCacheCount: 0,
@@ -5177,6 +5190,28 @@ function clearDeviceAgentStatusCache(): void {
     window.localStorage.removeItem(DEVICE_AGENT_STATUS_STORAGE_KEY);
   } catch {
     // Best-effort.
+  }
+}
+
+async function hydrateIosNativeLayoutContract(): Promise<void> {
+  if (!state.iosNativeEnvironment.isIosNative) {
+    state.iosLayoutContract = 'legacy-auto-inset';
+    return;
+  }
+  const iosSystem = agenticIosSystemBridge();
+  if (!iosSystem?.systemInfo) {
+    state.iosLayoutContract = 'legacy-auto-inset';
+    return;
+  }
+  try {
+    const info = await iosSystem.systemInfo();
+    state.iosLayoutContract =
+      info?.layoutContract === 'ios-css-safe-area-v1' && info.webViewContentInset === 'never'
+        ? 'css-safe-area-v1'
+        : 'legacy-auto-inset';
+  } catch (err) {
+    console.warn('[bootstrap] iOS layout contract probe failed', err);
+    state.iosLayoutContract = 'legacy-auto-inset';
   }
 }
 
@@ -6062,6 +6097,11 @@ async function bootstrap(): Promise<void> {
   }
   state.iosNativeEnvironment = detectIosNativeEnvironment();
   if (state.iosNativeEnvironment.isIosNative) {
+    const previousLayoutContract = state.iosLayoutContract;
+    await hydrateIosNativeLayoutContract();
+    if (state.iosLayoutContract !== previousLayoutContract) {
+      render();
+    }
     void iosNativeCloudSessionToken();
     window.addEventListener(IOS_CLOUD_SESSION_REHYDRATED_EVENT, () => {
       void refreshCloudSessionAfterNativeTokenRehydrated()
@@ -10391,11 +10431,11 @@ function syncBodyScrollLockDatasets(route: AppRoute | null): void {
   } else {
     delete document.body.dataset.expandNoteSheet;
   }
-  // iOS-only: lock the OUTER webview scroll while on the Chat tab. On iOS WKWebView with
-  // ios.contentInset:'automatic', a scrollable body whose 100dvh content overflows the inset frame
-  // lets the OS endlessly re-adjust adjustedContentInset (panning the visual viewport → the "whole
-  // screen jitters" report). Pinning body to a static, non-scrolling frame removes what the OS pumps;
-  // the inner .chat-transcript keeps its own scroll. Android/web never get the flag → unchanged.
+  // iOS-only: lock the OUTER webview scroll while on the Chat tab. Older binaries used
+  // ios.contentInset:'automatic', where a scrollable 100dvh body could make iOS pump the adjusted
+  // inset and visually jitter. New binaries own safe areas in CSS, but the chat route still uses the
+  // same fixed outer frame so the inner .chat-transcript is the only scroll owner. Android/web never
+  // get the flag.
   if (IS_IOS_APP && mobileViewport && state.activeTab === 'chat') {
     document.body.dataset.chatRoute = '1';
   } else {
@@ -10999,8 +11039,11 @@ function isAppRoute(pathname: string): pathname is AppRoute {
 
 function pageShell(content: string, activeRoute: AppRoute | null): string {
   const routeClass = activeRoute ? `route-${activeRoute === '/' ? 'home' : activeRoute.slice(1).replace(/[^a-z0-9-]/g, '-')}` : 'route-unknown';
-  const platformClass = state.iosNativeEnvironment.isIosNative || IS_IOS_APP
-    ? 'ios-native-shell'
+  const iosShellClass = state.iosNativeEnvironment.isIosNative || IS_IOS_APP
+    ? `ios-native-shell${state.iosLayoutContract === 'css-safe-area-v1' ? ' ios-css-safe-area' : ''}`
+    : '';
+  const platformClass = iosShellClass
+    ? iosShellClass
     : isAndroidAppShellSurface()
       ? 'android-shell'
       : '';

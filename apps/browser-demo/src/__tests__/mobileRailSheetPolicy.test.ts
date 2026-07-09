@@ -479,9 +479,9 @@ describe('computeMobileRailViewportVars', () => {
   });
 
   it('iOS native: never promotes a phantom visual-viewport delta to a keyboard (anti-jitter)', () => {
-    // iOS overlay keyboard: window.innerHeight does NOT shrink, and ios.contentInset:'automatic'/
-    // scroll makes a phantom 40px visual-viewport delta with the keyboard CLOSED. Suppression must
-    // reject it — this is the primary fix for the iOS Chat-tab up/down oscillation.
+    // iOS overlay keyboard: window.innerHeight does NOT shrink. Legacy automatic native insets/scroll
+    // could also make a phantom 40px visual-viewport delta with the keyboard CLOSED. Suppression must
+    // reject it so the native bridge remains the only iOS keyboard source.
     const vars = computeMobileRailViewportVars({
       viewportHeight: 760,
       viewportOffsetTop: 0,

@@ -46,6 +46,9 @@ function verifyCapacitorConfig(config) {
   if (config.webDir !== 'dist') {
     fail(`capacitor.config.json webDir must be "dist", got ${JSON.stringify(config.webDir)}`);
   }
+  if (config.ios?.contentInset !== 'never') {
+    fail(`iOS contentInset must be "never" so CSS owns safe areas, got ${JSON.stringify(config.ios?.contentInset)}`);
+  }
 
   if (mode === 'live') {
     if (config.server?.url !== LIVE_ORIGIN) {

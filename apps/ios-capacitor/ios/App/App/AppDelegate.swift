@@ -145,6 +145,7 @@ final class AgenticBridgeViewController: CAPBridgeViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         applyAppBackground()
+        webView?.scrollView.contentInsetAdjustmentBehavior = .never
         webView?.scrollView.bounces = false
         webView?.scrollView.alwaysBounceVertical = false
     }
