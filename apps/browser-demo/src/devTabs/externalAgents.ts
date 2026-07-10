@@ -1,7 +1,8 @@
 import { renderApprovalBadges } from '../approvalBadges.js';
 import { currentAddress, refreshConnection } from '../connectionState.js';
 import { dispatchAp2InboundDemoCreated } from '../ap2InboundDemoEvents.js';
-import { getConnectedAddress, getConnectedCluster } from '../walletState.js';
+import { dispatchCloudSignInRequested } from '../cloudSignInRequestEvents.js';
+import { cloudAuthHeaders, getConnectedAddress, getConnectedCluster, isCloudSignedIn } from '../walletState.js';
 import { MppApiError, getMppInbound, postMppChallenge, postMppSessionPay } from '../mppClient.js';
 import { listStreamingSessions } from '../streamingClient.js';
 import { renderUseCaseDisclosure } from './useCases.js';
@@ -41,7 +42,7 @@ export interface NormalizedApprovalMetadata {
   [key: string]: unknown;
 }
 
-export type CacheState = 'idle' | 'loading' | 'loaded' | 'error';
+export type CacheState = 'idle' | 'loading' | 'loaded' | 'error' | 'signed-out';
 
 export interface MppSessionEligibility {
   eligible?: boolean;
@@ -450,6 +451,15 @@ export function bodyHtml(snapshot: TabState = state): string {
     case 'idle':
     case 'loading':
       return `<p class="external-agents-loading dev-tab-loading-state">${t('Loading inbound mandates…')}</p>`;
+    case 'signed-out':
+      return `
+        <div class="external-agents-empty dev-tab-empty-state">
+          <p>${t('Sign in to Agentic Cloud before loading cloud workflow data.')}</p>
+          <div class="external-agents-empty-actions">
+            <button type="button" class="primary" data-external-agents-signin>${t('Sign in')}</button>
+          </div>
+        </div>
+      `;
     case 'error':
       return `
         <div class="external-agents-error">
@@ -665,7 +675,7 @@ interface InboundFetchResult {
 async function fetchAp2InboundSource(): Promise<InboundFetchResult> {
   const res = await fetch('/api/ap2/inbound', {
     credentials: 'include',
-    headers: { Accept: 'application/json' },
+    headers: { Accept: 'application/json', ...cloudAuthHeaders() },
   });
   if (res.status === 404) return { items: [] };
   if (res.status === 403) return { items: [], errorMessage: t('This wallet cannot view AP2 mandates on this deployment.') };
@@ -722,9 +732,9 @@ export async function fetchInbound(force = false): Promise<void> {
   await refreshConnection();
   const addr = currentAddress();
   if (!addr) {
-    // Connection went away while we were resolving the session — clear the
-    // loading state so the panel doesn't get stuck.
-    state.status = 'idle';
+    // No cloud session for this wallet — render a neutral "sign in" state
+    // instead of parking at `idle` (which renders the loading spinner forever).
+    state.status = 'signed-out';
     state.lastFetchedFor = null;
     patchPanel();
     return;
@@ -757,6 +767,11 @@ function guard(): boolean {
 }
 
 export function renderExternalAgentsPanel(): string {
+  // If a cloud session became available since the panel went signed-out, drop
+  // back to idle so the fetch re-fires on this render.
+  if (state.status === 'signed-out' && (currentAddress() || isCloudSignedIn())) {
+    state.status = 'idle';
+  }
   if (state.status === 'idle') {
     queueMicrotask(() => {
       void fetchInbound();
@@ -882,6 +897,12 @@ function installPanelClickHandler(): void {
       event.preventDefault();
       state.status = 'idle';
       void fetchInbound(true);
+      return;
+    }
+    const signInBtn = target.closest<HTMLButtonElement>('[data-external-agents-signin]');
+    if (signInBtn) {
+      event.preventDefault();
+      dispatchCloudSignInRequested();
       return;
     }
     const demoBtn = target.closest<HTMLButtonElement>('[data-external-agents-demo]');

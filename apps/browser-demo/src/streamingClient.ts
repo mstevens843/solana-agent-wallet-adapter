@@ -5,7 +5,7 @@ import type {
   StreamingVoucherRecord,
   WorkflowCluster,
 } from '@solana-agent-wallet-adapter/workflow';
-import { getConnectedAddress } from './walletState.js';
+import { cloudAuthHeaders, getConnectedAddress } from './walletState.js';
 
 const DEV_WALLET_HEADER = 'x-agentic-wallet-address';
 
@@ -230,6 +230,9 @@ async function streamingRequest(path: string, init: RequestInit): Promise<unknow
     }
     const walletAddress = getConnectedAddress();
     if (walletAddress) headers.set(DEV_WALLET_HEADER, walletAddress);
+    // Native (iOS/Android/Tauri) cloud auth is Bearer-based; the same-origin
+    // cookie is never set there. No-op on web (cookie auth via credentials).
+    for (const [key, value] of Object.entries(cloudAuthHeaders())) headers.set(key, value);
     response = await fetch(path, {
       credentials: 'include',
       ...init,

@@ -31,7 +31,8 @@ import {
   type SessionsStatusFilter,
 } from '../sessionState.js';
 import { addStreamingApprovalCompletedListener } from '../streamingApprovalEvents.js';
-import { getConnectedCluster } from '../walletState.js';
+import { getConnectedCluster, isCloudSignedIn } from '../walletState.js';
+import { dispatchCloudSignInRequested } from '../cloudSignInRequestEvents.js';
 import { t, tf, uiLanguage } from '../demo-i18n/uiLang.js';
 import { renderUseCaseDisclosure } from './useCases.js';
 
@@ -205,6 +206,17 @@ export function sessionRowHtml(session: StreamingSessionRecord, selectedId: stri
 function sessionsListHtml(): string {
   const snapshot = getSessionsState();
   const rows = filteredSessions(snapshot);
+  // Cloud-gated: without a signed-in Agentic Cloud session the streaming API
+  // 401s, so show a neutral sign-in prompt instead of a red "Retry" error the
+  // user never triggered.
+  if (!isCloudSignedIn()) {
+    return `
+      <div class="dev-tab-empty-state sessions-list-state">
+        <p>${t('Sign in to Agentic Cloud before loading cloud workflow data.')}</p>
+        <button type="button" class="primary" data-sessions-signin>${t('Sign in')}</button>
+      </div>
+    `;
+  }
   if (snapshot.status === 'idle' || snapshot.status === 'loading') {
     return `<p class="dev-tab-loading-state sessions-list-state">${t('Loading streaming sessions...')}</p>`;
   }
@@ -498,7 +510,9 @@ function createModalHtml(): string {
 export function renderSessionsPanel(): string {
   ensureSessionsRuntime();
   const snapshot = getSessionsState();
-  if (snapshot.status === 'idle' && !initialLoadScheduled) {
+  // Only fetch once the wallet has an Agentic Cloud session — otherwise the
+  // request 401s and paints a red "Retry" box before the user ever signs in.
+  if (isCloudSignedIn() && snapshot.status === 'idle' && !initialLoadScheduled) {
     initialLoadScheduled = true;
     queueMicrotask(() => {
       void loadSessions().finally(() => {
@@ -645,6 +659,12 @@ function installSessionsDomHandlers(): void {
     if (target.closest('[data-sessions-refresh]')) {
       event.preventDefault();
       void loadSessions(true);
+      return;
+    }
+
+    if (target.closest('[data-sessions-signin]')) {
+      event.preventDefault();
+      dispatchCloudSignInRequested();
       return;
     }
 

@@ -339,6 +339,13 @@ describe('bodyHtml', () => {
     );
   });
 
+  it('renders the neutral sign-in prompt for the signed-out state (not the spinner)', () => {
+    const html = bodyHtml({ status: 'signed-out', inbound: [], errorMessage: '', lastFetchedFor: null });
+    expect(html).toContain('data-external-agents-signin');
+    expect(html).toContain('Sign in to Agentic Cloud before loading cloud workflow data.');
+    expect(html).not.toContain('Loading inbound mandates');
+  });
+
   it('renders the empty state when loaded with zero rows', () => {
     const html = bodyHtml({ status: 'loaded', inbound: [], errorMessage: '', lastFetchedFor: DEV_WALLET });
     expect(html).toContain('No inbound agent payment requests yet');
@@ -488,14 +495,14 @@ describe('fetchInbound state machine', () => {
     expect(after.errorMessage).toBe('offline');
   });
 
-  it('is a no-op when no wallet is set', async () => {
+  it('shows the signed-out state (not the spinner) when no wallet/cloud session is set', async () => {
     __resetConnectionStateForTests(null);
     fetchMock.mockImplementation(async (url: string) =>
       url === '/api/session' ? jsonResponse(200, { signedIn: false }) : jsonResponse(200, { inbound: [] }),
     );
     await fetchInbound();
     const after = __externalAgentsForTests.getState();
-    expect(after.status).toBe('idle');
+    expect(after.status).toBe('signed-out');
     // /api/ap2/inbound should NOT have been called
     const ap2Calls = fetchMock.mock.calls.filter(([url]) => url === '/api/ap2/inbound');
     expect(ap2Calls).toHaveLength(0);

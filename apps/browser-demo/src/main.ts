@@ -773,6 +773,7 @@ import {
   addAp2InboundDemoCreatedListener,
   type Ap2InboundDemoCreatedDetail,
 } from './ap2InboundDemoEvents.js';
+import { addCloudSignInRequestedListener } from './cloudSignInRequestEvents.js';
 import {
   addStreamingApprovalExecuteRequestedListener,
   addStreamingApprovalRequestedListener,
@@ -822,7 +823,7 @@ import {
   defaultDeviceAgentRuntimeForSurface,
   deviceAgentModeVisibleForSurface,
 } from './deviceAgentWiring.js';
-import { setConnectedAddress, setConnectedCluster } from './walletState.js';
+import { setCloudAuth, setConnectedAddress, setConnectedCluster } from './walletState.js';
 import './devTabs/index.js';
 import { setCloudWalletBridge } from './cloudWalletBridge.js';
 import { mobileWorkspaceMoreMenuItems, workspaceMoreMenuItems, type WorkspaceMoreMenuItem } from './workspaceMore.js';
@@ -3563,6 +3564,8 @@ interface DemoState {
   selectedWalletLogoId?: WalletProviderLogoId;
   selectedWalletIcon?: string;
   browserWalletPickerOpen: boolean;
+  /** iOS-only: whether the "Connect wallet" CTA's provider dropdown is open. */
+  iosConnectWalletMenuOpen: boolean;
   /** When non-null, the wallet-host browser page is currently waiting for a
    *  named browser-extension wallet to register itself via wallet-standard.
    *  Drives the centred "Opening <Brand>…" splash, hiding the normal rail
@@ -4765,6 +4768,7 @@ const state: DemoState = {
   selectedWalletLogoId: persisted.selectedWalletLogoId,
   selectedWalletIcon: undefined,
   browserWalletPickerOpen: false,
+  iosConnectWalletMenuOpen: false,
   walletHostOpening: null,
   browserWalletSession: persisted.browserWalletSession,
   walletPathSession: persisted.walletPathSession,
@@ -5322,6 +5326,7 @@ async function startApp(): Promise<void> {
     }
     installWebViewControlDelegates(disclosureOpenState);
     installPayOutApprovalCreatedListener();
+    reportOrphanedCloudSignInOnBoot();
     if (!IS_ANDROID_APP && await runNativeLiveUpdateCheck('startup') === 'reloading') return;
     await bootstrap();
     if (IS_ANDROID_APP) {
@@ -5408,6 +5413,9 @@ function installPayOutApprovalCreatedListener(): void {
   });
   addStreamingApprovalExecuteRequestedListener((detail) => {
     void handleStreamingApprovalExecuteRequested(detail);
+  });
+  addCloudSignInRequestedListener(() => {
+    void runCloudSignIn();
   });
 }
 
@@ -10230,9 +10238,11 @@ function handleBrowserWalletSelectChange(select: HTMLSelectElement): void {
   render();
 }
 
-async function handleIosWalletSelectChange(select: HTMLSelectElement): Promise<void> {
-  const walletId = select.value;
-  if (!isIosNativeWalletId(walletId)) return;
+// Selection side effects shared by the dev-controls <select> change handler and
+// the public iOS "Connect wallet" dropdown: tear down any prior wallet boundary,
+// set the selected provider, and (for Jupiter) pre-request the return
+// notification permission. Does NOT render — callers render/connect afterwards.
+async function applyIosWalletSelection(walletId: IosNativeWalletId): Promise<void> {
   notifyLocalWorkspaceBackupReminder('Back up before switching wallet selection.');
   await disconnectWalletBackend().catch(() => undefined);
   resetWalletConnection();
@@ -10256,7 +10266,62 @@ async function handleIosWalletSelectChange(select: HTMLSelectElement): Promise<v
   });
   state.error = '';
   savePersistedState();
+}
+
+async function handleIosWalletSelectChange(select: HTMLSelectElement): Promise<void> {
+  const walletId = select.value;
+  if (!isIosNativeWalletId(walletId)) return;
+  await applyIosWalletSelection(walletId);
   render();
+}
+
+// Public iOS flow: the user picked a provider from the "Connect wallet" dropdown
+// — select it (if changed) and connect in one tap.
+async function chooseIosWalletAndConnect(walletId: string): Promise<void> {
+  if (!isIosNativeWalletId(walletId)) return;
+  state.iosConnectWalletMenuOpen = false;
+  if (walletId !== state.selectedIosWalletId) {
+    await applyIosWalletSelection(walletId);
+  }
+  await runConnect();
+}
+
+// Delegated (install-once) handler for the iOS "Connect wallet" dropdown: toggle,
+// row select→connect, outside-click close, Escape close. Delegation survives the
+// per-render markup rebuild and covers the dynamically-rendered provider rows.
+let iosConnectWalletHandlerInstalled = false;
+function installIosConnectWalletHandler(): void {
+  if (iosConnectWalletHandlerInstalled || typeof document === 'undefined') return;
+  iosConnectWalletHandlerInstalled = true;
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const toggle = target.closest<HTMLButtonElement>('[data-ios-connect-toggle]');
+    if (toggle) {
+      event.preventDefault();
+      if (toggle.disabled) return;
+      state.iosConnectWalletMenuOpen = !state.iosConnectWalletMenuOpen;
+      render();
+      return;
+    }
+    const option = target.closest<HTMLElement>('[data-ios-connect-wallet-id]');
+    if (option) {
+      event.preventDefault();
+      const walletId = option.getAttribute('data-ios-connect-wallet-id');
+      if (walletId) void chooseIosWalletAndConnect(walletId);
+      return;
+    }
+    if (state.iosConnectWalletMenuOpen && !target.closest('[data-ios-connect-wallet]')) {
+      state.iosConnectWalletMenuOpen = false;
+      render();
+    }
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && state.iosConnectWalletMenuOpen) {
+      state.iosConnectWalletMenuOpen = false;
+      render();
+    }
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -10762,6 +10827,16 @@ function render(): void {
   const connectedForDevTabs = state.address || undefined;
   setConnectedAddress(connectedForDevTabs);
   setConnectedCluster(state.cluster);
+  // Publish the native cloud session (Bearer token + client id + signed-in flag)
+  // so the standalone dev-tab clients (streaming/mpp/ap2/session probe) can
+  // authenticate on native, where the same-origin cookie is never set. On web
+  // this pushes an empty token and the clients keep using the cookie.
+  const nativeCloudActive = nativeCloudApiSurfaceActive();
+  setCloudAuth({
+    token: nativeCloudActive ? nativeCloudSessionToken() : null,
+    clientHeader: nativeCloudActive ? nativeCloudClientHeader() : null,
+    signedIn: cloudSessionMatchesWallet(),
+  });
   syncBrowserDeviceAgentWalletAddress();
   if (typeof document !== 'undefined' && document.body) {
     if (connectedForDevTabs) {
@@ -16287,7 +16362,6 @@ function walletRail(): string {
     !state.iosNativeEnvironment.isIosNative &&
     !state.tauriNativeEnvironment.isTauriNative &&
     state.wallets.length > 0;
-  const showPublicIosPicker = !SHOW_DEV_CONTROLS && !state.address && state.iosNativeEnvironment.isIosNative;
   const wallet = walletIdentity();
   const connected = Boolean(state.address);
   const headingTitleMarkup = connected
@@ -16352,20 +16426,6 @@ function walletRail(): string {
       ${publicWalletActions()}
 
       ${desktopConnectFlowBlock()}
-
-      ${showPublicIosPicker ? `
-      <details class="rail-details wallet-picker-details" open>
-        <summary>${escapeHtml(t('Choose iOS wallet'))}</summary>
-        <label class="field">
-          <span>${escapeHtml(t('Selected wallet'))}</span>
-          ${selectPicker({
-            id: 'iosWalletSelect',
-            value: state.selectedIosWalletId,
-            options: iosWalletSelectOptions(),
-            disabled: state.busy,
-          })}
-        </label>
-      </details>` : ''}
 
       ${nativeConnectionRail ? `<p class="connection-group-label">${escapeHtml(t('Optional'))}</p>` : ''}
       <div class="rail-primary-stack">
@@ -19602,7 +19662,12 @@ function publicWalletActions(): string {
       </div>
     `;
   }
-  if (androidNative || iosNative) {
+  if (iosNative) {
+    // iOS: the green "Connect wallet" CTA IS the provider picker — tapping it
+    // opens a clean logo+name dropdown of the 4 wallets (no separate control).
+    return iosConnectWalletActions();
+  }
+  if (androidNative) {
     return `
       <div class="wallet-actions public-wallet-actions native-wallet-actions">
         <button data-start-action="connect" class="primary wallet-connect-cta" ${state.busy ? 'disabled' : ''}>
@@ -19626,6 +19691,58 @@ function walletButtonIcon(): string {
     <svg class="wallet-button-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
       <path d="M19 7h-1V6.5A2.5 2.5 0 0 0 15.5 4H5.75A3.75 3.75 0 0 0 2 7.75v8.5A3.75 3.75 0 0 0 5.75 20H19a3 3 0 0 0 3-3v-7a3 3 0 0 0-3-3Zm-3-1a.5.5 0 0 1 .5.5V7H5.75a1.25 1.25 0 0 1 0-2.5h9.75ZM20 17a1 1 0 0 1-1 1H5.75A1.75 1.75 0 0 1 4 16.25V8.76c.52.16 1.08.24 1.75.24H19a1 1 0 0 1 1 1v7Zm-4.5-4.5a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5Z"></path>
     </svg>
+  `;
+}
+
+// iOS pre-connect CTA: the "Connect wallet" button opens an inline dropdown of
+// the available iOS wallets (logo + name). Selecting a row connects that wallet.
+// Replaces the old separate "Choose iOS wallet" collapsible.
+function iosConnectWalletActions(): string {
+  const open = state.iosConnectWalletMenuOpen && !state.busy;
+  const menuId = 'iosConnectWalletMenu';
+  const options = state.iosWallets
+    .map((wallet) => {
+      const logoId = walletProviderLogoIdForName(wallet.name);
+      const selected = wallet.id === state.selectedIosWalletId;
+      return `
+        <button
+          type="button"
+          class="ios-connect-wallet-option ${selected ? 'selected' : ''}"
+          role="option"
+          aria-selected="${selected ? 'true' : 'false'}"
+          data-ios-connect-wallet-id="${escapeHtml(wallet.id)}"
+        >
+          ${logoId ? selectPickerLogo(logoId) : ''}
+          <strong>${escapeHtml(wallet.name)}</strong>
+        </button>
+      `;
+    })
+    .join('');
+  return `
+    <div class="wallet-actions public-wallet-actions native-wallet-actions ios-connect-wallet ${open ? 'open' : ''}" data-ios-connect-wallet>
+      <button
+        type="button"
+        class="primary wallet-connect-cta ios-connect-wallet-trigger"
+        data-ios-connect-toggle
+        aria-haspopup="listbox"
+        aria-expanded="${open ? 'true' : 'false'}"
+        aria-controls="${menuId}"
+        ${state.busy ? 'disabled' : ''}
+      >
+        ${walletButtonIcon()}
+        <span>${escapeHtml(t('Connect wallet'))}</span>
+        <span class="template-picker-caret ios-connect-wallet-caret" aria-hidden="true"></span>
+      </button>
+      <div
+        id="${menuId}"
+        class="ios-connect-wallet-menu"
+        role="listbox"
+        aria-label="${escapeHtml(t('Choose iOS wallet'))}"
+        ${open ? '' : 'hidden'}
+      >
+        ${options}
+      </div>
+    </div>
   `;
 }
 
@@ -41324,6 +41441,7 @@ function bind(): void {
   bindOnce(document.querySelector<HTMLSelectElement>('#iosWalletSelect'), 'change', (event) => {
     void handleIosWalletSelectChange(event.currentTarget as HTMLSelectElement);
   });
+  installIosConnectWalletHandler();
 
   bindOnce(document.querySelector<HTMLInputElement>('#bridgeUrl'), 'input', (event) => {
     state.bridgeUrl = (event.currentTarget as HTMLInputElement).value.trim();
@@ -54352,11 +54470,52 @@ async function afterWalletConnected(): Promise<void> {
 // open and these [cloud-signin-diag] lines pinpoint whether the proof sign threw and exactly which
 // wallet-disconnect path cleared state.address (and its caller stack). Never logs signatures/tokens.
 function cloudSignInDiag(event: string, detail?: Record<string, unknown>): void {
+  // Tag every step with the wallet being signed in, so per-wallet failures are
+  // distinguishable in the logs (Phantom vs Solflare vs Backpack vs Jupiter).
+  const walletTag = state.iosNativeEnvironment.isIosNative
+    ? state.selectedIosWalletId
+    : (state.selectedWalletName || '');
+  const enriched = { ts: new Date().toISOString(), event, walletId: walletTag, ...(detail ?? {}) };
   try {
     // eslint-disable-next-line no-console
-    console.log(`[cloud-signin-diag] ${JSON.stringify({ ts: new Date().toISOString(), event, ...(detail ?? {}) })}`);
+    console.log(`[cloud-signin-diag] ${JSON.stringify(enriched)}`);
   } catch {
     // logging must never affect the flow
+  }
+  forwardCloudSignInDiagToRender(event, walletTag, detail);
+}
+
+// Forward each sign-in step to the Render `/api/mobile-device-agent-debug` sink so
+// on-device failures are diagnosable from the server logs (no device console
+// needed). Native only (iOS/Android); origin-less-allowed for the bundled clients.
+// Fire-and-forget with keepalive; never throws, never blocks sign-in.
+function forwardCloudSignInDiagToRender(event: string, walletId: string, detail?: Record<string, unknown>): void {
+  try {
+    if (!IS_IOS_APP && !IS_ANDROID_APP) return;
+    const origin = typeof window !== 'undefined' && window.location?.origin?.startsWith('http')
+      ? window.location.origin
+      : '';
+    if (!origin) return;
+    const body = JSON.stringify({
+      method: 'cloudSignIn',
+      phase: 'cloud_sign_in',
+      source: 'browser-demo',
+      step: event,
+      code: walletId || 'unknown',
+      // Exact per-step payload, packed compactly (backend caps a field at 240 chars).
+      message: JSON.stringify(detail ?? {}).slice(0, 220),
+    });
+    void fetch(`${origin}/api/mobile-device-agent-debug`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-agentic-client': IS_IOS_APP ? 'ios-bundled' : 'android-bundled',
+      },
+      body,
+      keepalive: true,
+    }).catch(() => undefined);
+  } catch {
+    // telemetry must never affect the flow
   }
 }
 
@@ -54408,6 +54567,7 @@ async function runCloudSignIn(): Promise<void> {
     if (!state.address) return;
   }
   await run('connect', async () => {
+    markCloudSignInInFlight(state.iosNativeEnvironment.isIosNative ? state.selectedIosWalletId : (state.selectedWalletName || ''));
     try {
       if (!state.address) {
         throw new Error(t('Connect a wallet before signing in to Agentic Cloud.'));
@@ -54416,16 +54576,33 @@ async function runCloudSignIn(): Promise<void> {
         method: 'POST',
         body: JSON.stringify({ walletAddress: state.address }),
       }));
-      cloudSignInDiag('nonce-ok', { walletStillConnected: Boolean(state.address) });
       const message = stringPayload(nonce.message, 'Auth message');
       const nonceValue = stringPayload(nonce.nonce, 'Auth nonce');
+      cloudSignInDiag('nonce-ok', {
+        walletStillConnected: Boolean(state.address),
+        messageChars: message.length,
+        hasDomain: Boolean(nonce.domain),
+      });
+      // Exact predicate inputs that decide the proof route (memo-tx vs signMessage).
+      cloudSignInDiag('proof-route', {
+        isIosNative: state.iosNativeEnvironment.isIosNative,
+        backend: state.capabilities?.backend ?? '',
+        supportsSignMessage: state.capabilities?.supports?.signMessage ?? null,
+        supportsSignTransaction: state.capabilities?.supports?.signTransaction ?? null,
+      });
       cloudSignInDiag('signing', { walletStillConnected: Boolean(state.address) });
       const result = await signWalletProofMessageWithToast(message, 'Agentic Cloud sign-in', state.cluster, {
         key: CLOUD_SIGN_IN_TOAST_KEY,
         message: 'Approve this cloud sign-in proof in your wallet. No transaction will be submitted.',
         successMessage: 'Verifying cloud workspace session.',
       });
-      cloudSignInDiag('signed', { proofEncoding: result.proofEncoding, walletStillConnected: Boolean(state.address) });
+      cloudSignInDiag('signed', {
+        proofEncoding: result.proofEncoding,
+        signatureEncoding: result.signatureEncoding,
+        signatureChars: typeof result.signature === 'string' ? result.signature.length : 0,
+        hasProofTx: Boolean(result.proofTxBase64),
+        walletStillConnected: Boolean(state.address),
+      });
       const session = parseSessionResponse(await cloudRequest('/api/auth/verify-wallet', {
         method: 'POST',
         body: JSON.stringify({
@@ -54441,13 +54618,70 @@ async function runCloudSignIn(): Promise<void> {
           proofTxBase64: result.proofTxBase64,
         }),
       }));
-      cloudSignInDiag('verify-ok', { walletStillConnected: Boolean(state.address) });
+      cloudSignInDiag('verify-ok', {
+        walletStillConnected: Boolean(state.address),
+        // Did the native cloud Bearer token get captured from the verify response?
+        hasBearerToken: nativeCloudApiSurfaceActive() ? Boolean(nativeCloudSessionToken()) : null,
+      });
       await finishCloudSignIn(session);
+      cloudSignInDiag('token-stored', {
+        hasBearerToken: nativeCloudApiSurfaceActive() ? Boolean(nativeCloudSessionToken()) : null,
+        cloudStatus: state.cloudSession?.status,
+      });
     } catch (err) {
       cloudSignInDiag('threw', { message: err instanceof Error ? err.message : String(err), walletStillConnected: Boolean(state.address), cloudStatus: state.cloudSession?.status });
       throw err;
+    } finally {
+      clearCloudSignInInFlight();
     }
   });
+}
+
+// --- Sign-in in-flight marker (webview-reload detection) -------------------
+// Set in localStorage before the wallet round-trip and cleared in the finally.
+// If the WKWebView reloads (or is evicted) mid-sign-in, the finally never runs,
+// the marker survives, and the next boot logs `boot-after-inflight-signin` —
+// pinpointing the app-switch-reload failure mode without a device console.
+const CLOUD_SIGN_IN_INFLIGHT_KEY = 'agentic:cloud-signin-inflight';
+
+function markCloudSignInInFlight(walletId: string): void {
+  try {
+    localStorage.setItem(CLOUD_SIGN_IN_INFLIGHT_KEY, JSON.stringify({ walletId, ts: new Date().toISOString() }));
+  } catch {
+    // ignore — telemetry only
+  }
+}
+
+function clearCloudSignInInFlight(): void {
+  try {
+    localStorage.removeItem(CLOUD_SIGN_IN_INFLIGHT_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+function reportOrphanedCloudSignInOnBoot(): void {
+  try {
+    const raw = localStorage.getItem(CLOUD_SIGN_IN_INFLIGHT_KEY);
+    if (!raw) return;
+    localStorage.removeItem(CLOUD_SIGN_IN_INFLIGHT_KEY);
+    let walletId = 'unknown';
+    let startedAt = '';
+    try {
+      const parsed = JSON.parse(raw) as { walletId?: unknown; ts?: unknown };
+      walletId = typeof parsed.walletId === 'string' && parsed.walletId ? parsed.walletId : 'unknown';
+      startedAt = typeof parsed.ts === 'string' ? parsed.ts : '';
+    } catch {
+      // keep defaults
+    }
+    cloudSignInDiag('boot-after-inflight-signin', {
+      walletId,
+      startedAt,
+      note: 'webview reload/evict orphaned an in-flight cloud sign-in',
+    });
+  } catch {
+    // ignore
+  }
 }
 
 async function runAndroidSiwsCloudSignIn(): Promise<void> {
@@ -55212,9 +55446,18 @@ async function cloudFetchWithContext(path: string, init: RequestInit = {}): Prom
     }
   }
   const authorizationHeaderPresent = headers.has('authorization');
+  // In iOS "live" mode the Capacitor webview origin IS the cloud origin
+  // (server.url = https://agentic-signer.com), so cloud requests are actually
+  // same-origin/first-party. Sending credentials there lets the verify
+  // Set-Cookie persist and ride along as a cookie fallback beside the Bearer
+  // token — belt-and-suspenders auth. Cross-origin bundles (capacitor://localhost
+  // local mode) keep 'omit' and rely on the Bearer token only.
+  const sameOriginAsCloud = typeof window !== 'undefined'
+    && Boolean(window.location?.origin)
+    && cloudApiOriginLabel() === window.location.origin;
   const response = await fetch(cloudRequestUrl(path), {
     ...init,
-    credentials: remote ? 'omit' : 'include',
+    credentials: remote && !sameOriginAsCloud ? 'omit' : 'include',
     headers,
   });
   return { response, authorizationHeaderPresent };
@@ -66313,11 +66556,16 @@ function iosWalletOptions(): string {
 }
 
 function iosWalletSelectOptions(): SelectPickerOption[] {
-  return state.iosWallets.map((wallet) => ({
-    value: wallet.id,
-    label: wallet.name,
-    meta: 'iOS wallet',
-  }));
+  return state.iosWallets.map((wallet) => {
+    const logoId = walletProviderLogoIdForName(wallet.name);
+    return {
+      value: wallet.id,
+      label: wallet.name,
+      // Drop the "iOS wallet" eyebrow (obvious on iOS) and show the provider
+      // SVG instead so the picker rows read as clean logo + name.
+      ...(logoId ? { logoId } : {}),
+    };
+  });
 }
 
 function iosWalletLabel(walletId: IosNativeWalletId): string {

@@ -6,6 +6,8 @@
 // already uses. When the cached value changes, we click the active tab
 // button so main.ts re-runs render() and dev-tab guards re-evaluate.
 
+import { cloudAuthHeaders } from './walletState.js';
+
 let cachedAddress: string | null = null;
 let inflight: Promise<void> | null = null;
 let initialized = false;
@@ -20,7 +22,7 @@ async function fetchSessionOnce(): Promise<void> {
     const res = await fetch('/api/session', {
       method: 'GET',
       credentials: 'include',
-      headers: { Accept: 'application/json' },
+      headers: { Accept: 'application/json', ...cloudAuthHeaders() },
     });
     if (!res.ok) {
       updateCached(null);

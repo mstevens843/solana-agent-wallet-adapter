@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Cluster, SolanaSigningClient } from '@solana-agent-wallet-adapter/core';
 import { LEDGER_WALLET_NAME } from '@solana-agent-wallet-adapter/ledger-wallet';
@@ -6,6 +6,7 @@ import { Keypair, Transaction } from '@solana/web3.js';
 import bs58 from 'bs58';
 
 import {
+  setIosProofMemoTxFallback,
   setProofSigningContext,
   shouldRouteProofThroughAndroidNative,
   shouldRouteProofThroughIosNative,
@@ -15,6 +16,12 @@ import {
   type AndroidProofBackend,
   type ProofSigningAppState,
 } from '../walletProofSigning.js';
+
+// iOS proofs default to signMessage now; the memo-tx path is an opt-in fallback.
+// Reset the flag after every test so cases don't leak state into each other.
+afterEach(() => {
+  setIosProofMemoTxFallback(false);
+});
 
 function fakeClient(impl: Partial<SolanaSigningClient>): SolanaSigningClient {
   return impl as unknown as SolanaSigningClient;
@@ -104,7 +111,22 @@ describe('shouldRouteProofThroughRemoteRelayMemo', () => {
 });
 
 describe('shouldRouteProofThroughIosNative', () => {
-  it('routes Phantom and Solflare iOS native wallets through a memo transaction when transaction signing is available', () => {
+  it('does NOT route Phantom/Solflare through memo tx by default (signMessage path)', () => {
+    expect(
+      shouldRouteProofThroughIosNative(
+        appState({
+          iosNativeEnvironment: { isIosNative: true },
+          capabilities: {
+            backend: 'ios-native-phantom',
+            supports: { signMessage: true, signTransaction: true },
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('routes Phantom and Solflare iOS native wallets through a memo transaction when the fallback is enabled', () => {
+    setIosProofMemoTxFallback(true);
     expect(
       shouldRouteProofThroughIosNative(
         appState({
@@ -118,7 +140,8 @@ describe('shouldRouteProofThroughIosNative', () => {
     ).toBe(true);
   });
 
-  it('does not route Backpack iOS native proofs through the memo transaction path', () => {
+  it('does not route Backpack iOS native proofs through the memo transaction path even with the fallback enabled', () => {
+    setIosProofMemoTxFallback(true);
     expect(
       shouldRouteProofThroughIosNative(
         appState({
@@ -133,7 +156,8 @@ describe('shouldRouteProofThroughIosNative', () => {
     ).toBe(false);
   });
 
-  it('does not route Jupiter iOS WalletConnect proofs through the memo transaction path', () => {
+  it('does not route Jupiter iOS WalletConnect proofs through the memo transaction path even with the fallback enabled', () => {
+    setIosProofMemoTxFallback(true);
     expect(
       shouldRouteProofThroughIosNative(
         appState({
@@ -148,7 +172,8 @@ describe('shouldRouteProofThroughIosNative', () => {
     ).toBe(false);
   });
 
-  it('does not route non-iOS wallets through the iOS memo path', () => {
+  it('does not route non-iOS wallets through the iOS memo path even with the fallback enabled', () => {
+    setIosProofMemoTxFallback(true);
     expect(
       shouldRouteProofThroughIosNative(
         appState({
@@ -316,7 +341,8 @@ describe('signWalletProofMessage', () => {
     expect(result.proofMemoText).toBe('qr proof');
   });
 
-  it('routes iOS native proofs through a signed memo transaction', async () => {
+  it('routes iOS native proofs through a signed memo transaction when the memo-tx fallback is enabled', async () => {
+    setIosProofMemoTxFallback(true);
     const signer = Keypair.generate();
     const signature = new Uint8Array(64).fill(11);
     const signMessage = vi.fn();
@@ -353,6 +379,35 @@ describe('signWalletProofMessage', () => {
     expect(result.signature).toBe(bs58.encode(signature));
     expect(result.proofTxBase64).toBeTruthy();
     expect(result.proofMemoText).toBe('ios proof');
+  });
+
+  it('signs iOS Phantom proofs as messages by default (no transaction simulator)', async () => {
+    const signMessage = vi.fn(async () => ({ signature: 'phantom-message-signature' }));
+    const signTransaction = vi.fn();
+    setProofSigningContext({
+      getClient: () => fakeClient({ signMessage, signTransaction }),
+      getAppState: () =>
+        appState({
+          selectedWalletName: 'Phantom',
+          iosNativeEnvironment: { isIosNative: true },
+          capabilities: {
+            backend: 'ios-native-phantom',
+            supports: { signMessage: true, signTransaction: true },
+          },
+        }),
+      getLatestBlockhash: async () => ({ blockhash: '11111111111111111111111111111111' }),
+      getAndroidProofBackend: () => null,
+    });
+
+    const result = await signWalletProofMessage('ios phantom proof', 'summary', 'mainnet-beta' as Cluster);
+
+    expect(signTransaction).not.toHaveBeenCalled();
+    expect(signMessage).toHaveBeenCalledOnce();
+    expect(result).toEqual({
+      signature: 'phantom-message-signature',
+      proofEncoding: 'utf8-message',
+      signatureEncoding: 'base58',
+    });
   });
 
   it('signs Backpack iOS native proofs as messages', async () => {

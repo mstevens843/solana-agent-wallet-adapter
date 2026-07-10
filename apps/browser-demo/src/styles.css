@@ -7289,6 +7289,78 @@ code {
   fill: currentColor;
 }
 
+/* iOS "Connect wallet" provider dropdown — the green CTA opens an inline menu of
+   the available iOS wallets (logo + name). Replaces the old separate picker. */
+.ios-connect-wallet {
+  position: relative;
+}
+
+.ios-connect-wallet-trigger {
+  width: 100%;
+}
+
+.ios-connect-wallet-caret {
+  margin-left: auto;
+}
+
+.ios-connect-wallet.open .ios-connect-wallet-caret {
+  color: var(--accent-2);
+  transform: rotate(45deg);
+}
+
+.ios-connect-wallet-menu {
+  backdrop-filter: blur(18px);
+  background: rgba(14, 17, 16, 0.98);
+  border: 1px solid rgba(224, 230, 226, 0.15);
+  border-radius: var(--radius);
+  box-shadow:
+    0 24px 58px rgba(0, 0, 0, 0.38),
+    inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  display: grid;
+  gap: 4px;
+  left: 0;
+  max-height: 360px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: 100%;
+  z-index: 120;
+}
+
+.ios-connect-wallet-menu[hidden] {
+  display: none;
+}
+
+.ios-connect-wallet-option {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius) - 4px);
+  color: var(--text);
+  display: flex;
+  gap: 12px;
+  justify-content: flex-start;
+  min-height: 52px;
+  padding: 8px 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.ios-connect-wallet-option:hover,
+.ios-connect-wallet-option:focus-visible,
+.ios-connect-wallet-option.selected {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(224, 230, 226, 0.16);
+}
+
+.ios-connect-wallet-option strong {
+  font-size: 0.95rem;
+  font-weight: 760;
+}
+
 .bridge-box p,
 .mobile-wallet-box p,
 .custody-manifest p,
@@ -15269,6 +15341,13 @@ button.danger:hover:not(:disabled) {
   body:has(.shell.ios-native-shell) {
     --toast-mobile-bottom-clearance: var(--bottom-dock-clearance);
     --toast-mobile-top-clearance: max(64px, calc(env(safe-area-inset-top, 0px) + 16px));
+  }
+
+  /* Toasts must always sit above the top nav on iOS. The nav's stacking (z-index 245/120) otherwise
+     paints over the top-anchored toast stack (z-index 50). The toast root lives outside .shell, so
+     scope via :has(). */
+  body:has(.shell.ios-native-shell) .toast-stack {
+    z-index: 300;
   }
 
   .homepage-demo-cta {
@@ -26142,25 +26221,21 @@ button.danger:hover:not(:disabled) {
     width: 100%;
   }
 
-  /* Legacy iOS binaries still use ios.contentInset:'automatic'. Keep their /app nav in flow and
-     sticky so the live Render bundle does not double-apply safe-area padding on installed builds. */
+  /* iOS /app nav sits in normal document flow (matching web/Android at 26204) so it scrolls away
+     with the page instead of pinning/overlapping content. The notch is cleared without reserving
+     nav height: legacy binaries use ios.contentInset:'automatic' (--mobile-nav-safe-top:0), and the
+     css-safe-area binary uses the base .route-app padding-top (env(safe-area-inset-top)). A static
+     element also ignores z-index, so the nav can no longer paint over content or toasts. */
   .route-app.ios-native-shell .homepage-nav[data-layout="app-nav"] {
-    position: sticky;
-    top: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap));
-    z-index: 120;
+    position: static;
   }
 
   .route-app.ios-native-shell.ios-css-safe-area {
-    padding-top: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap) + var(--app-nav-h) + var(--mobile-content-gap));
+    padding-top: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap));
   }
 
   .route-app.ios-native-shell.ios-css-safe-area .homepage-nav[data-layout="app-nav"] {
-    left: calc(var(--app-shell-pad-x) + env(safe-area-inset-left, 0px));
-    position: fixed;
-    right: calc(var(--app-shell-pad-x) + env(safe-area-inset-right, 0px));
-    top: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap));
-    width: auto;
-    z-index: 245;
+    position: static;
   }
 
   .route-app .homepage-brand {
@@ -34354,6 +34429,13 @@ button.danger:hover:not(:disabled) {
     white-space: nowrap;
   }
 
+  /* iOS: cap the archived button's font/padding so it fits its 5-col `archived` cell and stops
+     bleeding into (overlapping) the Start/Check subtabs in the `tabs` cols. iOS-only. */
+  .route-app.ios-native-shell .one-time-plan-control-row.review-filter-row .check-archived-top {
+    font-size: 0.72rem;
+    padding-inline: 8px;
+  }
+
   .route-app.android-shell .generated-plans-toolbar-row,
   .route-app.ios-native-shell .generated-plans-toolbar-row {
     display: none;
@@ -39466,6 +39548,9 @@ button.danger:hover:not(:disabled) {
 }
 .android-shell .chat-disclaimer,
 .ios-native-shell .chat-disclaimer { padding: 0 0 2px; }
+/* iOS: scale the caption down so it stays on one line (base 0.72rem wraps), reclaiming the vertical
+   space and pulling the composer closer to the bottom. */
+.ios-native-shell .chat-disclaimer { font-size: 0.6rem; }
 
 /* Positions tab — monitor + manage live stateful positions (orders/lending/borrowing/staking/liquidity/perps). */
 .positions-selector {

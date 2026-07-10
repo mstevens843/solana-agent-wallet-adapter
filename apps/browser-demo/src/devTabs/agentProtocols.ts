@@ -1,6 +1,6 @@
 import './agentProtocols.css';
 import { registerDevTab } from '../devTabRegistry.js';
-import { t, tf } from '../demo-i18n/uiLang.js';
+import { t } from '../demo-i18n/uiLang.js';
 import { renderAgentCardPanel } from './agentCard.js';
 import { fetchInbound, renderExternalAgentsPanel } from './externalAgents.js';
 import { renderPayOutPanel } from './payOut.js';
@@ -96,7 +96,6 @@ function renderSubTabControl(): string {
     <div class="one-time-method-control agent-protocols-tab-control" role="presentation">
       <span class="one-time-method-label">
         <strong>${t('Agent Payments')}</strong>
-        <em class="accent-note">${t('Profile, pay, receive')}</em>
       </span>
       <div class="template-filter-row one-time-method-filter agent-protocols-tab-list" role="tablist" aria-label="${escapeHtml(t('Agent payment sections'))}">
         ${subTabs.map(renderSubTabButton).join('')}

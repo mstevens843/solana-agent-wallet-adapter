@@ -8,6 +8,16 @@
   justify-content: end;
   justify-self: end;
   margin-left: auto;
+  /* Safety net on wide/constrained columns: cap the control at the column width
+     (base .one-time-method-control is width:max-content) and let the pills wrap
+     below the eyebrow instead of overlapping it (base is a nowrap flex row). */
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.agent-protocols-tab-control .one-time-method-label {
+  min-width: 0;
 }
 
 .agent-protocols-tab-list {
@@ -28,6 +38,10 @@
   }
 
   .agent-protocols-tab-control {
+    /* Stack the "AGENT PAYMENTS" eyebrow ABOVE the pill row. The base
+       .one-time-method-control is display:flex, so grid-template-columns alone
+       was ignored and the eyebrow overlapped the pills — force grid here. */
+    display: grid;
     align-items: stretch;
     grid-template-columns: 1fr;
     justify-self: stretch;

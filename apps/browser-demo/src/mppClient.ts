@@ -1,3 +1,5 @@
+import { cloudAuthHeaders } from './walletState.js';
+
 export type MppApiErrorCode = 'not_implemented' | 'network_error' | 'http_error' | 'invalid_response';
 
 export class MppApiError extends Error {
@@ -146,6 +148,8 @@ async function requestJson<T>(path: string, init: RequestInit): Promise<T> {
       headers: {
         Accept: 'application/json',
         ...(init.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        // Native Bearer auth (no-op on web, where the cookie is used).
+        ...cloudAuthHeaders(),
         ...(init.headers ?? {}),
       },
     });

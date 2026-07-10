@@ -124,7 +124,25 @@ export function shouldRouteProofThroughRemoteRelayMemo(state: ProofSigningAppSta
     && state.capabilities?.supports?.signTransaction === true;
 }
 
+// iOS proof routing. By DEFAULT iOS wallets sign the proof MESSAGE (like Backpack
+// and Jupiter already do) via the native IWA `signMessage` — this avoids the
+// transaction simulator + fake network fee that Phantom/Solflare render when a
+// proof is routed through `signTransaction` (the "0.000025 / simulation failed"
+// symptom). The memo-tx fallback is retained and can be re-enabled at runtime via
+// `setIosProofMemoTxFallback(true)` if on-device testing shows a specific wallet's
+// mobile `signMessage` is unreliable.
+let iosProofMemoTxFallbackEnabled = false;
+
+export function setIosProofMemoTxFallback(enabled: boolean): void {
+  iosProofMemoTxFallbackEnabled = enabled;
+}
+
+export function isIosProofMemoTxFallbackEnabled(): boolean {
+  return iosProofMemoTxFallbackEnabled;
+}
+
 export function shouldRouteProofThroughIosNative(state: ProofSigningAppState): boolean {
+  if (!iosProofMemoTxFallbackEnabled) return false;
   return state.iosNativeEnvironment?.isIosNative === true
     && state.capabilities?.backend !== 'ios-native-backpack'
     && state.capabilities?.backend !== 'ios-native-jupiter'

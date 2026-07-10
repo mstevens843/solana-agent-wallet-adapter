@@ -26,7 +26,7 @@ import {
   STREAMING_APPROVAL_EXECUTE_REQUESTED_EVENT,
   streamingApprovalSignedBody,
 } from '../../streamingApprovalEvents.js';
-import { setConnectedAddress, setConnectedCluster } from '../../walletState.js';
+import { setCloudAuth, setConnectedAddress, setConnectedCluster } from '../../walletState.js';
 import { setUiLanguage } from '../../demo-i18n/uiLang.js';
 import { __sessionsForTests } from '../sessions.js';
 
@@ -82,6 +82,9 @@ describe('sessions dev tab', () => {
     (globalThis as { fetch?: typeof fetch }).fetch = fetchMock as unknown as typeof fetch;
     setConnectedAddress(DEV_WALLET);
     setConnectedCluster('mainnet-beta');
+    // Sessions are cloud-gated; simulate a signed-in cloud session so the panel
+    // renders the session list rather than the signed-out prompt.
+    setCloudAuth({ signedIn: true });
     __resetSessionsStateForTests({
       status: 'loaded',
       sessions: [makeSession()],
@@ -105,6 +108,7 @@ describe('sessions dev tab', () => {
     setUiLanguage('en');
     setConnectedAddress(undefined);
     setConnectedCluster(undefined);
+    setCloudAuth({ signedIn: false });
     __resetSessionsStateForTests();
   });
 
@@ -123,6 +127,17 @@ describe('sessions dev tab', () => {
     expect(html).toContain('sess_active_001');
     expect(html).toContain('7.5 / 25 USDC');
     expect(html).toContain('sessions-pill--active');
+  });
+
+  it('renders the neutral sign-in prompt (no Retry) when not signed into cloud', () => {
+    setCloudAuth({ signedIn: false });
+    __resetSessionsStateForTests({ status: 'idle' });
+    const html = __sessionsForTests.renderSessionsPanel();
+    expect(html).toContain('data-sessions-signin');
+    expect(html).toContain('Sign in to Agentic Cloud before loading cloud workflow data.');
+    // The list body shows the calm sign-in prompt, not the red error/Retry box.
+    expect(html).not.toContain('sessions-error');
+    expect(html).not.toContain('sess_active_001');
   });
 
   it('localizes backend notice messages by exact catalog key', () => {

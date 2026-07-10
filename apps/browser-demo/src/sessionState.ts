@@ -764,6 +764,11 @@ function friendlyStreamingError(err: unknown): string {
   if (err instanceof StreamingApiError && err.code === 'not_implemented') {
     return 'Streaming session routes are not available on this dev server yet.';
   }
+  // A 401 here means the cloud session expired/dropped mid-use. Surface the same
+  // calm sign-in copy instead of a raw "HTTP 401" string.
+  if (err instanceof StreamingApiError && err.status === 401) {
+    return 'Sign in to Agentic Cloud before loading cloud workflow data.';
+  }
   if (err instanceof Error) return err.message;
   return 'Streaming session request failed.';
 }

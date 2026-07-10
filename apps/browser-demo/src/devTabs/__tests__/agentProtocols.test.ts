@@ -14,7 +14,9 @@ describe('Agent Payments dev tab', () => {
 
     expect(html).toContain('one-time-method-control agent-protocols-tab-control');
     expect(html).toContain('<strong>Agent Payments</strong>');
-    expect(html).toContain('Profile, pay, receive');
+    // The "Profile, pay, receive" subheader was removed — the tabs are
+    // self-explanatory and the eyebrow must never overlap the pills.
+    expect(html).not.toContain('Profile, pay, receive');
     expect(html).toContain('template-filter-row one-time-method-filter agent-protocols-tab-list');
     expect(html).toContain('data-agent-protocols-subtab="agent-card"');
     expect(html).toContain('data-agent-protocols-subtab="pay-out"');

@@ -8,6 +8,7 @@ import * as DevLayer1 from '@solana-agent-wallet-adapter/workflow/dev';
 import type { JsonObject } from '@solana-agent-wallet-adapter/workflow';
 
 import type { EvidenceReceiptRecord, EvidenceStore } from './evidenceService.js';
+import { seedLaunchSkillsIfNeeded } from './launchSkillSeeder.js';
 import {
   isAggregatorStore,
   isSkillsStore,
@@ -45,6 +46,11 @@ export async function runAggregatorRoll(input: AggregatorRollInput): Promise<Agg
   const skillsStore = store as unknown as SkillsStore;
   const aggregatorStore = store as unknown as AggregatorStore;
   const evidenceStore = store as unknown as EvidenceStore;
+
+  // Ensure the shipped launch-skill manifests are persisted before the roll so
+  // their `skill:<id>` snapshots get written even if no `/api/skills*` request
+  // seeded them first — otherwise `/api/aggregator/skills/:slug` stays 404.
+  await seedLaunchSkillsIfNeeded(skillsStore, clock);
 
   const computedAt = clock.now().toISOString();
   const receiptCache = new Map<string, EvidenceReceiptRecord | null>();

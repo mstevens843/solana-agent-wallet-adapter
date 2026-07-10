@@ -432,6 +432,9 @@
     min-height: 38px;
     padding-inline: 8px;
     width: 100%;
+    /* Keep "Create AP2 request" on one line — button.primary has no nowrap of
+       its own, and iOS's wider system font wraps it in the 2-col grid. */
+    white-space: nowrap;
   }
 
   .external-agents-header [data-external-agents-refresh] {
