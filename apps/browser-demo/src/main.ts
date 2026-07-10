@@ -31071,7 +31071,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
       ${generatedPlanConsistencyWarning(displayRecord)}
       ${generatedPlanAgentReviewStrip(displayRecord)}
       ${agentOverrideStrip(record.agentOverride)}
-      ${record.error ? generatedPlanErrorNotice(record.error) : ''}
+      ${record.error ? generatedPlanErrorNotice(record.error, record) : ''}
       ${guardrailBlocked ? actionHint : ''}
 
       <div class="review-plan-footer-row">
@@ -31098,13 +31098,24 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
   `;
 }
 
-function generatedPlanErrorNotice(message: string): string {
+function generatedPlanErrorNotice(message: string, record?: GeneratedPlanRecord): string {
+  const label = planErrorNoticeLabel(record);
   return `
-    <section class="review-plan-error" aria-label="${escapeHtml(t('AI plan issue'))}">
-      <span>${escapeHtml(t('AI plan issue'))}</span>
+    <section class="review-plan-error" aria-label="${escapeHtml(label)}">
+      <span>${escapeHtml(label)}</span>
       <p>${escapeHtml(message)}</p>
     </section>
   `;
+}
+
+// The error box used to always read "AI plan issue" — wrong and confusing when the failure is a
+// wallet SIGNING error (e.g. Backpack "invalid session") or when the plan never used AI at all.
+// Label by the actual failure category so a signing/review problem is not blamed on AI.
+function planErrorNoticeLabel(record?: GeneratedPlanRecord): string {
+  const failure = record?.failureLabel;
+  if (failure === AI_DRAFT_FAILED_LABEL || failure === AI_DRAFT_PLACEHOLDER_LABEL) return t('AI plan issue');
+  if (failure === 'Sign failed - try again') return t('Signing issue');
+  return t('Plan issue');
 }
 
 function generatedPlanReviewTitle(record: GeneratedPlanRecord): string {

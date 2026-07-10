@@ -14,20 +14,22 @@ enum AgenticWalletConnectDeepLink {
         URL(string: "jupiter://wc?uri=\(percentEncodeQueryValue(uri))")
     }
 
-    /// Foreground Jupiter for an in-flight signing request using the WalletConnect
-    /// iOS "incomplete URI" trigger: `jupiter://wc?uri=wc:<sessionTopic>@2`.
+    /// Foreground Jupiter for an in-flight signing request.
     ///
-    /// A WC sign request is NOT carried in a deep link — it travels over the relay
-    /// to the already-paired wallet. This URL reuses Jupiter's working `wc?uri=`
-    /// handler (the same path that pairs successfully) but carries only the session
-    /// topic (no relay-protocol/symKey), which the WC mobile-linking spec defines as
-    /// a foreground trigger: the wallet matches the topic to its active session and
-    /// shows the pending request that already arrived over the relay. Crucially this
-    /// routes into Jupiter's WC screen rather than bare `jupiter://`, which has no
-    /// handler and falls through to Jupiter's web view (jup.ag).
-    static func jupiterRequestForegroundUrl(sessionTopic: String) -> URL? {
-        let incompleteUri = "wc:\(sessionTopic)@2"
-        return URL(string: "jupiter://wc?uri=\(percentEncodeQueryValue(incompleteUri))")
+    /// A WC sign request is NOT carried in a deep link — it rides the relay to the
+    /// already-paired wallet; we only need to bring Jupiter to the foreground so its
+    /// WC client surfaces the pending request. We open Jupiter's bare custom scheme
+    /// `jupiter://` — a warm/installed Jupiter opens the app (the jup.ag web
+    /// fallthrough is a UNIVERSAL-link/cold-start behavior, NOT the custom scheme).
+    ///
+    /// The previous approach fabricated an "incomplete" pairing URI
+    /// `jupiter://wc?uri=wc:<sessionTopic>@2`. reown-swift's `WalletConnectURI` parser
+    /// requires `symKey` + `relay-protocol` and rejects that with "The format of the
+    /// WalletConnect Pairing URI is invalid." — the exact error users saw. There is no
+    /// valid pairing URI to synthesize for an ALREADY-established session, so we don't
+    /// try; foregrounding the app is sufficient for the relay request to surface.
+    static func jupiterRequestForegroundUrl(sessionTopic _: String) -> URL? {
+        return URL(string: "jupiter://")
     }
 
     private static func percentEncodeQueryValue(_ value: String) -> String {

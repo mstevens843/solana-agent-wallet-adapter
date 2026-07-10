@@ -140,8 +140,9 @@ describe('shouldRouteProofThroughIosNative', () => {
     ).toBe(true);
   });
 
-  it('does not route Backpack iOS native proofs through the memo transaction path even with the fallback enabled', () => {
-    setIosProofMemoTxFallback(true);
+  it('ALWAYS routes Backpack iOS native proofs through the memo transaction path (no working signMessage route)', () => {
+    // Backpack routes to memo-tx regardless of the Phantom/Solflare emergency flag.
+    setIosProofMemoTxFallback(false);
     expect(
       shouldRouteProofThroughIosNative(
         appState({
@@ -153,7 +154,7 @@ describe('shouldRouteProofThroughIosNative', () => {
           },
         }),
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('does not route Jupiter iOS WalletConnect proofs through the memo transaction path even with the fallback enabled', () => {
@@ -410,14 +411,25 @@ describe('signWalletProofMessage', () => {
     });
   });
 
-  it('signs Backpack iOS native proofs as messages', async () => {
-    const signMessage = vi.fn(async () => ({ signature: 'backpack-message-signature' }));
-    const signTransaction = vi.fn();
+  it('signs Backpack iOS native proofs as a memo transaction (no working signMessage route)', async () => {
+    const signer = Keypair.generate();
+    const signature = new Uint8Array(64).fill(7);
+    const signMessage = vi.fn();
+    const signTransaction = vi.fn(async (txBase64: string) => {
+      const tx = Transaction.from(Buffer.from(txBase64, 'base64'));
+      tx.addSignature(signer.publicKey, Buffer.from(signature));
+      return {
+        signature: Buffer.from(
+          tx.serialize({ requireAllSignatures: false, verifySignatures: false }),
+        ).toString('base64'),
+      };
+    });
     setProofSigningContext({
       getClient: () => fakeClient({ signMessage, signTransaction }),
       getAppState: () =>
         appState({
           selectedWalletName: 'Backpack',
+          address: signer.publicKey.toBase58(),
           iosNativeEnvironment: { isIosNative: true },
           capabilities: {
             backend: 'ios-native-backpack',
@@ -430,13 +442,11 @@ describe('signWalletProofMessage', () => {
 
     const result = await signWalletProofMessage('ios backpack proof', 'summary', 'mainnet-beta' as Cluster);
 
-    expect(signMessage).toHaveBeenCalledOnce();
-    expect(signTransaction).not.toHaveBeenCalled();
-    expect(result).toEqual({
-      signature: 'backpack-message-signature',
-      proofEncoding: 'utf8-message',
-      signatureEncoding: 'base58',
-    });
+    expect(signMessage).not.toHaveBeenCalled();
+    expect(signTransaction).toHaveBeenCalledOnce();
+    expect(result.proofEncoding).toBe('tx-memo-proof');
+    expect(result.signature).toBe(bs58.encode(signature));
+    expect(result.proofTxBase64).toBeTruthy();
   });
 
   it('signs Jupiter iOS WalletConnect proofs as messages', async () => {

@@ -34,23 +34,29 @@ describe('native /app top navigation', () => {
     expect(mainSource).not.toContain('bindNativeAppBackControl');
   });
 
-  it('keeps legacy iOS on sticky /app nav and gates fixed nav to CSS-safe-area binaries', () => {
+  it('keeps the /app top nav in normal flow (scrolls away) on iOS, matching web/Android', () => {
     const mobileRouteApp = cssBetween('@media (max-width: 899px)', '.route-app .homepage-brand');
 
-    // Base (web/Android/legacy iOS) app-nav rule is untouched: pre-overlay band + position:static.
+    // Base (web/Android) app-nav rule: pre-overlay band + position:static.
     expect(mobileRouteApp).toContain('calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap))');
     expect(mobileRouteApp).toContain('.route-app .homepage-nav[data-layout="app-nav"]');
     expect(mobileRouteApp).toContain('position: static');
     expect(mobileRouteApp).not.toContain('--app-native-top-clear');
-    // Legacy iOS binaries still use native automatic insets, so Render keeps the old sticky fallback.
-    expect(mobileRouteApp).toContain('.route-app.ios-native-shell .homepage-nav[data-layout="app-nav"]');
-    expect(mobileRouteApp).toContain('position: sticky');
-    // New iOS binaries report the ios-css-safe-area contract and get a fixed nav + content padding.
-    expect(mobileRouteApp).toContain('.route-app.ios-native-shell.ios-css-safe-area');
-    expect(mobileRouteApp).toContain('.route-app.ios-native-shell.ios-css-safe-area .homepage-nav[data-layout="app-nav"]');
-    expect(mobileRouteApp).toContain('position: fixed');
-    expect(mobileRouteApp).toContain('calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap) + var(--app-nav-h) + var(--mobile-content-gap))');
     expect(mobileRouteApp).not.toContain('.native-app-back-control');
+
+    // iOS (legacy + CSS-safe-area binaries) now MATCH web/Android: the /app nav sits in normal flow
+    // and scrolls away instead of pinning/overlapping content. No sticky/fixed nav, and the
+    // CSS-safe-area padding no longer reserves nav height (the nav occupies its own flow space).
+    expect(stylesSource).toContain(
+      '.route-app.ios-native-shell .homepage-nav[data-layout="app-nav"] {\n    position: static;\n  }',
+    );
+    expect(stylesSource).toContain(
+      '.route-app.ios-native-shell.ios-css-safe-area .homepage-nav[data-layout="app-nav"] {\n    position: static;\n  }',
+    );
+    expect(stylesSource).toContain(
+      '.route-app.ios-native-shell.ios-css-safe-area {\n    padding-top: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap));\n  }',
+    );
+    expect(stylesSource).not.toContain('var(--app-nav-h) + var(--mobile-content-gap)');
   });
 
   it('gates iOS safe-area ownership behind the new native layout contract', () => {

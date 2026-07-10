@@ -31,10 +31,11 @@
  * Its `signTransaction` deeplink is already the working path for swaps, so proofs
  * use a signed memo transaction there too.
  *
- * iOS-native wallet approvals use the same JS memo-tx proof fallback for wallets
- * whose mobile `signMessage` behavior is not reliable. Backpack's iOS deeplink
- * path and Jupiter's WalletConnect path both have reliable message signing and
- * avoid rendering transaction simulators for proof-only actions.
+ * iOS-native wallet approvals: Phantom/Solflare/Jupiter sign the proof MESSAGE.
+ * Backpack is the exception — its iOS universal-link protocol has NO `signMessage`
+ * route (the app opens but shows no prompt and never returns), so Backpack proofs
+ * are routed through a memo `signTransaction`, which Backpack DOES support and
+ * which carries the request in the deep link so it foregrounds + prompts.
  *
  * This module is the single entry point; per-host routing is in the native bridge
  * (see `apps/android-twa/app/src/main/java/com/agentic/wallet/mwa/MwaController.kt`
@@ -124,13 +125,9 @@ export function shouldRouteProofThroughRemoteRelayMemo(state: ProofSigningAppSta
     && state.capabilities?.supports?.signTransaction === true;
 }
 
-// iOS proof routing. By DEFAULT iOS wallets sign the proof MESSAGE (like Backpack
-// and Jupiter already do) via the native IWA `signMessage` — this avoids the
-// transaction simulator + fake network fee that Phantom/Solflare render when a
-// proof is routed through `signTransaction` (the "0.000025 / simulation failed"
-// symptom). The memo-tx fallback is retained and can be re-enabled at runtime via
-// `setIosProofMemoTxFallback(true)` if on-device testing shows a specific wallet's
-// mobile `signMessage` is unreliable.
+// Emergency runtime flag: force Phantom/Solflare iOS proofs back onto the memo-tx
+// path (the "0.000025 / simulation failed" simulator UX) if on-device testing ever
+// shows their `signMessage` is unreliable. Off by default — they use signMessage.
 let iosProofMemoTxFallbackEnabled = false;
 
 export function setIosProofMemoTxFallback(enabled: boolean): void {
@@ -141,12 +138,19 @@ export function isIosProofMemoTxFallbackEnabled(): boolean {
   return iosProofMemoTxFallbackEnabled;
 }
 
+// iOS proof routing. Backpack ALWAYS routes through the memo `signTransaction`
+// proof: its iOS universal-link protocol has no working `signMessage` route, but
+// it does support `signTransaction`, which carries the request in the deep link so
+// it foregrounds + prompts. Jupiter stays on WalletConnect `signMessage` (its
+// foreground is handled natively). Phantom/Solflare default to `signMessage` and
+// only take the memo-tx path when the emergency flag above is set.
 export function shouldRouteProofThroughIosNative(state: ProofSigningAppState): boolean {
-  if (!iosProofMemoTxFallbackEnabled) return false;
-  return state.iosNativeEnvironment?.isIosNative === true
-    && state.capabilities?.backend !== 'ios-native-backpack'
-    && state.capabilities?.backend !== 'ios-native-jupiter'
-    && state.capabilities?.supports?.signTransaction === true;
+  if (state.iosNativeEnvironment?.isIosNative !== true) return false;
+  if (state.capabilities?.supports?.signTransaction !== true) return false;
+  const backend = state.capabilities?.backend;
+  if (backend === 'ios-native-backpack') return true;
+  if (backend === 'ios-native-jupiter') return false;
+  return iosProofMemoTxFallbackEnabled;
 }
 
 export async function signWalletProofMessage(

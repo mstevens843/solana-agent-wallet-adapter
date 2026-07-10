@@ -813,17 +813,19 @@ final class AgenticWalletConnectCore {
         // handles.
         //
         // A WC sign request is NOT carried in a deep link — it rides the relay to
-        // the paired wallet. The dapp-side foreground lever is the WC "incomplete
-        // URI" trigger jupiter://wc?uri=wc:<sessionTopic>@2, which reuses Jupiter's
-        // working wc?uri= handler and asks it to show the pending request.
+        // the paired wallet, so there is nothing to encode. We foreground Jupiter via
+        // its bare custom scheme `jupiter://` (see
+        // AgenticWalletConnectDeepLink.jupiterRequestForegroundUrl) and let its WC
+        // client surface the pending request. A warm/installed Jupiter opens the app
+        // — jup.ag is only the UNIVERSAL-link cold-start fallthrough, not the custom
+        // scheme. We deliberately do NOT synthesize a pairing URI: reown-swift rejects
+        // a topic-only `wc:<topic>@2` with "The format of the WalletConnect Pairing
+        // URI is invalid." (the exact error users hit on cloud sign-in).
         //
-        // Do NOT use the session peer redirect (Jupiter advertises the Reown sample
-        // wallet's walletapp:// / https://lab.reown.com — that sent users to Safari)
-        // and do NOT use bare jupiter:// at all: it has no request handler and falls
-        // through to Jupiter's web view at jup.ag, which is exactly the disrespectful
-        // "you got dumped on a website" failure. The incomplete-URI trigger is the
-        // ONLY candidate; if iOS refuses it we log FAIL and the in-app "Open Jupiter
-        // again" button (force re-foreground) is the recovery — never jup.ag.
+        // Do NOT use the session peer redirect when Jupiter advertises the Reown
+        // sample wallet's walletapp:// / https://lab.reown.com (that sent users to
+        // Safari). If iOS refuses the launch we log FAIL and the in-app "Open Jupiter
+        // again" button (force re-foreground) is the recovery.
         let redirects: (native: String?, universal: String?) = queue.sync {
             (walletRedirectNative, walletRedirectUniversal)
         }
