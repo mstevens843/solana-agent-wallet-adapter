@@ -71,6 +71,8 @@ interface AgenticNativeWalletPlugin {
   signAndSendTransaction(options: { transaction: string }): Promise<{ signature: string; txid?: string }>;
   clearState(): Promise<{ cleared: boolean }>;
   clearAllState(): Promise<{ cleared: boolean }>;
+  /** Release the native single-flight `pending` slot. Absent on binaries built before Fix C. */
+  cancelPending(): Promise<{ cancelled: boolean }>;
 }
 
 const AgenticNativeWallet = registerPlugin<AgenticNativeWalletPlugin>('AgenticNativeWallet');
@@ -214,6 +216,7 @@ export class NativeIwaWalletBackend implements WalletBackend {
         error: protocolErr.toPayload(),
       };
       this.log('submit', 'failed', { requestId: request.id, code: protocolErr.code });
+      void this.releaseNativeLock('submit_failed');
     });
     return approval;
   }
@@ -229,18 +232,25 @@ export class NativeIwaWalletBackend implements WalletBackend {
         status: 'expired',
         error: { code: 'expired', message: 'Native IWA approval request expired.', recoverable: true },
       };
+      // Free the native single-flight slot so a round-trip that never returned a
+      // callback stops blocking every later action once the JS TTL elapses.
+      void this.releaseNativeLock('poll_expired');
     }
     return entry.approval;
   }
 
   async cancel(requestId: SigningRequestId): Promise<void> {
     const entry = this.approvals.get(requestId);
-    if (!entry) return;
-    entry.approval = {
-      requestId,
-      status: 'rejected',
-      error: { code: 'user_rejected', message: 'Native IWA approval cancelled by caller.', recoverable: false },
-    };
+    if (entry) {
+      entry.approval = {
+        requestId,
+        status: 'rejected',
+        error: { code: 'user_rejected', message: 'Native IWA approval cancelled by caller.', recoverable: false },
+      };
+    }
+    // Always release the native lock on an explicit cancel, even for an id we no
+    // longer track, so a caller-driven cancel can unstick an abandoned round-trip.
+    await this.releaseNativeLock('cancel');
   }
 
   async disconnect(): Promise<void> {
@@ -282,9 +292,58 @@ export class NativeIwaWalletBackend implements WalletBackend {
   private async resolveSigningRequest(request: SigningRequest): Promise<void> {
     const entry = this.approvals.get(request.id);
     if (!entry) return;
-    const result = await this.sign(request);
+    const result = await this.signWithRecovery(request);
     entry.approval = { requestId: request.id, status: 'approved', result };
     this.log('resolveSigningRequest', 'approved', { requestId: request.id, kind: request.kind });
+  }
+
+  /**
+   * Sign with two bounded self-recoveries so a single stale-state failure does
+   * not force the user to restart the app:
+   *   • INVALID_SESSION: the Keychain session's dapp encryption keypair no
+   *     longer matches (most visible on Backpack, which binds a session to the
+   *     exact connect keypair; a cross-launch resume regenerates the keypair).
+   *     Reconnect once, which re-establishes a session bound to the current
+   *     in-memory keypair, then retry.
+   *   • operationInProgress: a prior wallet round-trip stranded the native
+   *     single-flight lock. Release it and retry.
+   * Each recovery runs at most once. The seamless fix for the first case is the
+   * native keypair-restore in AgenticNativeWalletCore.ensureClient; this is the
+   * live JS stopgap. releaseNativeLock is best-effort and no-ops on binaries
+   * that predate the native cancelPending method.
+   */
+  private async signWithRecovery(request: SigningRequest): Promise<SigningResult> {
+    try {
+      return await this.sign(request);
+    } catch (err) {
+      if (isInvalidSessionError(err)) {
+        this.log('signWithRecovery', 'invalid session, reconnecting once', { requestId: request.id, kind: request.kind });
+        await this.releaseNativeLock('invalid_session_reconnect');
+        await this.connectSelectedWallet();
+        return this.sign(request);
+      }
+      if (isOperationInProgressError(err)) {
+        this.log('signWithRecovery', 'stale native lock, releasing and retrying once', { requestId: request.id, kind: request.kind });
+        await this.releaseNativeLock('operation_in_progress_retry');
+        return this.sign(request);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Best-effort release of the native single-flight `pending` slot so a lost or
+   * abandoned wallet round-trip cannot strand every later action behind
+   * "Another request is in progress". No-ops (rejection swallowed) on binaries
+   * that do not yet expose the native cancelPending method.
+   */
+  private async releaseNativeLock(reason: string): Promise<void> {
+    try {
+      await AgenticNativeWallet.cancelPending();
+      this.log('releaseNativeLock', 'released native pending slot', { reason });
+    } catch {
+      // Older binary without cancelPending, or nothing pending, safe to ignore.
+    }
   }
 
   private async sign(request: SigningRequest): Promise<SigningResult> {
@@ -365,4 +424,27 @@ function toProtocolError(err: unknown): ProtocolError {
   // Capacitor surfaces a rejected promise; map the wallet's user-rejection code.
   const code = /reject|cancel|denied/i.test(message) ? 'user_rejected' : 'wallet_unreachable';
   return new ProtocolError(code, message || 'Native IWA signing failed.');
+}
+
+/**
+ * True when a native rejection is the wallet's INVALID_SESSION (a "session
+ * expired, reconnect" message): the cached session's dapp encryption keypair no longer
+ * matches the one that established it. Most visible on Backpack, which binds a
+ * session to the exact connect keypair.
+ */
+function isInvalidSessionError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null | undefined)?.code;
+  const message = err instanceof Error ? err.message : String(err ?? '');
+  if (/invalid session|session expired|session is invalid/i.test(message)) return true;
+  return code === 'NATIVE_WALLET_ADAPTER_ERROR' && /session|reconnect/i.test(message);
+}
+
+/**
+ * True when a native rejection is the single-flight guard
+ * (WalletAdapterError.operationInProgress → "Another request is in progress"):
+ * a prior round-trip never released the native pending slot.
+ */
+function isOperationInProgressError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err ?? '');
+  return /another request is in progress|already (pending|in progress)|operation in progress/i.test(message);
 }

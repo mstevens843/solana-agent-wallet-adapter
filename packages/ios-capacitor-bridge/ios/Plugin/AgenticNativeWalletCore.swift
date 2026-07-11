@@ -46,6 +46,13 @@ final class AgenticNativeWalletCore: @unchecked Sendable {
     // `agenticwallet://` deep link. Kept in sync with the JS redirect builder.
     static let callbackHost = "iwa-callback"
 
+    /// Wall-clock backstop for a wallet round-trip. If the wallet never returns a
+    /// callback (user backs out; wallet shows its own error and doesn't deep-link
+    /// back), the watchdog cancels the native single-flight `pending` slot so the
+    /// next action isn't blocked by "Another request is in progress". Set above
+    /// the JS-side TTL (120s) so the JS layer gets first chance to recover.
+    private static let pendingTimeoutNanos: UInt64 = 150_000_000_000
+
     private var client: WalletAdapterClient?
     private var currentWalletId: String?
 
@@ -66,7 +73,7 @@ final class AgenticNativeWalletCore: @unchecked Sendable {
             "walletId": walletId,
             "cluster": cluster.rawValue,
         ])
-        let session = try await client.connect(cluster: cluster)
+        let session = try await withPendingTimeout("connect") { try await client.connect(cluster: cluster) }
         AgenticIOSLog.info("AgenticNativeWallet", "connect", "DONE", "native wallet connected", [
             "walletId": walletId,
             "pubkey": WalletAdapterDebugFormatter.shortBase58(session.userPublicKey),
@@ -110,6 +117,17 @@ final class AgenticNativeWalletCore: @unchecked Sendable {
         AgenticIOSLog.info("AgenticNativeWallet", "clearState", "DONE", "native wallet state cleared")
     }
 
+    /// Release the native single-flight `pending` slot WITHOUT dropping the
+    /// session, so a lost/abandoned round-trip can be cleared from JS (or the
+    /// watchdog) instead of forcing an app restart.
+    @MainActor
+    func cancelPending() {
+        let cancelled = client?.cancelPendingRequest() ?? false
+        AgenticIOSLog.info("AgenticNativeWallet", "cancelPending", cancelled ? "DONE" : "SKIP", "release native pending slot requested", [
+            "cancelled": String(cancelled),
+        ])
+    }
+
     // MARK: - Signing
 
     /// Returns the message signature, base58-encoded — matches the encoding the
@@ -118,7 +136,7 @@ final class AgenticNativeWalletCore: @unchecked Sendable {
     func signMessage(messageBase64: String) async throws -> String {
         let client = try requireClient()
         let message = try Self.decodeBase64(messageBase64, field: "message")
-        let result = try await client.signMessage(message)
+        let result = try await withPendingTimeout("signMessage") { try await client.signMessage(message) }
         return AgenticBase58.encode(result.signature)
     }
 
@@ -128,7 +146,7 @@ final class AgenticNativeWalletCore: @unchecked Sendable {
     func signTransaction(transactionBase64: String) async throws -> String {
         let client = try requireClient()
         let transaction = try Self.decodeBase64(transactionBase64, field: "transaction")
-        let result = try await client.signTransaction(transaction)
+        let result = try await withPendingTimeout("signTransaction") { try await client.signTransaction(transaction) }
         return result.transaction.base64EncodedString()
     }
 
@@ -136,7 +154,7 @@ final class AgenticNativeWalletCore: @unchecked Sendable {
     func signAllTransactions(transactionsBase64: [String]) async throws -> [String] {
         let client = try requireClient()
         let transactions = try transactionsBase64.map { try Self.decodeBase64($0, field: "transaction") }
-        let result = try await client.signAllTransactions(transactions)
+        let result = try await withPendingTimeout("signAllTransactions") { try await client.signAllTransactions(transactions) }
         return result.transactions.map { $0.base64EncodedString() }
     }
 
@@ -146,7 +164,7 @@ final class AgenticNativeWalletCore: @unchecked Sendable {
     func signAndSendTransaction(transactionBase64: String) async throws -> String {
         let client = try requireClient()
         let transaction = try Self.decodeBase64(transactionBase64, field: "transaction")
-        let result = try await client.signAndSendTransaction(transaction)
+        let result = try await withPendingTimeout("signAndSendTransaction") { try await client.signAndSendTransaction(transaction) }
         return result.signature
     }
 
@@ -182,15 +200,30 @@ final class AgenticNativeWalletCore: @unchecked Sendable {
             }
             return existing
         }
-        let built = WalletAdapterClient(
-            provider: provider,
+        // Build from any persisted Keychain state so the ephemeral encryption
+        // keypair is restored ALONGSIDE the session. `resumeCachedSession` reloads
+        // only the session and assumes the client already holds the matching
+        // keypair (see its docstring); building with a fresh `.generate()` keypair
+        // here breaks that invariant and makes Backpack reject every sign with
+        // INVALID_SESSION after a relaunch (it binds a session to the exact connect
+        // keypair). When there is no persisted session, `restore` falls back to a
+        // fresh-keypair client, identical to a first-time connect.
+        let built = try WalletAdapterClient.restore(
+            from: KeychainWalletAdapterStateStore(),
+            fallbackProvider: provider,
             appURL: Self.appURL(),
             redirectLink: Self.redirectLink(),
             cluster: cluster,
-            opener: UIKitWalletURLOpener(application: .shared),
-            stateStore: KeychainWalletAdapterStateStore()
+            opener: UIKitWalletURLOpener(application: .shared)
         )
         client = built
+        // `restore` adopts the persisted provider when a session exists. If that
+        // differs from the requested wallet (a wallet switch), realign to the
+        // requested provider; a switch needs a fresh connect anyway.
+        let restoredWalletId = built.adapter.provider.walletId
+        if restoredWalletId != walletId {
+            try built.selectProvider(provider, cluster: cluster)
+        }
         currentWalletId = walletId
         return built
     }
@@ -199,6 +232,25 @@ final class AgenticNativeWalletCore: @unchecked Sendable {
     private func requireClient() throws -> WalletAdapterClient {
         guard let client else { throw CoreError.notConnected }
         return client
+    }
+
+    /// Run a wallet round-trip with a wall-clock watchdog. On success (or a
+    /// wallet-returned error via callback) the watchdog is cancelled in `defer`.
+    /// If the operation hangs past the deadline, the watchdog cancels the pending
+    /// request, which resumes the awaiting continuation with `.requestCancelled`
+    /// so `operation` throws instead of hanging forever.
+    @MainActor
+    private func withPendingTimeout<T>(_ label: String, _ operation: () async throws -> T) async throws -> T {
+        let watchdog = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: Self.pendingTimeoutNanos)
+            guard !Task.isCancelled else { return }
+            let cancelled = self.client?.cancelPendingRequest() ?? false
+            if cancelled {
+                AgenticIOSLog.fail("AgenticNativeWallet", label, "TIMEOUT", "wallet round-trip exceeded deadline; cancelled pending request")
+            }
+        }
+        defer { watchdog.cancel() }
+        return try await operation()
     }
 
     private static func decodeBase64(_ value: String, field: String) throws -> Data {

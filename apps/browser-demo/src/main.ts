@@ -3667,6 +3667,9 @@ interface DemoState {
   chatPositionsBrowse: boolean;
   // Pending amount-required manage action from a chat position card — the next numeric message is its amount.
   chatManageAwait: { kind: string; orderId: string; fields: Record<string, string>; label: string } | null;
+  // Open inline manage prompt on a Positions card: collects the amount/price for a prompt-required
+  // manage action (Withdraw / Repay / Remove / Edit) before preparing + signing in place (no navigation).
+  positionManageDraft: { positionId: string; kind: string; orderId: string; fields: Record<string, string>; valueField: string; amount: string; label: string; showMax: boolean } | null;
   chatResearchOpen: boolean;
   chatResearchTab: ChatResearchTab;
   chatResearchDraft: ChatResearchDraft | null;
@@ -4866,6 +4869,7 @@ const state: DemoState = {
   chatWalletActionTab: 'primary',
   chatPositionsBrowse: false,
   chatManageAwait: null,
+  positionManageDraft: null,
   chatResearchOpen: false,
   chatResearchTab: 'token',
   chatResearchDraft: null,
@@ -33336,11 +33340,11 @@ function scopedSubActionOptions(group: ConnectorActionForm['subActions']): Conne
   if (!group) return [];
   const cat = state.createActionCategory;
   // Manage-only sub-actions (Jupiter Trigger vault/edit/cancel/withdraw) are hidden from the create
-  // menu — EXCEPT the one currently selected, so an Edit arriving via openManageForm still renders its
-  // picker coherently (field visibility is driven by the selected id independently).
+  // menu, EXCEPT the one currently selected, so a manage sub-action selected in the form still renders
+  // its picker coherently (field visibility is driven by the selected id independently).
   const selectedId = state.templateFields[group.fieldId]?.trim() || '';
-  // Manage context: when the selected sub-action is a hidden manage-only action (reached via
-  // openManageForm from a Positions card — Repay / Withdraw / Cancel / Edit / Withdraw all), show ONLY
+  // Manage context: when the selected sub-action is a hidden manage-only action
+  // (Repay / Withdraw / Cancel / Edit / Withdraw all), show ONLY
   // that action so the picker collapses (connectorSubActionPicker hides at <=1) instead of also
   // offering the create option ("Borrow" alongside "Repay", "Lend" alongside "Withdraw"). Field
   // visibility is driven by the selected id independently, so the manage form still renders correctly.
@@ -33506,8 +33510,8 @@ function createActionTabs(): string {
   // (→ selectCreateAction('proof')) defaults here to Proof, and Evidence maps to the 'read' category.
   const proofSubTabs = native && proofsActive ? `
     <div class="chat-wallet-tabs proof-evidence-subtabs" role="tablist" aria-label="${escapeHtml(t('Proofs'))}">
-      <button type="button" role="tab" data-create-action="proof" class="${active === 'proof' ? 'active' : ''}" aria-selected="${active === 'proof' ? 'true' : 'false'}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Proof'))}</button>
-      <button type="button" role="tab" data-create-action="read" class="${active === 'read' ? 'active' : ''}" aria-selected="${active === 'read' ? 'true' : 'false'}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Evidence'))}</button>
+      <button type="button" id="proof-evidence-subtab-proof" role="tab" data-create-action="proof" class="${active === 'proof' ? 'active' : ''}" aria-selected="${active === 'proof' ? 'true' : 'false'}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Proof'))}</button>
+      <button type="button" id="proof-evidence-subtab-read" role="tab" data-create-action="read" class="${active === 'read' ? 'active' : ''}" aria-selected="${active === 'read' ? 'true' : 'false'}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Evidence'))}</button>
     </div>` : '';
   return `
     <div class="one-time-method-control create-action-control" role="group" aria-label="${escapeHtml(t('What do you want to do?'))}">
@@ -38759,12 +38763,12 @@ function completedMobileSourceHint(): string {
 
 function approvalInboxDescription(): string {
   if (activeWorkflowMode() === 'agentic-cloud') {
-    return t('One-time requests and due repeat payments wait here for wallet approval or denial.');
+    return t('Requests and due repeats wait here for wallet approval.');
   }
   if (activeWorkflowMode() === 'local-bridge') {
-    return t('Private local one-time requests and due repeat payments wait here for approve or deny.');
+    return t('Private local requests and due repeats wait here to approve.');
   }
-  return t('Browser-local one-time requests and due repeat payments wait here for approve or deny.');
+  return t('Browser-local requests and due repeats wait here to approve.');
 }
 
 function completedBridgeStatusHint(): string {
@@ -40760,25 +40764,26 @@ function bind(): void {
     });
   }
 
-  // Cancel/withdraw/repay from a live position card → route to that action's form (where the manage
-  // sub-action + order selection live), re-entering Needs Approval → sign.
+  // Manage a position from its card (Withdraw / Repay / Remove / Unstake / Cancel / Edit) → prepare +
+  // sign IN PLACE. The position is already active, so this never routes back to New Request / Sign Approval.
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-position-cancel]')) {
     bindOnce(button, 'click', () => {
+      const positionId = button.dataset.positionCancel ?? '';
       const kind = button.dataset.positionCancelKind;
       if (!kind) return;
       const orderId = button.dataset.positionCancelOrderId ?? '';
-      let fields: Record<string, string> | undefined;
+      let fields: Record<string, string> = {};
       const fieldsRaw = button.dataset.positionFields;
       if (fieldsRaw) {
         try {
           fields = JSON.parse(fieldsRaw) as Record<string, string>;
         } catch {
-          fields = undefined;
+          fields = {};
         }
       }
-      // Snapshot the live row's metrics keyed by the id we pass to the form, so the Done card can
-      // show the real numbers (cycles, spend, price) once this close action signs. ONLY for the
-      // primary CLOSE action (data-position-capture) — not Edit/Collect extras, which aren't closes.
+      // Snapshot the live row's metrics keyed by the manage id, so the Done card can show the real
+      // numbers (cycles, spend, price) once this close action signs. ONLY for the primary CLOSE action
+      // (data-position-capture), not Edit/Collect extras, which aren't closes.
       if (orderId && button.dataset.positionCapture === '1') {
         const liveRow = Object.values(state.positionsLive)
           .flatMap((e) => e?.rows ?? [])
@@ -40788,7 +40793,47 @@ function bind(): void {
           savePositionsClosed();
         }
       }
-      openManageForm(kind, orderId, fields);
+      const label = button.textContent?.trim() || t('Amount');
+      dispatchPositionManage(positionId, kind, orderId, fields, label);
+    });
+  }
+
+  // Inline manage prompt controls (amount-required kinds: Withdraw / Repay / Remove / Edit).
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-position-manage-max]')) {
+    bindOnce(button, 'click', () => {
+      const draft = state.positionManageDraft;
+      if (!draft) return;
+      const max = positionManageMaxAmount(draft.positionId);
+      draft.amount = max;
+      // Update the field in place (no re-render) so the on-screen keyboard / focus is undisturbed.
+      const input = document.querySelector<HTMLInputElement>('#positionManageAmount');
+      if (input) input.value = max;
+    });
+  }
+  for (const input of document.querySelectorAll<HTMLInputElement>('#positionManageAmount')) {
+    // Keep the draft in sync WITHOUT re-rendering, so a background positions refresh that re-renders
+    // mid-type can't reset the field to the stale Max default.
+    bindOnce(input, 'input', () => {
+      if (state.positionManageDraft) state.positionManageDraft.amount = input.value;
+    });
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-position-manage-cancel]')) {
+    bindOnce(button, 'click', () => {
+      state.positionManageDraft = null;
+      render();
+    });
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-position-manage-confirm]')) {
+    bindOnce(button, 'click', () => {
+      const draft = state.positionManageDraft;
+      if (!draft) return;
+      const input = document.querySelector<HTMLInputElement>('#positionManageAmount');
+      const raw = (input?.value ?? draft.amount).trim().replace(',', '.');
+      if (!/^\d+(?:\.\d+)?$/.test(raw) || Number(raw) <= 0) {
+        pushToast('error', t('Enter an amount'), t('Enter a valid amount greater than zero.'));
+        return;
+      }
+      executePositionManage(draft.positionId, draft.kind, draft.orderId, draft.fields, raw);
     });
   }
 
@@ -44896,6 +44941,13 @@ function positionTemplatePickerMenu(trigger: HTMLElement, menu: HTMLElement): vo
   menu.classList.toggle('drop-up', shouldDropUp);
   menu.style.setProperty('--template-menu-max-height', `${maxHeight}px`);
   menu.style.setProperty('--template-menu-max-width', `${Math.max(220, Math.floor(viewportWidth - 20))}px`);
+  // Horizontal: the menu grows to fit its widest option (width:max-content), so keep it on-screen:
+  // anchor to the trigger's left, but flip to right-anchored when a left-anchored menu would overflow
+  // the right edge (right-aligned toolbar triggers like the Sign Approval / Done filters).
+  const menuWidth = Math.min(menu.getBoundingClientRect().width || triggerRect.width, Math.floor(viewportWidth - 20));
+  const overflowsRight = triggerRect.left + menuWidth > viewportWidth - 10;
+  menu.style.left = overflowsRight ? 'auto' : '0';
+  menu.style.right = overflowsRight ? '0' : 'auto';
 }
 
 function selectPickerPlacement(trigger: HTMLElement, menu: HTMLElement): SelectPickerPlacement {
@@ -48888,7 +48940,7 @@ function positionLiveCard(row: PositionLiveRow): string {
     summary: `<span class="positions-title positions-title--bold">${escapeHtml(row.title)}</span>${distance}`,
     body: `${headline}${primaryGrid}${moreGrid}
       ${progress}`,
-    actions: `${cancelBtn}${extrasBtns}`,
+    actions: `${cancelBtn}${extrasBtns}${positionManagePromptHtml(row.id)}`,
   });
 }
 
@@ -48920,28 +48972,88 @@ const MANAGE_ID_FIELD_BY_KIND: Record<string, string> = {
   raydium_collect_fees: 'positionMint',
 };
 
-// Precise manage (cancel/withdraw/repay/edit/collect): open the action's connector form with the right
-// sub-action + the live order/position id pre-filled, then land in New Request → Needs Approval → sign.
-// Safer than building a PreparedAction directly (keeps form validation + user review).
-function openManageForm(kind: string, orderId: string, fields?: Record<string, string>): void {
-  const category = ACTION_TYPE_CATEGORY[kind];
-  const form = connectorActionFormByActionType(kind);
-  if (form) {
-    applyConnectorActionForm(form);
-    const group = form.subActions;
-    if (group) {
-      const sub = group.options.find((o) => o.actionType === kind);
-      if (sub) state.templateFields[group.fieldId] = sub.id;
-    }
-    const idField = MANAGE_ID_FIELD_BY_KIND[kind] ?? 'orderId';
-    if (orderId) state.templateFields[idField] = orderId;
-    // Extra prefill fields (e.g. borrow vaultId+positionId, unstake amount) — applied after the id field.
-    if (fields) for (const [k, v] of Object.entries(fields)) state.templateFields[k] = v;
+// Manage a live/seed position IN PLACE (cancel/withdraw/repay/remove/edit/collect): build the
+// PreparedAction directly (the same primitive the Chat manage flow uses) and sign it right here. The
+// position is already ACTIVE, so this never routes back to New Request or Sign Approval. Amount-required
+// kinds (Withdraw / Repay / Remove / Edit) open an inline prompt first; one-tap kinds sign immediately.
+function dispatchPositionManage(positionId: string, kind: string, orderId: string, fields: Record<string, string>, label: string): void {
+  if (!state.address) {
+    pushToast('error', t('Connect a wallet'), t('Connect a wallet before managing this position.'));
+    return;
   }
-  if (category) state.createActionCategory = category;
-  state.oneTimePlanView = 'create';
-  state.activeTab = 'agent';
+  if (chatManageNeedsPrompt(kind)) {
+    const valueField = manageValueField(kind);
+    const isPrice = kind === 'jupiter_trigger_edit_order';
+    // Amount kinds default to the full position (Max, editable); the price edit prefills the current price.
+    const amount = isPrice ? (fields[valueField] ?? '') : positionManageMaxAmount(positionId);
+    state.positionManageDraft = { positionId, kind, orderId, fields, valueField, amount, label, showMax: !isPrice };
+    render();
+    return;
+  }
+  executePositionManage(positionId, kind, orderId, fields);
+}
+
+// Best-effort "Max" for a manage amount: the position's current size, parsed from the live hero stat or
+// the seed record's amount. Falls back to empty (the user types) when nothing numeric is available.
+function positionManageMaxAmount(positionId: string): string {
+  const liveRow = Object.values(state.positionsLive)
+    .flatMap((entry) => entry?.rows ?? [])
+    .find((row) => row.id === positionId || row.cancel?.orderId === positionId);
+  const candidates: string[] = [];
+  if (liveRow?.headline?.value) candidates.push(liveRow.headline.value);
+  const seedAmount = state.positions.find((p) => p.id === positionId)?.params?.amount;
+  if (typeof seedAmount === 'string') candidates.push(seedAmount);
+  else if (typeof seedAmount === 'number') candidates.push(String(seedAmount));
+  for (const candidate of candidates) {
+    const match = candidate.replace(/,/g, '').match(/\d+(?:\.\d+)?/);
+    if (match && Number(match[0]) > 0) return match[0];
+  }
+  return '';
+}
+
+// Build the manage PreparedAction and sign it in place (no navigation). Mirrors chatManagePositionAction
+// but goes straight to execute; the wallet is the review + confirmation the user asked for.
+function executePositionManage(positionId: string, kind: string, orderId: string, fields: Record<string, string>, value?: string): void {
+  if (!state.address) {
+    pushToast('error', t('Connect a wallet'), t('Connect a wallet before managing this position.'));
+    return;
+  }
+  const params = manageProposalParams(MANAGE_ID_FIELD_BY_KIND[kind] ?? 'orderId', orderId, fields, value, manageValueField(kind));
+  let action: PreparedAction;
+  try {
+    action = createBrowserPreparedActionFromProposal({ kind: kind as PreparedActionKind, summary: chatManageSummary(kind), params });
+  } catch (err) {
+    pushToast('error', t('Could not prepare action'), redactSecrets(err instanceof Error ? err.message : String(err)));
+    return;
+  }
+  state.preparedActions = mergePreparedActions([action], state.preparedActions);
+  state.materializedActions = state.preparedActions;
+  saveBrowserWorkflowState();
+  state.positionManageDraft = null;
   render();
+  void runPreparedActionOp(action.id, 'execute');
+}
+
+// The inline amount/price prompt rendered on the position card whose manage action is armed.
+function positionManagePromptHtml(positionId: string): string {
+  const draft = state.positionManageDraft;
+  if (!draft || draft.positionId !== positionId) return '';
+  const promptLabel = draft.showMax ? tf('{label} amount', { label: draft.label }) : t('New trigger price (USD)');
+  const maxBtn = draft.showMax
+    ? `<button type="button" class="utility positions-manage-max" data-position-manage-max>${escapeHtml(t('Max'))}</button>`
+    : '';
+  return `
+        <div class="positions-manage-prompt" data-position-manage-prompt>
+          <label class="positions-manage-amount-label" for="positionManageAmount">${escapeHtml(promptLabel)}</label>
+          <div class="positions-manage-amount-row">
+            <input type="text" inputmode="decimal" id="positionManageAmount" class="positions-manage-amount-input" value="${escapeHtml(draft.amount)}" placeholder="0.0" autocomplete="off" />
+            ${maxBtn}
+          </div>
+          <div class="positions-manage-prompt-actions">
+            <button type="button" class="utility" data-position-manage-cancel>${escapeHtml(t('Cancel'))}</button>
+            <button type="button" class="utility positions-primary" data-position-manage-confirm>${escapeHtml(t('Review & sign'))}</button>
+          </div>
+        </div>`;
 }
 
 // Apply the position-side-effects of a just-completed action WITHOUT navigating. A chat-originated
@@ -66875,10 +66987,10 @@ function positionHeroFromSeed(p: PositionRecord): string {
 }
 
 // Maps a seeded (opening) position to its per-type MANAGE action so the fallback card can offer
-// the same one-tap Withdraw/Repay/Unstake/Remove/Cancel the live card does — routed through the
-// shared [data-position-cancel] → openManageForm handler. `orderId` carries the value for that
-// kind's id field (see MANAGE_ID_FIELD_BY_KIND); '' when the live id isn't known yet (the form
-// opens on the right sub-action and the user picks the order/amount — enabling PARTIAL withdraw).
+// the same Withdraw/Repay/Unstake/Remove/Cancel the live card does, routed through the shared
+// [data-position-cancel] → in-place manage handler (dispatchPositionManage). `orderId` carries the
+// value for that kind's id field (see MANAGE_ID_FIELD_BY_KIND); '' when the live id isn't known yet
+// (the inline amount prompt collects the amount, enabling PARTIAL withdraw).
 function positionSeedManage(p: PositionRecord): { kind: string; orderId: string; label: string } | undefined {
   const conn = p.connector;
   const params = (p.params ?? {}) as Record<string, unknown>;
@@ -66942,7 +67054,8 @@ function positionCard(p: PositionRecord): string {
     body: `<div class="positions-hero">${hero}</div>`,
     actions: `
         ${manageBtn}
-        ${explorer}`,
+        ${explorer}
+        ${positionManagePromptHtml(p.id)}`,
   });
 }
 
@@ -67203,7 +67316,7 @@ function positionsPanel(): string {
   return `
     <section class="approval-object signature-stage stage-anchor positions-stage ${mobile ? 'mobile-positions-stage' : ''} ${open.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
-        ${sectionTitleLine(t('Positions'), t('Monitor and manage what you have open: orders, lending, borrowing, staking, liquidity, perps. Manage actions return to Sign Approval.'))}
+        ${sectionTitleLine(t('Positions'), t('Monitor and manage what you have open: orders, lending, borrowing, staking, liquidity, perps.'))}
         <div class="generated-plans-toolbar signature-toolbar">
           <span class="signature-state">${escapeHtml(isAll
             ? tf('{n} open', { n: positionsAllCount(open) })

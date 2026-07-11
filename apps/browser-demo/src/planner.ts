@@ -479,33 +479,33 @@ export function aiRouteSupportsWebResearch(input: AiRouteWebResearchInput): bool
 }
 
 const BASE_AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
-  template('payments', 'send-tokens', 'Send Tokens', 'Prepare a token payment with recipient, amount, memo, and wallet approval. Sends native SOL or any SPL token.', 'transfer_spl', 'medium', [
+  template('payments', 'send-tokens', 'Send Tokens', 'Pay SOL or any SPL token with recipient, amount, memo, and wallet approval.', 'transfer_spl', 'medium', [
     selectField('token', 'Token', ['SOL', 'USDC', 'USDT', 'JUP', 'BONK', 'WIF', 'PYUSD'], 'SOL'),
     field('recipient', 'Recipient address', 'Recipient public key', '', true),
     field('amount', 'Amount', '0.01', '0.01', true),
     field('memo', 'Memo / reason', 'Invoice, friend payment, reimbursement', 'User-approved payment'),
   ]),
-  template('trading', 'swap', 'Swap tokens', 'Prepare a DeFi swap review with explicit input, output, amount, protocol route, and slippage cap.', 'swap', 'medium', [
+  template('trading', 'swap', 'Swap tokens', 'Review a swap: input, output, amount, route, and slippage cap.', 'swap', 'medium', [
     selectField('inputToken', 'Input token', ['SOL', 'USDC', 'JUP', 'BONK', 'WIF', 'PYUSD', 'POPCAT'], 'SOL'),
     selectField('outputToken', 'Output token', ['USDC', 'SOL', 'JUP', 'BONK', 'WIF', 'PYUSD', 'POPCAT'], 'USDC'),
     field('amount', 'Token amount', '0.01', '0.01', true),
     field('slippageBps', 'Max slippage', '0.5%', ''),
   ]),
-  template('recurring', 'dca', 'DCA review proof', 'Sign a review proof for a recurring DCA strategy before using a swap-capable recurring engine.', 'manual_review', 'medium', [
+  template('recurring', 'dca', 'DCA review proof', 'Sign a review proof for a recurring DCA strategy.', 'manual_review', 'medium', [
     selectField('token', 'Spend token', ['SOL', 'USDC', 'PYUSD'], 'USDC'),
     field('amount', 'Amount per occurrence', '10', '10', true),
     field('recipient', 'Recipient / settlement wallet', 'Recipient public key', '', true),
     selectField('cadence', 'Cadence', ['weekly', 'monthly', 'interval_days'], 'weekly'),
     field('memo', 'Strategy note', 'Buy SOL weekly if route stays under cap', 'Recurring DCA approval'),
   ]),
-  template('recurring', 'subscription', 'Vendor / recurring payment', 'Prepare a recurring vendor or service payment review without granting unlimited authority.', 'recurring_payment', 'medium', [
+  template('recurring', 'subscription', 'Vendor / recurring payment', 'Review a recurring vendor payment without granting unlimited authority.', 'recurring_payment', 'medium', [
     selectField('token', 'Token', ['USDC', 'SOL', 'PYUSD'], 'USDC'),
     field('recipient', 'Recipient address', 'Recipient public key', '', true),
     field('amount', 'Max amount per payment', '5', '5', true),
     selectField('cadence', 'Cadence', ['weekly', 'monthly', 'interval_days'], 'monthly'),
     field('memo', 'Service / reason', 'Subscription memo', 'Recurring user-approved payment'),
   ]),
-  template('trading', 'limit-order', 'Limit order review', 'Prepare a limit-order intent that waits for explicit wallet approval at execution time.', 'manual_review', 'medium', [
+  template('trading', 'limit-order', 'Limit order review', 'Prepare a limit order that waits for wallet approval at execution.', 'manual_review', 'medium', [
     selectField('inputToken', 'Input token', ['SOL', 'USDC', 'JUP', 'BONK', 'WIF'], 'SOL'),
     selectField('outputToken', 'Output token', ['USDC', 'SOL', 'JUP', 'BONK', 'WIF'], 'USDC'),
     field('amount', 'Token amount', '0.1', '0.1'),
@@ -524,7 +524,7 @@ const BASE_AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     field('collection', 'Collection / mint', 'Optional collection name or mint', ''),
     selectField('goal', 'Goal', ['Summarize', 'Flag suspicious assets', 'Prepare sale review', 'Prepare transfer review'], 'Summarize'),
   ]),
-  template('staking', 'stake-sol', 'Stake SOL', 'Prepare a staking/delegation action with validator and amount visible before signing.', 'manual_review', 'medium', [
+  template('staking', 'stake-sol', 'Stake SOL', 'Stake or delegate SOL with the validator and amount visible before signing.', 'manual_review', 'medium', [
     field('validator', 'Validator vote account', 'Vote account or validator name', '', true),
     field('amount', 'Amount SOL', '1', '1'),
     field('memo', 'Reason', 'Stake with selected validator', 'Stake review'),
@@ -539,11 +539,11 @@ const BASE_AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     selectField('vote', 'Vote', ['Yes', 'No', 'Abstain'], 'Abstain'),
     textareaField('reason', 'Voting reason', 'Why this vote matches my policy'),
   ]),
-  template('security', 'transaction-review', 'Transaction simulation review', 'Review transaction bytes, touched programs, accounts, and authority changes before signing.', 'manual_review', 'high', [
+  template('security', 'transaction-review', 'Transaction simulation review', 'Review transaction bytes, programs, accounts, and authority changes.', 'manual_review', 'high', [
     textareaField('transaction', 'Transaction / link / base64', 'Paste transaction bytes, link, or request description'),
     field('policy', 'Policy cap', 'No new authority grants, no unlimited approvals', 'No new authority grants'),
   ]),
-  template('security', 'authority-audit', 'Authority / approval audit', 'Look for delegate authority, token account permissions, and suspicious approval semantics.', 'manual_review', 'high', [
+  template('security', 'authority-audit', 'Authority / approval audit', 'Audit delegate authority, token permissions, and risky approvals.', 'manual_review', 'high', [
     field('programOrMint', 'Program, mint, or account', 'Address to review', ''),
     textareaField('concern', 'Concern', 'What feels risky or needs checking?'),
   ]),
@@ -552,60 +552,60 @@ const BASE_AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     field('amount', 'Planned amount', 'Optional amount', ''),
     field('source', 'Source / link', 'DexScreener, Jupiter, X, website', ''),
   ]),
-  template('defi', 'lend-borrow', 'Lending / borrow review', 'Prepare a DeFi lending, borrow, repay, or withdraw plan with collateral risk visible.', 'manual_review', 'high', [
+  template('defi', 'lend-borrow', 'Lending / borrow review', 'Plan a lend, borrow, repay, or withdraw with collateral risk shown.', 'manual_review', 'high', [
     selectField('action', 'Action', ['Deposit', 'Withdraw', 'Borrow', 'Repay'], 'Deposit'),
     field('market', 'Protocol / market', 'Kamino, MarginFi, Solend, custom', ''),
     field('amount', 'Amount', '100 USDC', '100 USDC'),
     field('ltv', 'Max LTV / rule', 'Stay below 50% LTV', 'Stay below 50% LTV'),
   ]),
-  template('defi', 'kamino-deposit', 'Kamino deposit', "Supply SOL or an SPL token to a Kamino Lend reserve. Natural prompts: 'stake on Kamino', 'supply to Kamino', 'earn yield on Kamino'. Requires Kamino enabled in Protocol Connectors.", 'kamino_deposit', 'medium', [
+  template('defi', 'kamino-deposit', 'Kamino deposit', 'Supply SOL or an SPL token to a Kamino Lend reserve to earn yield.', 'kamino_deposit', 'medium', [
     selectField('token', 'Token', ['SOL', 'USDC', 'JitoSOL', 'mSOL', 'bSOL'], 'SOL'),
     field('amount', 'Amount', '0.1', '0.1', true),
     field('memo', 'Reason', 'Earn yield on idle SOL', 'Kamino deposit review'),
   ], { connectorCapability: 'first_class_adapter', connectorActionSource: 'first-class-adapter' }),
-  template('defi', 'kamino-withdraw', 'Kamino withdraw', 'Redeem some or all of a Kamino Lend supply position. Requires Kamino enabled in Protocol Connectors.', 'kamino_withdraw', 'medium', [
+  template('defi', 'kamino-withdraw', 'Kamino withdraw', 'Redeem some or all of a Kamino Lend supply position.', 'kamino_withdraw', 'medium', [
     selectField('token', 'Token', ['SOL', 'USDC', 'JitoSOL', 'mSOL', 'bSOL'], 'SOL'),
     field('amount', 'Amount (or "all")', '0.05', '0.05'),
     field('memo', 'Reason', 'Need liquidity for payments', 'Kamino withdraw review'),
   ], { connectorCapability: 'first_class_adapter', connectorActionSource: 'first-class-adapter' }),
-  template('defi', 'kamino-earnings-proof', 'Kamino earnings proof', "Build a signable receipt that proves how much you've earned by supplying to Kamino. Read-only; signing creates a shareable verification.", 'read_only', 'low', [
+  template('defi', 'kamino-earnings-proof', 'Kamino earnings proof', 'Build a signable receipt of your Kamino earnings. Read-only.', 'read_only', 'low', [
     selectField('token', 'Reserve', ['All reserves', 'SOL', 'USDC', 'JitoSOL', 'mSOL', 'bSOL'], 'All reserves'),
     field('memo', 'Reason', 'Tax / accounting record', 'Kamino earnings receipt'),
   ], { connectorCapability: 'first_class_adapter', connectorActionSource: 'first-class-adapter' }),
-  template('defi', 'drift-vault-deposit', 'Drift vault deposit', "Deposit a token into a Drift strategy vault. Prepares wallet approval work only and does not sign. Requires Drift Vaults enabled in Protocol Connectors. V1 covers vault deposit/withdraw lifecycle only; no perp or spot order placement.", 'drift_vault_deposit', 'medium', [
+  template('defi', 'drift-vault-deposit', 'Drift vault deposit', 'Deposit a token into a Drift strategy vault.', 'drift_vault_deposit', 'medium', [
     field('vaultAddress', 'Vault address', 'Drift vault account address', '', true),
     field('amount', 'Amount', '25', '25', true),
     field('mint', 'Deposit mint (optional)', 'Vault deposit mint address', ''),
     selectField('initializeDepositorIfMissing', 'Create depositor if missing', ['yes', 'no'], 'yes'),
     field('memo', 'Reason', 'Earn yield in a Drift strategy vault', 'Drift vault deposit review'),
   ], { connectorCapability: 'first_class_adapter', connectorActionSource: 'first-class-adapter' }),
-  template('defi', 'drift-vault-request-withdraw', 'Drift vault request withdraw', 'Request a Drift strategy vault withdraw. Rejected if a pending request already exists. Prepares wallet approval work only; the redeem period must elapse before completing.', 'drift_vault_request_withdraw', 'medium', [
+  template('defi', 'drift-vault-request-withdraw', 'Drift vault request withdraw', 'Request a Drift vault withdraw; redeem period must elapse first.', 'drift_vault_request_withdraw', 'medium', [
     field('vaultAddress', 'Vault address', 'Drift vault account address', '', true),
     selectField('withdrawUnit', 'Withdraw unit', ['token', 'shares'], 'token'),
     field('amount', 'Token amount', '10', ''),
     field('shares', 'Share amount', '5', ''),
     field('memo', 'Reason', 'Need liquidity, exit strategy', 'Drift vault withdraw request review'),
   ], { connectorCapability: 'first_class_adapter', connectorActionSource: 'first-class-adapter' }),
-  template('defi', 'drift-vault-cancel-withdraw', 'Drift vault cancel withdraw', 'Cancel a pending Drift vault withdraw request. Rejected if no pending request exists.', 'drift_vault_cancel_withdraw', 'medium', [
+  template('defi', 'drift-vault-cancel-withdraw', 'Drift vault cancel withdraw', 'Cancel a pending Drift vault withdraw request.', 'drift_vault_cancel_withdraw', 'medium', [
     field('vaultAddress', 'Vault address', 'Drift vault account address', '', true),
     field('memo', 'Reason', 'Changed my mind, stay deposited', 'Drift vault cancel withdraw review'),
   ], { connectorCapability: 'first_class_adapter', connectorActionSource: 'first-class-adapter' }),
-  template('defi', 'drift-vault-complete-withdraw', 'Drift vault complete withdraw', 'Complete a Drift vault withdraw after the redeem period has elapsed. Rejected if not yet ready.', 'drift_vault_complete_withdraw', 'medium', [
+  template('defi', 'drift-vault-complete-withdraw', 'Drift vault complete withdraw', 'Complete a Drift vault withdraw after the redeem period elapses.', 'drift_vault_complete_withdraw', 'medium', [
     field('vaultAddress', 'Vault address', 'Drift vault account address', '', true),
     field('memo', 'Reason', 'Redeem period elapsed, finalize exit', 'Drift vault complete withdraw review'),
   ], { connectorCapability: 'first_class_adapter', connectorActionSource: 'first-class-adapter' }),
-  template('defi', 'liquidity', 'Liquidity position review', 'Review LP deposits, withdrawals, fees, and impermanent loss before wallet approval.', 'manual_review', 'high', [
+  template('defi', 'liquidity', 'Liquidity position review', 'Review LP deposits, withdrawals, fees, and impermanent loss.', 'manual_review', 'high', [
     field('pool', 'Pool / protocol', 'Orca, Raydium, Meteora, custom', ''),
     field('amounts', 'Amounts', '0.1 SOL + 20 USDC', ''),
     field('range', 'Price range / condition', 'Optional range', ''),
   ]),
-  template('defi', 'protocol-position-check', 'Protocol position check', 'Read a connected protocol position or market before proposing any action. The agent must report missing connector facts honestly.', 'read_only', 'low', [
+  template('defi', 'protocol-position-check', 'Protocol position check', 'Read a connected protocol position or market before proposing anything.', 'read_only', 'low', [
     selectField('protocol', 'Protocol', ['Pyth', 'Kamino', 'Jupiter', 'Raydium', 'Orca', 'Meteora', 'MarginFi', 'Drift', 'Lulo', 'Save'], 'Meteora'),
     field('position', 'Position / market', 'Pool, market, vault, or position address', ''),
     selectField('question', 'Question', ['Status', 'Rewards', 'Fees', 'Unlock timing', 'Available actions'], 'Status'),
     textareaField('memo', 'Instructions', 'Check my position and show evidence before proposing anything executable.'),
   ]),
-  template('defi', 'protocol-blink-action', 'Protocol connector action', 'Prepare an executable protocol action through an enabled connector. Requires a Blink or Solana Action URL; transaction bytes are fetched only when sent for approval.', 'blink_action', 'high', [
+  template('defi', 'protocol-blink-action', 'Protocol connector action', 'Run a protocol action via an enabled connector using a Blink/Action URL.', 'blink_action', 'high', [
     selectField('protocol', 'Protocol', ['Kamino', 'Jupiter', 'Raydium', 'Orca', 'Meteora', 'MarginFi', 'Drift', 'Lulo', 'Save'], 'Meteora'),
     selectField('operation', 'Operation', ['Claim rewards', 'Claim fees', 'Withdraw liquidity', 'Close position', 'Deposit', 'Borrow', 'Repay', 'Swap'], 'Claim fees'),
     field('blinkUrl', 'Blink / Action URL', 'blink:https://... or solana-action:https://...', '', true),
@@ -613,46 +613,46 @@ const BASE_AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     field('amount', 'Amount / cap', 'all, 0.1 SOL, 100 USDC', ''),
     textareaField('memo', 'Agent instructions', 'Check connector facts first. Prepare only if amount, protocol, route, and policy match my instructions.'),
   ], { connectorCapability: 'blink_actions', connectorActionSource: 'blink' }),
-  template('nft', 'nft-transfer', 'NFT transfer', 'Prepare an NFT transfer with recipient, collection, and anti-phishing checks.', 'manual_review', 'medium', [
+  template('nft', 'nft-transfer', 'NFT transfer', 'Prepare an NFT transfer with recipient and anti-phishing checks.', 'manual_review', 'medium', [
     field('mint', 'NFT mint', 'Mint address', '', true),
     field('recipient', 'Recipient address', 'Recipient public key', '', true),
     field('memo', 'Reason', 'Transfer memo', 'NFT transfer review'),
   ]),
-  template('nft', 'marketplace-listing', 'Marketplace listing review', 'Prepare a listing or delisting review with price, marketplace, and royalties visible.', 'manual_review', 'medium', [
+  template('nft', 'marketplace-listing', 'Marketplace listing review', 'Review a listing or delisting with price, marketplace, and royalties visible.', 'manual_review', 'medium', [
     field('mint', 'NFT mint', 'Mint address', ''),
     field('marketplace', 'Marketplace', 'Tensor, Magic Eden, custom', ''),
     field('price', 'Price', '1 SOL', ''),
   ]),
-  template('developer', 'devnet-smoke', 'Devnet smoke test', 'Prepare a safe devnet signing test for local wallets, bridge, and receipt flow.', 'manual_review', 'low', [
+  template('developer', 'devnet-smoke', 'Devnet smoke test', 'Safe devnet signing test for wallets, bridge, and receipts.', 'manual_review', 'low', [
     field('message', 'Test message', 'Approve this Agentic devnet smoke test.', 'Approve this Agentic devnet smoke test.'),
     selectField('network', 'Network', ['devnet', 'testnet', 'localnet'], 'devnet'),
   ]),
-  template('developer', 'custom-tx', 'Custom transaction bytes', 'Review pasted transaction bytes and produce an approval checklist before signing.', 'manual_review', 'high', [
+  template('developer', 'custom-tx', 'Custom transaction bytes', 'Review pasted transaction bytes into an approval checklist.', 'manual_review', 'high', [
     textareaField('transaction', 'Transaction bytes / base64', 'Paste base64 transaction bytes'),
     field('expected', 'Expected outcome', 'What should happen if signed?', ''),
   ]),
-  template('mobile', 'seed-vault', 'Seed Vault mobile approval', 'Plan an Android MWA or Seed Vault signing path without exposing wallet keys.', 'manual_review', 'medium', [
+  template('mobile', 'seed-vault', 'Seed Vault mobile approval', 'Plan an Android MWA or Seed Vault signing path safely.', 'manual_review', 'medium', [
     selectField('walletPath', 'Wallet path', ['Mobile Wallet Adapter', 'Seed Vault Wallet', 'Phantom mobile', 'Solflare mobile'], 'Mobile Wallet Adapter'),
     field('action', 'Action', 'Connect wallet and approve request', 'Connect wallet and approve request'),
     field('deviceNote', 'Device note', 'Seeker / Android Chrome / TWA', 'Android Chrome / TWA'),
   ]),
-  template('integration', 'dapp-interaction', 'dApp interaction review', 'Prepare a review for a third-party dApp request before the user signs. For first-class protocols (Kamino), enable the adapter in Protocol Connectors and use the dedicated template instead of this catch-all.', 'manual_review', 'high', [
+  template('integration', 'dapp-interaction', 'dApp interaction review', 'Review a third-party dApp request before you sign.', 'manual_review', 'high', [
     field('dapp', 'dApp / URL', 'Jupiter, Meteora, Tensor, Kamino, custom URL', ''),
     textareaField('request', 'Request details', 'What the dApp asks the wallet to sign'),
     field('policy', 'Policy cap', 'No unknown programs or authority grants', 'No unknown programs or authority grants'),
   ]),
-  template('bridge', 'bridge-swap', 'Bridge / cross-chain link review', 'Review a bridge or cross-chain link while keeping signing inside the wallet flow.', 'manual_review', 'high', [
+  template('bridge', 'bridge-swap', 'Bridge / cross-chain link review', 'Review a bridge or cross-chain link before signing.', 'manual_review', 'high', [
     field('sourceChain', 'Source chain', 'Solana', 'Solana'),
     field('destinationChain', 'Destination chain', 'Base, Ethereum, Arbitrum, Solana', ''),
     field('amount', 'Amount', '10 USDC', '10 USDC'),
     field('link', 'Bridge link / quote', 'Paste link or quote id', ''),
   ]),
-  template('receipts', 'tax-export', 'Receipt / tax note', 'Create an audit note after approval for tax, accounting, or operations review.', 'read_only', 'low', [
+  template('receipts', 'tax-export', 'Receipt / tax note', 'Create an audit note for tax, accounting, or operations.', 'read_only', 'low', [
     field('txid', 'Transaction id', 'Optional tx id', ''),
     field('label', 'Label', 'Treasury transfer, swap, reimbursement', 'Agentic wallet action'),
     textareaField('notes', 'Notes', 'Accounting or audit notes'),
   ]),
-  template('custom', 'custom-request', 'Custom request', 'Turn any plain-English request into a visible review plan before signing evidence.', 'manual_review', 'medium', [
+  template('custom', 'custom-request', 'Custom request', 'Turn any plain-English request into a visible review plan.', 'manual_review', 'medium', [
     field('policy', 'Policy cap', 'What should never be allowed?', 'No private key sharing, no unlimited approvals'),
   ]),
 ];

@@ -36,6 +36,11 @@
  * route (the app opens but shows no prompt and never returns), so Backpack proofs
  * are routed through a memo `signTransaction`, which Backpack DOES support and
  * which carries the request in the deep link so it foregrounds + prompts.
+ * NOTE: `signTransaction` is the CORRECT method here. A Backpack proof (or swap)
+ * that fails with INVALID_SESSION is a native session/keypair desync in
+ * `AgenticNativeWalletCore.ensureClient` (the cached session must be rehydrated
+ * with the original encryption keypair via `WalletAdapterClient.restore`), NOT a
+ * proof-routing problem; do not "fix" it by changing the method on this path.
  *
  * This module is the single entry point; per-host routing is in the native bridge
  * (see `apps/android-twa/app/src/main/java/com/agentic/wallet/mwa/MwaController.kt`

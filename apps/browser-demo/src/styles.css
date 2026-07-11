@@ -15975,17 +15975,21 @@ button.danger:hover:not(:disabled) {
   gap: 4px;
   left: 0;
   max-height: var(--template-menu-max-height, 360px);
-  max-width: min(100%, var(--template-menu-max-width, 100vw));
+  /* Grow to fit the widest option on one line (never the narrow trigger width),
+     capped at the viewport so it can't overflow the screen. `right:auto` lets
+     max-content expand rightward from the left anchor. */
+  min-width: 100%;
+  width: max-content;
+  max-width: min(var(--template-menu-max-width, 92vw), 92vw);
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 6px;
   position: absolute;
-  right: 0;
+  right: auto;
   scrollbar-color: rgba(139, 205, 170, 0.42) rgba(255, 255, 255, 0.045);
   scrollbar-width: thin;
   top: calc(100% + 8px);
-  width: 100%;
   z-index: 120;
 }
 
@@ -31322,22 +31326,36 @@ button.danger:hover:not(:disabled) {
     text-align: right;
   }
 
-  /* Filter dropdown label above the picker (Approval filter, etc.).
-     The label sits above the dropdown box on mobile. */
+  /* Toolbar filter dropdowns (Sign Approval / Done / etc.) on the native shell:
+     hide the visual "Filter" label so the trigger is exactly flush with the
+     label-less Refresh / Delete All buttons (label kept for screen readers), and
+     pin a fixed trigger width so changing the selection never resizes the control
+     or wraps the sibling buttons. */
   .route-app .filter-field {
+    align-items: center;
     display: flex;
-    flex-direction: column;
     gap: 4px;
     min-width: 0;
   }
 
   .route-app .filter-field-label {
-    color: rgba(196, 205, 202, 0.78);
-    font-size: 0.66rem;
-    font-weight: 880;
-    letter-spacing: 0.06em;
-    line-height: 1;
-    text-transform: uppercase;
+    border: 0;
+    clip: rect(0, 0, 0, 0);
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    padding: 0;
+    position: absolute;
+    white-space: nowrap;
+    width: 1px;
+  }
+
+  .route-app .inbox-filter-control .select-picker-shell,
+  .route-app .inbox-filter-control .select-picker-trigger,
+  .route-app .completed-filter-control .select-picker-shell,
+  .route-app .completed-filter-control .select-picker-trigger {
+    min-width: 132px;
+    width: 132px;
   }
 }
 
@@ -34483,9 +34501,12 @@ button.danger:hover:not(:disabled) {
     white-space: normal;
   }
 
-  /* Change 2: Start/Check buttons fill their fixed-width box (New Request / Start view). */
+  /* Change 2: Start/Check buttons fill their box, same in the Start (has-connector)
+     and Check (review-filter-row) views so the pill is identical across both. */
   .route-app.android-shell .one-time-plan-control-row.has-connector .one-time-plan-tabs button,
-  .route-app.ios-native-shell .one-time-plan-control-row.has-connector .one-time-plan-tabs button {
+  .route-app.ios-native-shell .one-time-plan-control-row.has-connector .one-time-plan-tabs button,
+  .route-app.android-shell .one-time-plan-control-row.review-filter-row .one-time-plan-tabs button,
+  .route-app.ios-native-shell .one-time-plan-control-row.review-filter-row .one-time-plan-tabs button {
     flex: 1 1 0;
     min-width: 0;
   }
@@ -39051,6 +39072,14 @@ button.danger:hover:not(:disabled) {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
   color: #f4fff8;
 }
+/* Reinforce the active green for the Proof/Evidence subtabs on /app, where the
+   in-place tab morph can otherwise leave the active segment unshaded. Higher
+   specificity than the base rule so it wins regardless of any route-app override. */
+.route-app .proof-evidence-subtabs button.active {
+  background: linear-gradient(180deg, rgba(70, 196, 136, 0.42), rgba(36, 119, 80, 0.34));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  color: #f4fff8;
+}
 .chat-wallet-tabs.chat-research-tabs {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -39302,15 +39331,20 @@ button.danger:hover:not(:disabled) {
     grid-template-columns: minmax(0, 1fr) auto !important;
   }
   .route-app.android-shell .one-time-plan-control-row.has-connector .one-time-plan-tabs,
-  .route-app.ios-native-shell .one-time-plan-control-row.has-connector .one-time-plan-tabs {
+  .route-app.ios-native-shell .one-time-plan-control-row.has-connector .one-time-plan-tabs,
+  .route-app.android-shell .one-time-plan-control-row.review-filter-row .one-time-plan-tabs,
+  .route-app.ios-native-shell .one-time-plan-control-row.review-filter-row .one-time-plan-tabs {
     justify-self: end;
     width: auto;
   }
 
   /* Scale Start/Check, the Swap/Send/Proof/Evidence tabs, and the Lend ▾ trigger up to one
-     consistent (taller) size now that we reclaimed vertical space. */
+     consistent (taller) size now that we reclaimed vertical space. Applied to BOTH the Start
+     (has-connector) and Check (review-filter-row) views so the Start|Check pill matches. */
   .route-app.android-shell .one-time-plan-control-row.has-connector .one-time-plan-tabs button,
-  .route-app.ios-native-shell .one-time-plan-control-row.has-connector .one-time-plan-tabs button {
+  .route-app.ios-native-shell .one-time-plan-control-row.has-connector .one-time-plan-tabs button,
+  .route-app.android-shell .one-time-plan-control-row.review-filter-row .one-time-plan-tabs button,
+  .route-app.ios-native-shell .one-time-plan-control-row.review-filter-row .one-time-plan-tabs button {
     font-size: 0.78rem;
     min-height: var(--app-control-h);
     padding: 0 10px;
@@ -39691,6 +39725,32 @@ button.danger:hover:not(:disabled) {
 .positions-card-tone-warn { border-left: 3px solid #f5c451; }
 .positions-card-tone-bad { border-left: 3px solid #f0726b; }
 .positions-card-actions .positions-primary { border-color: var(--accent, #3ddc97); color: var(--accent, #3ddc97); }
+/* Inline manage prompt on a Positions card: amount/price entry that prepares + signs in place
+   (no navigation to New Request). Full-width so it drops below the action buttons. */
+.positions-manage-prompt {
+  display: flex;
+  flex-basis: 100%;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  width: 100%;
+}
+.positions-manage-amount-label { color: var(--muted); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.02em; }
+.positions-manage-amount-row { align-items: center; display: flex; gap: 8px; }
+.positions-manage-amount-input {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(224, 230, 226, 0.14);
+  border-radius: 8px;
+  color: var(--text);
+  flex: 1 1 auto;
+  font-size: 0.95rem;
+  min-width: 0;
+  padding: 8px 10px;
+}
+.positions-manage-amount-input:focus { border-color: rgba(139, 205, 170, 0.5); outline: none; }
+.positions-manage-max { flex: 0 0 auto; }
+.positions-manage-prompt-actions { display: flex; gap: 8px; }
+.positions-manage-prompt-actions button { flex: 1 1 0; }
 /* Mobile filter dropdown (replaces the horizontally-scrolling pill rail on phones). */
 .positions-selector-mobile { margin-bottom: 16px; }
 .positions-selector-mobile .select-picker-shell,

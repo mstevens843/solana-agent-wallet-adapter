@@ -1509,7 +1509,7 @@ function meteoraForms(): ConnectorActionForm[] {
       operationId: 'add-liquidity',
       operationLabel: 'Add liquidity',
       templateId: 'connector-meteora-add-liquidity',
-      description: 'Add liquidity to a Meteora DLMM pool: top up an owned position or open a new preset range.',
+      description: 'Add liquidity to a Meteora DLMM pool: top up a position or open a preset range.',
       executionMode: 'first-class-adapter',
       outcome: 'queueable',
       actionType: 'meteora_add_liquidity',
@@ -1597,7 +1597,7 @@ function orcaForms(): ConnectorActionForm[] {
       operationId: 'increase-liquidity',
       operationLabel: 'Increase liquidity',
       templateId: 'connector-orca-increase-liquidity',
-      description: 'Add liquidity to an existing Orca whirlpool position you own, or open a new tick-bounded position.',
+      description: 'Add liquidity to an Orca whirlpool position, or open a new one.',
       executionMode: 'first-class-adapter',
       outcome: 'queueable',
       fields: [formField('memo', 'Reason')],
@@ -2228,7 +2228,7 @@ function luloUnifiedForm(): ConnectorActionForm {
     operationId: 'flow',
     operationLabel: 'Deposit or withdraw',
     templateId: 'connector-lulo-flow',
-    description: 'Deposit, withdraw, or complete Lulo flows across protected, boost, or regular tiers.',
+    description: 'Deposit, withdraw, or complete Lulo flows across its tiers.',
     executionMode: 'first-class-adapter',
     outcome: 'queueable',
     fields: [formField('memo', 'Reason')],
@@ -2298,7 +2298,7 @@ function raydiumLiquidityUnifiedForm(): ConnectorActionForm {
     operationId: 'liquidity',
     operationLabel: 'Liquidity',
     templateId: 'connector-raydium-liquidity',
-    description: 'Add or remove Raydium liquidity. CPMM pools take full-range deposits; CLMM pools require a price range and produce a position NFT.',
+    description: 'Add or remove Raydium liquidity (CPMM full-range, or CLMM price range).',
     executionMode: 'first-class-adapter',
     outcome: 'queueable',
     fields: [formField('memo', 'Reason')],
@@ -2535,7 +2535,7 @@ function jupiterTriggerUnifiedForm(): ConnectorActionForm {
     operationId: 'trigger-limit-orders',
     operationLabel: 'Limit orders',
     templateId: 'connector-jupiter-trigger-limit-orders',
-    description: 'Create or manage Jupiter Trigger limit orders, including TP/SL brackets. Funds sit in the Jupiter Trigger vault and future fills run through Jupiter automation.',
+    description: 'Create or manage Jupiter Trigger limit orders, including TP/SL brackets.',
     executionMode: 'first-class-adapter',
     outcome: 'queueable',
     fields: [memo],
@@ -2571,7 +2571,7 @@ function jupiterTriggerUnifiedForm(): ConnectorActionForm {
         {
           id: 'oco-tpsl',
           label: 'Sell',
-          description: 'Sell a token you hold with a take-profit and a stop-loss (whichever fills first cancels the other).',
+          description: 'Sell a token with a take-profit and a stop-loss bracket.',
           actionType: 'jupiter_trigger_oco_order',
           fields: [
             sellToken,
@@ -2618,7 +2618,7 @@ function jupiterTriggerUnifiedForm(): ConnectorActionForm {
         {
           id: 'cancel-order',
           label: 'Cancel order',
-          description: 'Cancel an open or pending Trigger order. Withdraw funds separately if needed.',
+          description: 'Cancel an open or pending Trigger order.',
           actionType: 'jupiter_trigger_cancel_order',
           fields: [formField('orderId', 'Order id', true), formField('reason', 'Reason')],
           hiddenFromCreateMenu: true, // manage action — reached from the Positions card (Cancel), not create
@@ -2626,7 +2626,7 @@ function jupiterTriggerUnifiedForm(): ConnectorActionForm {
         {
           id: 'withdraw-order-funds',
           label: 'Withdraw cancelled funds',
-          description: 'Move cancelled or expired Trigger order funds from the vault back to the wallet.',
+          description: 'Move cancelled Trigger order funds back to your wallet.',
           actionType: 'jupiter_trigger_withdraw_order_funds',
           fields: [formField('orderId', 'Order id', true), formField('reason', 'Reason')],
           hiddenFromCreateMenu: true, // manage action — reached from the Positions card (Withdraw funds), not create
@@ -2650,7 +2650,7 @@ function jupiterRecurringUnifiedForm(): ConnectorActionForm {
     operationId: 'recurring-dca',
     operationLabel: 'DCA orders',
     templateId: 'connector-jupiter-recurring-dca',
-    description: 'Create or manage recurring DCA orders on Jupiter. Fills run on Jupiter automation after approval.',
+    description: 'Create or manage recurring DCA orders on Jupiter.',
     executionMode: 'first-class-adapter',
     outcome: 'queueable',
     fields: [memo],
@@ -2689,7 +2689,7 @@ function jupiterRecurringUnifiedForm(): ConnectorActionForm {
         {
           id: 'deposit-deprecated-price-order',
           label: 'Advanced: fund price order',
-          description: 'Deposit into a deprecated price-based Recurring order only when you already know the order id.',
+          description: 'Deposit into a price-based Recurring order by order id (deprecated).',
           actionType: 'jupiter_recurring_deposit_price_order',
           fields: [
             formField('orderId', 'Order id', true),
@@ -2703,7 +2703,7 @@ function jupiterRecurringUnifiedForm(): ConnectorActionForm {
         {
           id: 'withdraw-deprecated-price-order',
           label: 'Advanced: withdraw price order',
-          description: 'Withdraw from a deprecated price-based Recurring order only when you already know the order id.',
+          description: 'Withdraw from a price-based Recurring order by order id (deprecated).',
           actionType: 'jupiter_recurring_withdraw_price_order',
           fields: [
             formField('orderId', 'Order id', true),
@@ -2729,7 +2729,7 @@ function jupiterPredictionUnifiedForm(): ConnectorActionForm {
     operationId: 'prediction',
     operationLabel: 'Prediction markets',
     templateId: 'connector-jupiter-prediction',
-    description: 'Trade Jupiter Prediction markets (beta). Buy/sell YES/NO contracts, close, or claim. Markets come from external providers; US/SK access is restricted and writes require a non-US egress.',
+    description: 'Trade Jupiter Prediction markets (beta). Restricted in the US and South Korea.',
     executionMode: 'first-class-adapter',
     outcome: 'queueable',
     fields: [memo],

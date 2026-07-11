@@ -23,6 +23,7 @@ public class AgenticNativeWalletPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "signAndSendTransaction", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "clearState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "clearAllState", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "cancelPending", returnType: CAPPluginReturnPromise),
     ]
 
     private let core = AgenticNativeWalletCore.shared
@@ -168,6 +169,16 @@ public class AgenticNativeWalletPlugin: CAPPlugin, CAPBridgedPlugin {
     // maintenance surface (clearAllCachedAuthorizations).
     @objc func clearAllState(_ call: CAPPluginCall) {
         clearState(call)
+    }
+
+    // Release the native single-flight pending slot so an abandoned/lost wallet
+    // round-trip stops blocking later actions. Does not drop the session.
+    @objc func cancelPending(_ call: CAPPluginCall) {
+        guard AgenticBridgeOrigin.validate(call, on: bridge) else { return }
+        Task { @MainActor in
+            self.core.cancelPending()
+            call.resolve(["cancelled": true])
+        }
     }
 
     private func reject(_ call: CAPPluginCall, method: String, _ error: Error) {
