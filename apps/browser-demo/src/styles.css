@@ -10481,11 +10481,24 @@ code {
   border-radius: var(--radius);
   color: var(--text);
   cursor: pointer;
-  display: grid;
+  display: flex;
+  align-items: center;
   font: inherit;
-  gap: 4px;
+  gap: 12px;
   padding: 12px;
   text-align: left;
+}
+.desktop-method-tile-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.desktop-method-tile-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 .desktop-method-tile:hover:not([disabled]) {
   background: rgba(255, 255, 255, 0.07);

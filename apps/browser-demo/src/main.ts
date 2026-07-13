@@ -9304,31 +9304,47 @@ function desktopMethodPickerBody(): string {
   const ledgerDisabledReason = ledgerAvailable ? '' : ledgerUnavailableMessage();
   const extensionSubcopy = state.tauriNativeEnvironment.isTauriNative
     ? 'Open the wallet pairing page in your default browser. Choose Backpack, Phantom, Jupiter, or Solflare there.'
-    : 'Use an installed Backpack, Phantom, Jupiter, or Solflare extension in this browser.';
+    : 'Use an installed wallet extension.';
   const qrSubcopy = state.tauriNativeEnvironment.isTauriNative
     ? 'Pair Backpack or Jupiter over WalletConnect, or Phantom/Solflare with encrypted wallet links. Your phone signs; this desktop relays.'
-    : 'Pair Backpack or Jupiter over WalletConnect, or Phantom/Solflare with encrypted wallet links. Your phone signs; this page relays.';
+    : 'Scan with a wallet on your phone.';
   const ledgerSubcopy = state.tauriNativeEnvironment.isTauriNative
     ? 'USB-HID. Plug in and unlock your device, then open the Solana app.'
     : ledgerAvailable
-      ? 'USB through WebHID. Plug in and unlock your device, then open the Solana app.'
+      ? 'Connect a Ledger over USB.'
       : ledgerWebHidSupport.supported && ledger.webHidRuntimeStatus !== 'error'
         ? 'Preparing Ledger USB support...'
       : ledgerDisabledReason;
+  // Inline lucide glyphs (Monitor / QrCode / Usb) so the cards match SolPulse's
+  // wallet-method picker (icon + title + short description). No React/lucide here.
+  const svgIcon = (paths: string, color: string): string =>
+    `<span class="desktop-method-tile-icon" style="color:${color}"><svg xmlns="http://www.w3.org/2000/svg" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg></span>`;
+  const monitorIcon = svgIcon('<rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/>', '#5eead4');
+  const qrIcon = svgIcon('<rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H7"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/>', '#6ee7b7');
+  const usbIcon = svgIcon('<circle cx="10" cy="7" r="1"/><circle cx="4" cy="20" r="1"/><path d="M4.7 19.3 19 5"/><path d="m21 3-3 1 2 2Z"/><path d="M9.26 7.68 5 12l2 5"/><path d="m10 14 5 2 3.5-3.5"/><path d="m18 12 1-1 1 1-1 1Z"/>', '#d4d4d8');
   return `
     <p class="desktop-connect-flow-lede">Choose how you'd like to connect your wallet.</p>
     <div class="desktop-connect-flow-methods">
       <button type="button" class="desktop-method-tile" data-desktop-flow-action="method:extension">
-        <span class="desktop-method-tile-title">${escapeHtmlForFlow(t('Browser extension'))}</span>
-        <span class="desktop-method-tile-sub">${escapeHtmlForFlow(extensionSubcopy)}</span>
+        ${monitorIcon}
+        <span class="desktop-method-tile-text">
+          <span class="desktop-method-tile-title">${escapeHtmlForFlow(t('Browser extension'))}</span>
+          <span class="desktop-method-tile-sub">${escapeHtmlForFlow(extensionSubcopy)}</span>
+        </span>
       </button>
       <button type="button" class="desktop-method-tile" data-desktop-flow-action="method:qr">
-        <span class="desktop-method-tile-title">${escapeHtmlForFlow(t('Scan QR with phone'))}</span>
-        <span class="desktop-method-tile-sub">${escapeHtmlForFlow(qrSubcopy)}</span>
+        ${qrIcon}
+        <span class="desktop-method-tile-text">
+          <span class="desktop-method-tile-title">${escapeHtmlForFlow(t('QR code'))}</span>
+          <span class="desktop-method-tile-sub">${escapeHtmlForFlow(qrSubcopy)}</span>
+        </span>
       </button>
       <button type="button" class="desktop-method-tile" data-desktop-flow-action="method:ledger" ${ledgerAvailable ? '' : `disabled title="${escapeHtmlForFlow(ledgerDisabledReason)}"`}>
-        <span class="desktop-method-tile-title">${escapeHtmlForFlow(t('Ledger hardware wallet'))}</span>
-        <span class="desktop-method-tile-sub">${escapeHtmlForFlow(ledgerSubcopy)}</span>
+        ${usbIcon}
+        <span class="desktop-method-tile-text">
+          <span class="desktop-method-tile-title">${escapeHtmlForFlow(t('Ledger'))}</span>
+          <span class="desktop-method-tile-sub">${escapeHtmlForFlow(ledgerSubcopy)}</span>
+        </span>
       </button>
     </div>
   `;
