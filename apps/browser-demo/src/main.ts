@@ -1805,7 +1805,7 @@ const BROWSER_AI_LIMITATIONS = [
   'Browser AI cannot run background jobs after the tab closes.',
 ];
 const CUSTOM_AI_MODEL_VALUE = '__custom__';
-const ROUTE_PATHS = ['/', '/docs', '/docs/ai-connectors', '/builders', '/app', '/connect', '/disconnect', '/approve', '/sign', '/sign-in', '/sign-out', '/delete-storage', '/qr-connect', '/cli', '/desktop', '/aiconnectors', '/android', '/demo', '/mwa-test', '/privacy', '/terms', '/delete-account', '/agentic-login'] as const;
+const ROUTE_PATHS = ['/', '/docs', '/docs/ai-connectors', '/docs/how-it-works', '/docs/cloud-storage', '/docs/connectors', '/docs/agent-payments', '/builders', '/app', '/connect', '/disconnect', '/approve', '/sign', '/sign-in', '/sign-out', '/delete-storage', '/qr-connect', '/cli', '/desktop', '/aiconnectors', '/android', '/demo', '/mwa-test', '/privacy', '/terms', '/delete-account', '/agentic-login'] as const;
 const ROUTE_PATH_SET = new Set<string>(ROUTE_PATHS);
 const SHOW_DEV_CONTROLS = resolveDevControls();
 const IS_ANDROID_APP = resolveAndroidAppSurface();
@@ -1975,6 +1975,10 @@ const ROUTE_TITLES: Record<string, string> = {
   '/qr-connect': 'QR Connect · Agentic',
   '/aiconnectors': 'AI Connectors · Agentic',
   '/docs/ai-connectors': 'How AI Connectors Work · Agentic',
+  '/docs/how-it-works': 'How Agentic Works · Agentic',
+  '/docs/cloud-storage': 'Cloud Storage · Agentic',
+  '/docs/connectors': 'Protocol Connectors · Agentic',
+  '/docs/agent-payments': 'Agent Payments & Skills · Agentic',
   '/mwa-test': 'MWA · Agentic',
   '/privacy': 'Privacy Policy · Agentic',
   '/terms': 'Terms of Service · Agentic',
@@ -11176,6 +11180,14 @@ function pageContent(route: AppRoute | null): string {
       return docsPage();
     case '/docs/ai-connectors':
       return aiConnectorsDocsPage();
+    case '/docs/how-it-works':
+      return docsHowItWorksPage();
+    case '/docs/cloud-storage':
+      return docsCloudStoragePage();
+    case '/docs/connectors':
+      return docsConnectorsPage();
+    case '/docs/agent-payments':
+      return docsAgentPaymentsSkillsPage();
     case '/builders':
       return buildersPage();
     case '/app':
@@ -11280,13 +11292,60 @@ function homePage(): string {
   `;
 }
 
-function docsPage(): string {
+const DOCS_NAV: ReadonlyArray<{ id: string; label: string; route: string }> = [
+  { id: 'overview', label: 'Overview', route: '/docs' },
+  { id: 'how-it-works', label: 'How it works', route: '/docs/how-it-works' },
+  { id: 'ai-connectors', label: 'AI Connectors', route: '/docs/ai-connectors' },
+  { id: 'cloud-storage', label: 'Cloud Storage', route: '/docs/cloud-storage' },
+  { id: 'connectors', label: 'Connectors', route: '/docs/connectors' },
+  { id: 'agent-payments', label: 'Agent Payments & Skills', route: '/docs/agent-payments' },
+];
+
+// Shared docs shell: a left sidebar of anchor links (SPA-intercepted by bindRouteLinks)
+// beside the page content. Every /docs sub-page renders through this, so styling and
+// navigation stay identical across pages.
+function docsLayout(activePage: string, contentHtml: string): string {
+  const nav = DOCS_NAV.map((item) =>
+    `<a href="${item.route}" data-site-link="${item.route}" class="docs-sidebar-link${item.id === activePage ? ' active' : ''}"${item.id === activePage ? ' aria-current="page"' : ''}>${escapeHtml(item.label)}</a>`,
+  ).join('');
   return `
-    ${docsSection()}
-    ${agenticLayersDocsSection()}
-    ${protocolConnectorsDocsSection()}
+    <div class="docs-layout">
+      <nav class="docs-sidebar" aria-label="${escapeHtml(t('Documentation'))}">
+        ${nav}
+      </nav>
+      <div class="docs-layout-content">
+        ${contentHtml}
+      </div>
+    </div>
+  `;
+}
+
+function docsPage(): string {
+  return docsLayout('overview', `
     ${gapSection()}
+    ${docsOverviewFlowSection()}
     ${walletDirectorySection()}
+    ${docsSection()}
+  `);
+}
+
+// Overview: the one-glance request lifecycle. Same flow whether the action came from
+// Chat, a one-time New Request, or a Repeat Payment schedule.
+function docsOverviewFlowSection(): string {
+  return `
+    <section class="protocol-connectors-section" aria-labelledby="docs-flow-title">
+      <div class="section-heading">
+        <p class="eyebrow mini">${escapeHtml(t('How a request flows'))}</p>
+        <h2 id="docs-flow-title">${escapeHtml(t('The agent prepares. You approve. Your wallet signs.'))}</h2>
+        <p>${escapeHtml(t('Every action follows the same path, whether it starts in Chat, a one-time New Request, or a Repeat Payment schedule. Nothing moves until your wallet signs.'))}</p>
+      </div>
+      <div class="protocol-connector-flow-grid" aria-label="${escapeHtml(t('Request lifecycle'))}">
+        ${protocolConnectorFlowCard(t('1. New Request'), t('An agent, a template, or a chat message prepares a bounded, unsigned action - action type, amount, recipient, and route.'))}
+        ${protocolConnectorFlowCard(t('2. Sign Approval'), t('You review the exact details and your own wallet signs. The agent never signs, submits, or moves funds.'))}
+        ${protocolConnectorFlowCard(t('3. Done'), t('One-shot receipts and saved proofs land in Done, verifiable later.'))}
+        ${protocolConnectorFlowCard(t('4. Positions'), t('Stateful actions - lending, staking, liquidity, perps, orders - land in Positions to monitor and manage.'))}
+      </div>
+    </section>
   `;
 }
 
@@ -11452,11 +11511,146 @@ function aiConnectorsSharingDocsSection(): string {
 }
 
 function aiConnectorsDocsPage(): string {
-  return `
+  return docsLayout('ai-connectors', `
     ${aiConnectorsDocsHero()}
     ${aiConnectorsRoutesDocsSection()}
     ${aiConnectorsSharingDocsSection()}
+  `);
+}
+
+function docsAgentPaymentsSkillsPage(): string {
+  return docsLayout('agent-payments', `${agenticLayersDocsSection()}`);
+}
+
+function docsConnectorsPage(): string {
+  return docsLayout('connectors', `
+    ${protocolConnectorsDocsSection()}
+    ${docsPositionsSection()}
+  `);
+}
+
+// Generic icon card for the concept pages - matches the existing docs-card look
+// with a leading stroke-icon, used across How it works / Cloud Storage / Positions.
+function docsIconCard(icon: CommandCenterIconId, kicker: string, title: string, detail: string): string {
+  return `
+    <article class="docs-icon-card">
+      <span class="docs-icon-card-icon">${commandCenterIcon(icon)}</span>
+      ${kicker && kicker !== title ? `<span class="docs-icon-card-kicker">${escapeHtml(kicker)}</span>` : ''}
+      <strong>${escapeHtml(title)}</strong>
+      <p>${escapeHtml(detail)}</p>
+    </article>
   `;
+}
+
+function docsPositionsSection(): string {
+  return `
+    <section class="protocol-connectors-section" aria-labelledby="docs-positions-title">
+      <div class="section-heading">
+        <p class="eyebrow mini">${escapeHtml(t('Positions'))}</p>
+        <h2 id="docs-positions-title">${escapeHtml(t('Open a position, then monitor and manage it.'))}</h2>
+        <p>${escapeHtml(t('Connector actions that leave something open - a loan, a stake, a liquidity range, a perp, a limit order - are tracked in the Positions tab. Live on-chain reads are the source of truth; a just-signed action is bridged until the read confirms.'))}</p>
+      </div>
+      <div class="docs-grid docs-icon-grid">
+        ${docsIconCard('recurring', t('Orders'), t('Orders'), t('Open limit orders and active DCA plans.'))}
+        ${docsIconCard('proofs', t('Lending'), t('Lending & borrowing'), t('Supplied assets earning yield, plus outstanding debt and collateral.'))}
+        ${docsIconCard('approvals', t('Staking'), t('Staking & liquidity'), t('Staked SOL and liquid-staking tokens, provided liquidity, and fees.'))}
+        ${docsIconCard('guardrails', t('Perps'), t('Perps'), t('Open perpetual positions and their orders.'))}
+      </div>
+      <div class="protocol-connector-flow-grid" aria-label="${escapeHtml(t('Position lifecycle'))}">
+        ${protocolConnectorFlowCard(t('1. Open'), t('Open a connector action from New Request and sign it in your wallet.'))}
+        ${protocolConnectorFlowCard(t('2. Monitor'), t('It lands in Positions with live reads - amounts, health, and fees refresh on their own.'))}
+        ${protocolConnectorFlowCard(t('3. Manage'), t('Withdraw, repay, unstake, remove, cancel, or close - each is a fresh wallet-signed action.'))}
+        ${protocolConnectorFlowCard(t('4. Done'), t('A full close or cancel settles the position and its receipt lands in Done.'))}
+      </div>
+    </section>
+  `;
+}
+
+function docsHowItWorksPage(): string {
+  return docsLayout('how-it-works', `
+    <section class="docs-section" aria-labelledby="docs-hiw-title">
+      <div class="section-heading">
+        <div class="chain-strip" aria-label="${escapeHtml(t('Supported AI providers'))}">
+          <span class="logo-chip">${brandLogo('claude', 'logo-chip-icon')}<span>Claude</span></span>
+          <span class="logo-chip">${brandLogo('codex', 'logo-chip-icon')}<span>OpenAI</span></span>
+          <span class="logo-chip">${brandLogo('gemini', 'logo-chip-icon')}<span>Gemini</span></span>
+        </div>
+        <p class="eyebrow mini">${escapeHtml(t('How it works'))}</p>
+        <h2 id="docs-hiw-title">${escapeHtml(t('How Agentic turns intent into a signed action.'))}</h2>
+        <p>${escapeHtml(t("An agent reads public data and drafts a bounded action; your own wallet signs it. Two agents do the thinking - a conversational chat agent and a structured decision agent - and neither can sign, submit, or move funds."))}</p>
+      </div>
+      <div class="docs-grid docs-icon-grid">
+        ${docsIconCard('ai', t('Chat agent'), t('Chat agent'), t("A conversational, tool-calling loop. It reads public data with dozens of read-tools - prices, token safety, wallet history, and DeFi connector facts - and when you ask for an action it calls one tool that drafts an approval card. There is no tool that can sign or execute; it can only propose."))}
+        ${docsIconCard('aiConnected', t('Decision agent'), t('Decision agent'), t("A structured planner and reviewer. It turns intent into a bounded plan - intent, route, risk, approval, and safeguards - and can review a draft as approve, deny, or needs-input with evidence before you sign. The in-chat Decision Check runs your own conditions against a built action."))}
+      </div>
+    </section>
+    <section class="protocol-connectors-section" aria-labelledby="docs-hiw-workflow-title">
+      <div class="section-heading">
+        <p class="eyebrow mini">${escapeHtml(t('The workflow'))}</p>
+        <h2 id="docs-hiw-workflow-title">${escapeHtml(t('Four ways to prepare work, one approval.'))}</h2>
+        <p>${escapeHtml(t('However a request starts, it becomes a bounded item your wallet approves. Recurring and capped flows are bounded up front and stay revocable.'))}</p>
+      </div>
+      <div class="docs-grid docs-icon-grid">
+        ${docsIconCard('approvals', t('New Request'), t('New Request'), t('A one-time plan, drafted by AI or a template, then reviewed and sent to Sign Approval and Done.'))}
+        ${docsIconCard('ai', t('Chat'), t('Chat'), t('Ask in plain language; the agent answers and prepares inline approval cards you sign in your wallet.'))}
+        ${docsIconCard('recurring', t('Repeat Payments'), t('Repeat Payments'), t('Scheduled recurring payments, swaps, or connector actions. Each due run returns to Sign Approval, bounded by cadence, a max occurrence count, and a spend cap.'))}
+        ${docsIconCard('guardrails', t('Spending Sessions'), t('Spending Sessions'), t('A revocable, capped SPL-token delegate for repeated micro-payments. The agent settles small vouchers within a hard cap, expiry, and optional recipient allowlist - revocable from your wallet any time.'))}
+      </div>
+    </section>
+    <section class="agentic-layers-section" aria-labelledby="docs-hiw-boundary-title">
+      <div class="section-heading">
+        <p class="eyebrow mini">${escapeHtml(t('The boundary'))}</p>
+        <h2 id="docs-hiw-boundary-title">${escapeHtml(t('The agent prepares. It never signs.'))}</h2>
+        <p>${escapeHtml(t('The boundary is enforced in layers - the system prompt, a proposal validator, plan guardrails, and a hard server-side split where only a separate wallet-gated path can sign and submit.'))}</p>
+      </div>
+      <div class="docs-grid">
+        ${docsCard(t('What the agent can do'), t('Read public chain and market data, resolve tokens, read connector facts, draft plans, prepare unsigned transactions, decide approve or deny, and answer questions.'))}
+        ${docsCard(t('What the agent cannot do'), t('Sign, submit, broadcast, approve, move funds, grant delegated authority, or ever see your keys or seed phrase.'))}
+      </div>
+      <div class="agentic-layer-contract" aria-label="${escapeHtml(t('Data boundary'))}">
+        <strong>${escapeHtml(t('What the provider sees'))}</strong>
+        <span>${escapeHtml(t('Only the request details, your public wallet address, any note you write, and the network - never your keys, seed phrase, auth tokens, or location.'))}</span>
+      </div>
+    </section>
+  `);
+}
+
+function docsCloudStoragePage(): string {
+  return docsLayout('cloud-storage', `
+    <section class="docs-section" aria-labelledby="docs-cloud-title">
+      <div class="section-heading">
+        <p class="eyebrow mini">${escapeHtml(t('Cloud Storage'))}</p>
+        <h2 id="docs-cloud-title">${escapeHtml(t('Durable workflow, without custody.'))}</h2>
+        <p>${escapeHtml(t('By default your workflow is saved on this device. Connecting Cloud Storage is an optional sign-in that makes plans, approvals, schedules, and proofs durable across sessions and devices. It uses your wallet as identity only.'))}</p>
+      </div>
+      <div class="agentic-layer-contract" aria-label="${escapeHtml(t('Non-custodial boundary'))}">
+        <strong>${escapeHtml(t('Identity only'))}</strong>
+        <span>${escapeHtml(t('Cloud sign-in uses your wallet as identity only. It does not grant spending authority. The wallet still signs every decision proof or transaction, and cloud cannot move funds by itself.'))}</span>
+      </div>
+    </section>
+    <section class="protocol-connectors-section" aria-labelledby="docs-cloud-sync-title">
+      <div class="section-heading">
+        <p class="eyebrow mini">${escapeHtml(t('What syncs'))}</p>
+        <h2 id="docs-cloud-sync-title">${escapeHtml(t('Your workflow, made durable.'))}</h2>
+      </div>
+      <div class="docs-grid docs-icon-grid">
+        ${docsIconCard('proofs', t('Chat history'), t('Chat history'), t('Per-session messages, compressed into opaque blobs the server never reads. Sessions lazy-load and merge without losing turns.'))}
+        ${docsIconCard('approvals', t('Approvals'), t('Approvals & schedules'), t('Unsigned plans, Sign Approval items, Repeat Payment schedules with history, pause and expiry state, and spend caps.'))}
+        ${docsIconCard('recurring', t('Done'), t('Done & proofs'), t('Completed work, saved proofs, risk metadata, and audit events.'))}
+        ${docsIconCard('guardrails', t('Config'), t('Encrypted config & prefs'), t('Encrypted connector keys and supported non-secret preferences.'))}
+      </div>
+    </section>
+    <section class="agentic-layers-section" aria-labelledby="docs-cloud-never-title">
+      <div class="section-heading">
+        <p class="eyebrow mini">${escapeHtml(t('What never syncs'))}</p>
+        <h2 id="docs-cloud-never-title">${escapeHtml(t('Secrets stay on your device.'))}</h2>
+      </div>
+      <div class="docs-grid">
+        ${docsCard(t('Never uploaded'), t('AI provider keys, seed phrases, private keys, delegated signers, bridge tokens, and wallet auth never sync. Signed out, your plans, approvals, repeat payments, and proofs stay on this device.'))}
+        ${docsCard(t('Sign in and delete'), t('Signing in is a wallet-signed login proof - no transaction, no spending authority. Deleting is a wallet-signed deletion proof that erases the wallet-scoped cloud workspace and clears local storage.'))}
+      </div>
+    </section>
+  `);
 }
 
 function buildersPage(): string {

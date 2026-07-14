@@ -3322,6 +3322,124 @@ code {
   margin: 0;
 }
 
+/* ===== Multi-page docs: left sidebar + content ===== */
+.docs-layout {
+  align-items: start;
+  display: grid;
+  gap: 24px;
+  grid-template-columns: 232px minmax(0, 1fr);
+}
+
+.docs-sidebar {
+  background: rgba(255, 255, 255, 0.024);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  position: sticky;
+  top: 88px;
+}
+
+.docs-sidebar-link {
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--muted);
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1.25;
+  padding: 9px 11px;
+  text-decoration: none;
+}
+
+.docs-sidebar-link:hover {
+  color: var(--text);
+}
+
+.docs-sidebar-link.active {
+  background: rgba(125, 231, 176, 0.1);
+  border-color: rgba(139, 205, 170, 0.18);
+  color: #f2fff7;
+}
+
+.docs-layout-content {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+
+.docs-icon-grid {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.docs-icon-card {
+  background: rgba(10, 12, 12, 0.66);
+  border: 1px solid rgba(224, 230, 226, 0.078);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 16px;
+}
+
+.docs-icon-card-icon {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.048);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 8px;
+  display: inline-flex;
+  height: 38px;
+  justify-content: center;
+  width: 38px;
+}
+
+.docs-icon-card-icon .command-center-card-icon {
+  height: 19px;
+  width: 19px;
+}
+
+.docs-icon-card-kicker {
+  color: var(--dim);
+  font-size: 0.66rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.docs-icon-card strong {
+  color: var(--text);
+  font-size: 1.02rem;
+  line-height: 1.25;
+}
+
+.docs-icon-card p {
+  color: rgba(196, 205, 202, 0.84);
+  font-size: 0.9rem;
+  line-height: 1.45;
+  margin: 0;
+}
+
+@media (max-width: 900px) {
+  .docs-layout {
+    gap: 14px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .docs-sidebar {
+    flex-direction: row;
+    overflow-x: auto;
+    position: static;
+    top: auto;
+  }
+
+  .docs-sidebar-link {
+    white-space: nowrap;
+  }
+}
+
 .agentic-layers-section {
   border-top: 1px solid rgba(224, 230, 226, 0.075);
   padding-top: 28px;
