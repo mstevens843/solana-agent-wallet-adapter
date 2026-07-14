@@ -20990,6 +20990,8 @@ function commandCenterAiPanel(): string {
           ${commandAiRouteCards()}
         </div>
 
+        ${isMobileAppViewport()
+          ? `
         ${commandAiWorkflowEducation()}
 
         <div class="command-ai-boundary">
@@ -20997,14 +20999,12 @@ function commandCenterAiPanel(): string {
           <span>${escapeHtml(t('No AI route can approve, submit, sign, move funds, or change workflow authority.'))}</span>
         </div>
 
-        <div class="command-ai-data-disclosure" aria-label="${escapeHtml(t('AI data sharing disclosure'))}">
-          <strong>${escapeHtml(t('What is shared with your AI provider'))}</strong>
-          <p>${escapeHtml(t('AI is off until you add your own provider key. It only ever sees the request details and your public wallet address - never your keys, seed phrase, or location.'))}</p>
-          <p class="command-ai-disclosure-links">
-            <a href="/docs/ai-connectors" data-site-link="/docs/ai-connectors">${escapeHtml(t('How AI connectors work'))} →</a>
-            <a href="/privacy" data-site-link="/privacy">${escapeHtml(t('Privacy Policy'))}</a>
-          </p>
-        </div>
+        ${commandAiDataDisclosure()}`
+          : `
+        <div class="command-ai-two-col">
+          ${commandAiNoAiCard()}
+          ${commandAiDataDisclosure()}
+        </div>`}
 
         ${aiSettingsCard('planner')}
       </section>
@@ -21207,8 +21207,8 @@ function commandAiWorkflowEducation(): string {
   `;
 }
 
-// Standalone "no AI at all" option. Kept on the tab (per product decision) but
-// separated into its own clean strip instead of sitting in the duplicate grid.
+// The "no AI at all" option, consolidated with the workflow-authority boundary
+// (previously two separate stacked containers). Sits in the left 50% column.
 function commandAiNoAiCard(): string {
   return `
     <div class="command-ai-no-ai">
@@ -21216,10 +21216,24 @@ function commandAiNoAiCard(): string {
         <span>${escapeHtml(t('Manual setup'))}</span>
         <strong>${escapeHtml(t('No AI / Templates'))}</strong>
       </div>
-      <div class="command-ai-no-ai-body">
-        <p>${escapeHtml(t('User fills the fields; the app creates a structured plan, sends work for approval, schedules repeat payments, and saves proofs.'))}</p>
-        <em>${escapeHtml(t('Best for deterministic actions where the user already knows the exact fields.'))}</em>
-      </div>
+      <p>${escapeHtml(t('Fill the fields yourself; the app builds a structured plan, sends it for approval, schedules repeat payments, and saves proofs.'))}</p>
+      <em>${escapeHtml(t('Best for deterministic actions where you already know the exact fields.'))}</em>
+      <span class="command-ai-no-ai-boundary">${escapeHtml(t('No AI route can approve, submit, sign, move funds, or change workflow authority.'))}</span>
+    </div>
+  `;
+}
+
+// "What is shared with your AI provider" - now shared between the desktop 50/50
+// row and the mobile stack.
+function commandAiDataDisclosure(): string {
+  return `
+    <div class="command-ai-data-disclosure" aria-label="${escapeHtml(t('AI data sharing disclosure'))}">
+      <strong>${escapeHtml(t('What is shared with your AI provider'))}</strong>
+      <p>${escapeHtml(t('AI is off until you add your own provider key. It only ever sees the request details and your public wallet address - never your keys, seed phrase, or location.'))}</p>
+      <p class="command-ai-disclosure-links">
+        <a href="/docs/ai-connectors" data-site-link="/docs/ai-connectors">${escapeHtml(t('How AI connectors work'))} →</a>
+        <a href="/privacy" data-site-link="/privacy">${escapeHtml(t('Privacy Policy'))}</a>
+      </p>
     </div>
   `;
 }
@@ -36585,7 +36599,6 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const routeLabel = aiRouteStatusLabel(status);
   const readinessLabel = aiReadinessLabel(status);
   const confirmationLabel = aiConfirmationLabel();
-  const confirmationDetail = aiConfirmationDetail();
   const hideKeyEntry = shouldHideAiKeyEntry(status);
   const iosNativeSession = IS_IOS_APP || state.iosNativeEnvironment.isIosNative;
   const sessionKeyLabel = IS_TAURI_APP
@@ -36688,7 +36701,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
           disabled: state.busy,
           title: modeHelperText,
         })}
-        ${isRail && modeHelperText ? `<em class="ai-route-helper">${escapeHtml(modeHelperText)}</em>` : ''}
+        ${isRail && isMobileAppViewport() && modeHelperText ? `<em class="ai-route-helper">${escapeHtml(modeHelperText)}</em>` : ''}
       </label>
       <label class="field compact ai-setting-field ai-setting-provider">
         <span>${escapeHtml(t('Provider preset'))}</span>
@@ -36701,8 +36714,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
           title: routeConfigLockedTitle ?? providerHelperText,
           menuPlacement: aiSheetMenuPlacement,
         })}
-        ${!isRail && !mobilePlannerSetup ? browserNativeProviderTierChip() : ''}
-        ${isRail && providerHelperText ? `<em class="ai-route-helper">${escapeHtml(providerHelperText)}</em>` : ''}
+        ${isRail && isMobileAppViewport() && providerHelperText ? `<em class="ai-route-helper">${escapeHtml(providerHelperText)}</em>` : ''}
       </label>
       <label class="field compact ai-setting-field ai-setting-model">
         <span>${escapeHtml(t('Model'))}</span>
@@ -36765,14 +36777,15 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
       <div class="ai-actions ai-key-actions">
         ${aiKeySetupActionHtml(scope)}
       </div>
-      ${isRail || mobilePlannerSetup
+      ${isRail && !isMobileAppViewport()
+        ? `${state.aiSettings.mode === 'bridge' ? `<p class="ai-rail-tab-hint">${escapeHtml(t('Finish Local Bridge setup in the Connect AI tab.'))}</p>` : ''}<p class="ai-security-note compact"><a href="/privacy" data-site-link="/privacy">${escapeHtml(t('Privacy Policy'))}</a></p>${nativeRuntimeDiagnosticsPanel()}`
+        : isRail || mobilePlannerSetup
         ? `<p class="ai-security-note compact">${escapeHtml(t('AI suggests approve/deny and answers questions before signing. Your provider sees request details and public wallet address - never keys, seed phrase, location, or device IDs.'))} <a href="/privacy" data-site-link="/privacy">${escapeHtml(t('Privacy Policy'))}</a></p>${bridgeSetupCard}${nativeRuntimeDiagnosticsPanel()}`
         : `
           ${bridgeSetupCard}
           <div class="ai-status-line" aria-label="${escapeHtml(t('AI planner status'))}">
             <div class="ai-status-primary">
               <strong id="aiConfirmationStatus-${escapeHtml(scope)}" data-ai-confirmation-status>${escapeHtml(confirmationLabel)}</strong>
-              <p id="aiConfirmationDetail-${escapeHtml(scope)}" data-ai-confirmation-detail>${escapeHtml(confirmationDetail)}</p>
             </div>
             <div class="ai-status-meta">
               <span>${escapeHtml(readinessLabel)}</span>
@@ -36814,11 +36827,11 @@ function aiModeSelectOptions(): SelectPickerOption[] {
   const mobileOptions: Array<{ id: AiSettings['mode']; label: string }> = orderedMobileModes.map((mode) => ({
     id: mode,
     label: mode === 'device-agent'
-      ? t('Device Agent - reviews on device')
+      ? t('Device Agent')
       : mode === 'session'
         ? t('Session AI - your key, no sign-in')
         : cloudSessionMatchesWallet()
-          ? t('Hosted BYOK - cloud relay')
+          ? t('Hosted BYOK')
           : t('Hosted BYOK - Cloud sign-in required'),
   }));
   const options: Array<{ id: AiSettings['mode']; label: string }> = mobileAiPathPolicy
@@ -36826,41 +36839,41 @@ function aiModeSelectOptions(): SelectPickerOption[] {
     : IS_ANDROID_APP
       ? deviceAgentFirst
         ? [
-            { id: 'device-agent', label: t('Device Agent - reviews on device') },
-            { id: 'session', label: t('Android session - review only') },
-            { id: 'hosted', label: t('Hosted BYOK - cloud relay') },
+            { id: 'device-agent', label: t('Device Agent') },
+            { id: 'session', label: t('Android Session') },
+            { id: 'hosted', label: t('Hosted BYOK') },
             { id: 'bridge', label: t('Local bridge AI - optional') },
           ]
         : [
-            { id: 'hosted', label: t('Hosted BYOK - cloud relay') },
+            { id: 'hosted', label: t('Hosted BYOK') },
             ...(deviceAgentVisible
-              ? [{ id: 'device-agent' as const, label: t('Device Agent - reviews on device') }]
+              ? [{ id: 'device-agent' as const, label: t('Device Agent') }]
               : []),
-            { id: 'session', label: t('Android session - review only') },
+            { id: 'session', label: t('Android Session') },
             { id: 'bridge', label: t('Local bridge AI - optional') },
           ]
       : IS_TAURI_APP
         ? [
             { id: 'bridge', label: t('Local bridge AI - default') },
             ...(deviceAgentVisible
-              ? [{ id: 'device-agent' as const, label: t('Device Agent - reviews on device') }]
+              ? [{ id: 'device-agent' as const, label: t('Device Agent') }]
               : []),
-            { id: 'hosted', label: t('Hosted BYOK - cloud relay') },
+            { id: 'hosted', label: t('Hosted BYOK') },
           ]
         : deviceAgentFirst
           ? [
-              { id: 'device-agent', label: t('Device Agent - reviews on device') },
-              { id: 'hosted', label: t('Hosted BYOK - review only') },
-              { id: 'bridge', label: t('Local bridge AI - review via bridge') },
-              { id: 'session', label: t('Browser session - review only') },
+              { id: 'device-agent', label: t('Device Agent') },
+              { id: 'hosted', label: t('Hosted BYOK') },
+              { id: 'bridge', label: t('Local Bridge AI') },
+              { id: 'session', label: t('Browser Session') },
             ]
           : [
-              { id: 'hosted', label: t('Hosted BYOK - review only') },
+              { id: 'hosted', label: t('Hosted BYOK') },
               ...(deviceAgentVisible
-                ? [{ id: 'device-agent' as const, label: t('Device Agent - reviews on device') }]
+                ? [{ id: 'device-agent' as const, label: t('Device Agent') }]
                 : []),
-              { id: 'bridge', label: t('Local bridge AI - review via bridge') },
-              { id: 'session', label: t('Browser session - review only') },
+              { id: 'bridge', label: t('Local Bridge AI') },
+              { id: 'session', label: t('Browser Session') },
             ];
   return options.map((option) => {
     const rawDisabledReason = aiModeDisabledReason(option.id);
@@ -37051,7 +37064,7 @@ function aiProviderHelperText(): string {
       return t('Device Agent uses the native iOS runtime and Keychain-backed config storage.');
     }
     return canUseDeviceAgentBrowserNative()
-      ? t('Device Agent makes AI calls in this tab. We suggest a low-limit key to avoid burning quota; close the tab to stop it.')
+      ? ''
       : t('Device Agent is gated by the Device Agent build/runtime flags.');
   }
   return '';
