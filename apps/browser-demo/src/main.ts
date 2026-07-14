@@ -1805,7 +1805,7 @@ const BROWSER_AI_LIMITATIONS = [
   'Browser AI cannot run background jobs after the tab closes.',
 ];
 const CUSTOM_AI_MODEL_VALUE = '__custom__';
-const ROUTE_PATHS = ['/', '/docs', '/builders', '/app', '/connect', '/disconnect', '/approve', '/sign', '/sign-in', '/sign-out', '/delete-storage', '/qr-connect', '/cli', '/desktop', '/aiconnectors', '/android', '/demo', '/mwa-test', '/privacy', '/terms', '/delete-account', '/agentic-login'] as const;
+const ROUTE_PATHS = ['/', '/docs', '/docs/ai-connectors', '/builders', '/app', '/connect', '/disconnect', '/approve', '/sign', '/sign-in', '/sign-out', '/delete-storage', '/qr-connect', '/cli', '/desktop', '/aiconnectors', '/android', '/demo', '/mwa-test', '/privacy', '/terms', '/delete-account', '/agentic-login'] as const;
 const ROUTE_PATH_SET = new Set<string>(ROUTE_PATHS);
 const SHOW_DEV_CONTROLS = resolveDevControls();
 const IS_ANDROID_APP = resolveAndroidAppSurface();
@@ -1974,6 +1974,7 @@ const ROUTE_TITLES: Record<string, string> = {
   '/builders': 'Builders · Agentic',
   '/qr-connect': 'QR Connect · Agentic',
   '/aiconnectors': 'AI Connectors · Agentic',
+  '/docs/ai-connectors': 'How AI Connectors Work · Agentic',
   '/mwa-test': 'MWA · Agentic',
   '/privacy': 'Privacy Policy · Agentic',
   '/terms': 'Terms of Service · Agentic',
@@ -5069,12 +5070,11 @@ function isBrowserDeviceAgentSecretStoreMode(value: unknown): value is SecretSto
 }
 
 function readBrowserDeviceAgentSecretStoreMode(): SecretStoreMode {
-  try {
-    const value = window.localStorage.getItem(DEVICE_AGENT_SECRET_STORE_MODE_KEY);
-    return isBrowserDeviceAgentSecretStoreMode(value) ? value : 'encrypted-indexeddb';
-  } catch {
-    return 'encrypted-indexeddb';
-  }
+  // Secret-store mode is pinned to encrypted-indexeddb: the provider key is always
+  // remembered securely on this device (WebCrypto ciphertext in IndexedDB). The
+  // user-facing picker was removed for being developer jargon; any lingering
+  // 'session-memory' preference is migrated to the persistent default.
+  return 'encrypted-indexeddb';
 }
 
 function persistBrowserDeviceAgentSecretStoreMode(mode: SecretStoreMode): void {
@@ -11172,6 +11172,8 @@ function pageContent(route: AppRoute | null): string {
       return homePage();
     case '/docs':
       return docsPage();
+    case '/docs/ai-connectors':
+      return aiConnectorsDocsPage();
     case '/builders':
       return buildersPage();
     case '/app':
@@ -11283,6 +11285,175 @@ function docsPage(): string {
     ${protocolConnectorsDocsSection()}
     ${gapSection()}
     ${walletDirectorySection()}
+  `;
+}
+
+interface AiConnectorRouteDoc {
+  id: string;
+  icon: CommandCenterIconId;
+  name: string;
+  kicker: string;
+  summary: string;
+  keyLocation: string;
+  platforms: string;
+  boundary: string;
+}
+
+// The five AI connection routes, explained accurately: Device Agent runs
+// on-device (the default), Hosted BYOK is the cloud relay, and so on. This is
+// the destination for the education trimmed out of the Connect AI tab.
+function aiConnectorRouteDocs(): AiConnectorRouteDoc[] {
+  return [
+    {
+      id: 'device-agent',
+      icon: 'wallet',
+      name: t('Device Agent'),
+      kicker: t('On-device · Default'),
+      summary: t("The AI review runs right in your browser tab, or in the native app on Android and iOS. Your provider key is stored locally on your device and the request never round-trips to Agentic's servers. This is the default, and the only route that also works on mobile."),
+      keyLocation: t('Encrypted on this device - WebCrypto in the browser, the Keychain on iOS, the native secure store on Android.'),
+      platforms: t('Web · Desktop · Android · iOS'),
+      boundary: t('Runs on your device. The key never leaves it and never reaches the cloud.'),
+    },
+    {
+      id: 'hosted',
+      icon: 'cloud',
+      name: t('Hosted BYOK'),
+      kicker: t('Cloud relay'),
+      summary: t("You bring your own provider key and Agentic's server relays it to the AI provider for each request. The key is used per request and is not stored. Best when a provider cannot be called straight from the browser."),
+      keyLocation: t('Sent per request to the relay, then discarded - never persisted.'),
+      platforms: t('Web · Desktop · Android · iOS (with cloud sign-in)'),
+      boundary: t('Only relays your key for the AI request. It cannot approve, sign, or move funds.'),
+    },
+    {
+      id: 'bridge',
+      icon: 'connectors',
+      name: t('Local Bridge'),
+      kicker: t('Your machine'),
+      summary: t('Runs the AI and workflow through a small local runtime on your own computer - the npm CLI, a standalone binary, or the Desktop App. Nothing leaves your machine. Ideal when you want private, machine-local control.'),
+      keyLocation: t('Held by the local runtime on your computer.'),
+      platforms: t('Web · Desktop'),
+      boundary: t('Still ends at explicit wallet approval and local signing.'),
+    },
+    {
+      id: 'session',
+      icon: 'ai',
+      name: t('Browser Session'),
+      kicker: t('Temporary key'),
+      summary: t('Paste a temporary key that lives only in the current browser tab and is never saved. Useful for quick, throwaway keys, and subject to your provider session and rate limits. Some providers cannot be called directly from a browser.'),
+      keyLocation: t('In memory for this tab only - cleared when you close it.'),
+      platforms: t('Web'),
+      boundary: t('Drafts inside this session, then enters the same review pipeline.'),
+    },
+    {
+      id: 'plan-connector',
+      icon: 'aiConnected',
+      name: t('Plan Connector'),
+      kicker: t('Paired computer'),
+      summary: t('Use Codex, Claude, or Gemini that are already signed in on your computer - no API key to paste anywhere. On a phone, pair once by scanning a QR from the computer.'),
+      keyLocation: t('None. It uses your signed-in connector on the computer.'),
+      platforms: t('Web · Android · iOS (paired)'),
+      boundary: t('No provider key is stored. Wallet approval stays with you.'),
+    },
+  ];
+}
+
+function aiConnectorRouteDocCard(route: AiConnectorRouteDoc): string {
+  return `
+    <article class="ai-connector-route-doc">
+      <div class="ai-connector-route-doc-head">
+        <span class="ai-connector-route-doc-icon">${commandCenterIcon(route.icon)}</span>
+        <div>
+          <span class="ai-connector-route-doc-kicker">${escapeHtml(route.kicker)}</span>
+          <h3>${escapeHtml(route.name)}</h3>
+        </div>
+      </div>
+      <p class="ai-connector-route-doc-summary">${escapeHtml(route.summary)}</p>
+      <dl class="ai-connector-route-doc-meta">
+        <div>
+          <dt>${escapeHtml(t('Where your key lives'))}</dt>
+          <dd>${escapeHtml(route.keyLocation)}</dd>
+        </div>
+        <div>
+          <dt>${escapeHtml(t('Works on'))}</dt>
+          <dd>${escapeHtml(route.platforms)}</dd>
+        </div>
+      </dl>
+      <div class="ai-connector-route-doc-boundary">
+        <strong>${escapeHtml(t('Boundary'))}</strong>
+        <span>${escapeHtml(route.boundary)}</span>
+      </div>
+    </article>
+  `;
+}
+
+function aiConnectorsDocsHero(): string {
+  return `
+    <section id="ai-connectors" class="docs-section" aria-labelledby="ai-connectors-title">
+      <div class="section-heading">
+        <div class="chain-strip" aria-label="${escapeHtml(t('Supported AI providers'))}">
+          <span class="logo-chip">${brandLogo('claude', 'logo-chip-icon')}<span>Claude</span></span>
+          <span class="logo-chip">${brandLogo('codex', 'logo-chip-icon')}<span>OpenAI</span></span>
+          <span class="logo-chip">${brandLogo('gemini', 'logo-chip-icon')}<span>Gemini</span></span>
+        </div>
+        <p class="eyebrow mini">${escapeHtml(t('AI connectors'))}</p>
+        <h2 id="ai-connectors-title">${escapeHtml(t('How AI connectors work.'))}</h2>
+        <p>${escapeHtml(t("An AI connector plugs your own AI into Agentic to help draft and review transactions. AI only ever drafts and reviews - it never approves, signs, moves funds, or sees your keys. Every action still ends at your wallet's approval, so connecting AI is optional and never changes who owns authority."))}</p>
+      </div>
+      <div class="protocol-connector-flow-grid" aria-label="${escapeHtml(t('AI connector workflow'))}">
+        ${protocolConnectorFlowCard(t('1. Add your key'), t('Paste your own provider key - Claude, OpenAI, Gemini, or an OpenAI-compatible gateway - or connect a signed-in computer. No key, no AI; templates still work.'))}
+        ${protocolConnectorFlowCard(t('2. AI drafts a plan'), t('Describe what you want in plain language. The AI turns it into a structured, bounded workflow plan: an action type, amounts, and recipients.'))}
+        ${protocolConnectorFlowCard(t('3. You review every detail'), t('The plan enters the same normalized review pipeline as manual actions. Nothing is hidden - you see the exact route, amount, and recipient.'))}
+        ${protocolConnectorFlowCard(t('4. Your wallet signs'), t('Approval and signing stay in your wallet, exactly as without AI. The connector never gets custody or signing power.'))}
+      </div>
+    </section>
+  `;
+}
+
+function aiConnectorsRoutesDocsSection(): string {
+  return `
+    <section id="ai-connector-routes" class="agentic-layers-section" aria-labelledby="ai-connector-routes-title">
+      <div class="section-heading">
+        <p class="eyebrow mini">${escapeHtml(t('Connection routes'))}</p>
+        <h2 id="ai-connector-routes-title">${escapeHtml(t('Five ways to connect AI, one approval boundary.'))}</h2>
+        <p>${escapeHtml(t('Every route drafts and reviews only. They differ in where the AI runs and where your key lives - pick the one that fits your setup. Device Agent is the default and works everywhere.'))}</p>
+      </div>
+      <div class="ai-connector-route-doc-grid" aria-label="${escapeHtml(t('AI connection routes'))}">
+        ${aiConnectorRouteDocs().map(aiConnectorRouteDocCard).join('')}
+      </div>
+      <div class="agentic-layer-contract" aria-label="${escapeHtml(t('AI boundary'))}">
+        <strong>${escapeHtml(t('Shared boundary'))}</strong>
+        <span>${escapeHtml(t('AI drafts, you approve, the wallet signs, receipts persist. No route can approve, submit, sign, move funds, or change workflow authority.'))}</span>
+      </div>
+    </section>
+  `;
+}
+
+function aiConnectorsSharingDocsSection(): string {
+  return `
+    <section id="ai-connector-privacy" class="protocol-connectors-section" aria-labelledby="ai-connector-privacy-title">
+      <div class="section-heading">
+        <p class="eyebrow mini">${escapeHtml(t('Data and controls'))}</p>
+        <h2 id="ai-connector-privacy-title">${escapeHtml(t('What the AI sees, and what it never sees.'))}</h2>
+        <p>${escapeHtml(t('AI is off until you add your own provider key. When you request a review, only the details needed to reason about the draft are sent to the provider you chose.'))}</p>
+      </div>
+      <div class="docs-grid">
+        ${docsCard(t('Shared with your provider'), t("The draft's action type, token symbol(s), amount, recipient address, and slippage; your Solana wallet's public address; any note you write; and the network or cluster."))}
+        ${docsCard(t('Never shared'), t('Your private keys, seed phrase, or recovery phrase; your precise location; and device identifiers. These never leave your wallet.'))}
+        ${docsCard(t('Provider, model, and reasoning'), t('Pick a provider preset, a model, and a reasoning depth. Higher reasoning is smarter on hard drafts but slower and costlier each turn.'))}
+      </div>
+      <div class="protocol-connectors-action">
+        <a class="button-link nav-pill-link launch-app-link" href="/app">${escapeHtml(t('Open App'))}</a>
+        <span>${escapeHtml(t("Set up a connector under Home, then Connect AI. You can clear your key at any time, and every action still ends at your wallet's approval."))}</span>
+      </div>
+    </section>
+  `;
+}
+
+function aiConnectorsDocsPage(): string {
+  return `
+    ${aiConnectorsDocsHero()}
+    ${aiConnectorsRoutesDocsSection()}
+    ${aiConnectorsSharingDocsSection()}
   `;
 }
 
@@ -20828,8 +20999,11 @@ function commandCenterAiPanel(): string {
 
         <div class="command-ai-data-disclosure" aria-label="${escapeHtml(t('AI data sharing disclosure'))}">
           <strong>${escapeHtml(t('What is shared with your AI provider'))}</strong>
-          <p>${escapeHtml(t('The AI feature is off until you enter your own provider key. When you request an agent review, this app sends to the AI provider you selected: the draft\'s action type, token symbol(s), amount, recipient address, and slippage; your Solana wallet\'s public address; any free-text note you write; and the network/cluster. It never sends your private keys, seed phrase, recovery phrase, precise location, or device identifiers.'))}</p>
-          <p><a href="/privacy" data-site-link="/privacy">${escapeHtml(t('Privacy Policy'))}</a></p>
+          <p>${escapeHtml(t('AI is off until you add your own provider key. It only ever sees the request details and your public wallet address - never your keys, seed phrase, or location.'))}</p>
+          <p class="command-ai-disclosure-links">
+            <a href="/docs/ai-connectors" data-site-link="/docs/ai-connectors">${escapeHtml(t('How AI connectors work'))} →</a>
+            <a href="/privacy" data-site-link="/privacy">${escapeHtml(t('Privacy Policy'))}</a>
+          </p>
         </div>
 
         ${aiSettingsCard('planner')}
@@ -21015,11 +21189,38 @@ function commandBridgePrereqPanel(): string {
 }
 
 function commandAiWorkflowEducation(): string {
+  if (isMobileAppViewport()) {
+    return `
+      <section class="command-ai-education" aria-label="${escapeHtml(t('AI workflow capabilities'))}">
+        ${commandAiIntroTabs()}
+        ${commandAiInfoCardsGroup()}
+      </section>
+    `;
+  }
+  // Desktop: the per-route benefit grid was folded up into the route cards, so we
+  // keep only the trust principle line plus the standalone "No AI / Templates" option.
   return `
     <section class="command-ai-education" aria-label="${escapeHtml(t('AI workflow capabilities'))}">
-      ${isMobileAppViewport() ? commandAiIntroTabs() : commandAiPrincipleCard()}
-      ${commandAiInfoCardsGroup()}
+      ${commandAiPrincipleCard()}
+      ${commandAiNoAiCard()}
     </section>
+  `;
+}
+
+// Standalone "no AI at all" option. Kept on the tab (per product decision) but
+// separated into its own clean strip instead of sitting in the duplicate grid.
+function commandAiNoAiCard(): string {
+  return `
+    <div class="command-ai-no-ai">
+      <div class="command-ai-no-ai-head">
+        <span>${escapeHtml(t('Manual setup'))}</span>
+        <strong>${escapeHtml(t('No AI / Templates'))}</strong>
+      </div>
+      <div class="command-ai-no-ai-body">
+        <p>${escapeHtml(t('User fills the fields; the app creates a structured plan, sends work for approval, schedules repeat payments, and saves proofs.'))}</p>
+        <em>${escapeHtml(t('Best for deterministic actions where the user already knows the exact fields.'))}</em>
+      </div>
+    </div>
   `;
 }
 
@@ -21192,16 +21393,35 @@ function commandAiInfoCard(title: string, badge: string, detail: string, foot: s
   `;
 }
 
+// Green one-line takeaway shown under each desktop route card. These are the
+// same taglines the (now-removed) benefit grid used, folded up into the cards.
+function aiRouteTagline(mode: AiSettings['mode']): string {
+  switch (mode) {
+    case 'hosted':
+      return t('More capable at understanding intent, not more powerful over approval.');
+    case 'bridge':
+      return t('Still ends at explicit wallet approval and local signing.');
+    case 'session':
+      return t('Useful for temporary keys, but subject to provider and session limits.');
+    case 'device-agent':
+      return t('Runs on your device - your key stays in this browser, never the cloud.');
+    default:
+      return '';
+  }
+}
+
 function commandAiRouteCard(mode: AiSettings['mode'], title: string, detail: string, meta: string): string {
   const active = state.aiSettings.mode === mode;
   const disabledReason = aiModeDisabledReason(mode);
   const configured = aiSetupInventory().paths.find((path) => path.mode === mode)?.configured === true;
+  const tagline = isMobileAppViewport() ? '' : aiRouteTagline(mode);
   return `
     <article class="command-route-card ${active ? 'active' : ''} ${configured && !active ? 'configured-inactive' : ''}">
       <div>
         <span>${escapeHtml(configured && !active ? tf('{meta} - configured', { meta }) : meta)}</span>
         <strong>${escapeHtml(title)}</strong>
         <p>${escapeHtml(detail)}</p>
+        ${tagline ? `<em class="command-route-foot">${escapeHtml(tagline)}</em>` : ''}
       </div>
       <button
         type="button"
@@ -21268,6 +21488,7 @@ function commandPlanConnectorRouteCard(): string {
         <span>${escapeHtml(meta)}</span>
         <strong>Plan Connector</strong>
         <p>${escapeHtml(detail)}</p>
+        ${isMobileAppViewport() ? '' : `<em class="command-route-foot">${escapeHtml(t('Use your signed-in Codex, Claude, or Gemini - no API key to paste.'))}</em>`}
       </div>
       <button
         type="button"
@@ -27235,7 +27456,13 @@ function normalizeProposalParams(proposal: ChatActionProposal): Record<string, u
     // Sign-proof: the statement is signed as a message proof (no transaction).
     return { statement: str(p.statement), proofKind: 'sign_proof' };
   }
-  throw new Error(t('Only transfers, swaps, and proofs can be prepared from chat.'));
+  // Every other kind is a connector approval action (lend/borrow/withdraw/repay/cancel/close/unstake/
+  // remove-liquidity/…). Its params are already in the connector's field shape — built by
+  // manageProposalParams + the position parsers (Positions-tab manage) or the picker (chat setup) —
+  // so pass them through as-is. There is NO swap/send/proof gate here: these are legitimately prepared
+  // from the Positions tab AND the Chat tab, and the connector prepare endpoint is the real validation
+  // at execute time (isConnectorApprovalKind → executeBrowserConnectorAction posts {kind, params}).
+  return proposal.params && typeof proposal.params === 'object' ? proposal.params : {};
 }
 
 function createBrowserPreparedActionFromProposal(proposal: ChatActionProposal): PreparedAction {
@@ -36333,7 +36560,6 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const websitePlanConnectorTabs = websitePlanConnectorSetupAvailable();
   const aiReviewSetupTabsVisible = androidRailAiSetupTabs || iosRailAiSetupTabs || websitePlanConnectorTabs;
   const scope = isRail ? 'rail' : 'command';
-  const formatLabel = aiFormatLabel(state.aiSettings.apiFormat);
   const customProvider = providerPreset.id === 'custom-openai-compatible';
   const selectedPresetModel = providerPreset.models.find((model) => model.id === state.aiSettings.model);
   const usingCustomModel = !selectedPresetModel;
@@ -36388,7 +36614,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const securityCopy = state.aiSettings.mode === 'hosted'
     ? t('Hosted BYOK relays this key only for AI Connector requests. It cannot queue approvals, create repeat payments, approve, submit, or sign.')
     : state.aiSettings.mode === 'device-agent'
-      ? t('Device Agent stores the AI Connector route config in the selected runtime boundary. Queueing, repeat payments, approvals, submissions, and signatures remain separate workflow actions.')
+      ? t('Device Agent keeps your key on this device and runs the AI review in your browser. Approvals, payments, and signing stay in the normal wallet workflow.')
     : state.aiSettings.mode === 'bridge'
       ? t('Local Bridge AI uses your normal provider key from the local runtime. Sign Approval, repeat payments, proofs, and wallet signatures remain separate workflow actions.')
         : tf('{descriptor} keys stay in {scope} and only help prepare or review requests. Queueing, repeat payments, approvals, submissions, and signatures use the active workflow, not the AI key.', { descriptor: sessionDescriptor, scope: sessionScope });
@@ -36536,37 +36762,22 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
           ${setupHelperMessages.map((message) => `<em class="ai-route-helper">${escapeHtml(message)}</em>`).join('')}
         </div>
       ` : ''}
-      ${!isRail && !mobilePlannerSetup ? browserDeviceAgentSecretStoreControl(scope) : ''}
       <div class="ai-actions ai-key-actions">
         ${aiKeySetupActionHtml(scope)}
       </div>
       ${isRail || mobilePlannerSetup
         ? `<p class="ai-security-note compact">${escapeHtml(t('AI suggests approve/deny and answers questions before signing. Your provider sees request details and public wallet address - never keys, seed phrase, location, or device IDs.'))} <a href="/privacy" data-site-link="/privacy">${escapeHtml(t('Privacy Policy'))}</a></p>${bridgeSetupCard}${nativeRuntimeDiagnosticsPanel()}`
         : `
-          ${state.aiSettings.mode === 'bridge' ? '' : aiModeLimitations()}
           ${bridgeSetupCard}
-          ${state.aiSettings.mode === 'device-agent' ? deviceAgentConnectionCard(state.deviceAgentStatus) : ''}
-          <div class="ai-readiness-summary" aria-label="${escapeHtml(t('AI planner readiness'))}">
-            <div>
-              <span>${escapeHtml(t('Planner check'))}</span>
+          <div class="ai-status-line" aria-label="${escapeHtml(t('AI planner status'))}">
+            <div class="ai-status-primary">
               <strong id="aiConfirmationStatus-${escapeHtml(scope)}" data-ai-confirmation-status>${escapeHtml(confirmationLabel)}</strong>
               <p id="aiConfirmationDetail-${escapeHtml(scope)}" data-ai-confirmation-detail>${escapeHtml(confirmationDetail)}</p>
             </div>
-            <div>
-              <span>${escapeHtml(t('Status'))}</span>
-              <strong>${escapeHtml(readinessLabel)}</strong>
-            </div>
-            <div>
-              <span>${escapeHtml(t('Route'))}</span>
-              <strong>${escapeHtml(routeLabel)}</strong>
-            </div>
-            <div>
-              <span>${escapeHtml(t('Format'))}</span>
-              <strong>${escapeHtml(formatLabel)}</strong>
-            </div>
-            <div>
-              <span>${escapeHtml(t('Impact'))}</span>
-              <strong>${escapeHtml(t('Review only'))}</strong>
+            <div class="ai-status-meta">
+              <span>${escapeHtml(readinessLabel)}</span>
+              <span>${escapeHtml(routeLabel)}</span>
+              <span>${escapeHtml(t('Review only'))}</span>
             </div>
           </div>
           ${aiDiagnosticsPanel()}
