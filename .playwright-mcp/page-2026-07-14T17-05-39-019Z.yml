@@ -1,0 +1,140 @@
+- main [ref=f32e2]:
+  - generic [ref=f32e3]:
+    - generic "Agentic navigation" [ref=f32e4]:
+      - link "Agentic home" [ref=f32e5] [cursor=pointer]:
+        - /url: /
+      - navigation "Primary navigation" [ref=f32e7]:
+        - link "Home" [ref=f32e8] [cursor=pointer]:
+          - /url: /
+        - link "Docs" [ref=f32e10] [cursor=pointer]:
+          - /url: /docs
+        - link "Demo" [ref=f32e12] [cursor=pointer]:
+          - /url: /demo
+        - link "App" [ref=f32e14] [cursor=pointer]:
+          - /url: /app
+    - region [ref=f32e16]:
+      - generic [ref=f32e18]:
+        - heading "Agentic approval workspace." [level=2] [ref=f32e19]
+        - paragraph [ref=f32e20]: AI or templates prepare review items. You check the route, recipient, amount, policy, and wallet action before signing.
+      - generic [ref=f32e21]:
+        - complementary [ref=f32e22]:
+          - generic [ref=f32e23]:
+            - generic [ref=f32e24]:
+              - generic [ref=f32e25]: SA
+              - paragraph [ref=f32e27]: Signer
+            - strong [ref=f32e31]: No signer connected
+          - button "Discover" [ref=f32e33] [cursor=pointer]
+          - generic [ref=f32e34]:
+            - region "Workspace storage status" [ref=f32e35]:
+              - generic [ref=f32e36] [cursor=pointer]:
+                - generic [ref=f32e37]:
+                  - generic [ref=f32e38]: Workspace storage
+                  - emphasis [ref=f32e39]: Browser-local workflow storage
+                - strong [ref=f32e40]: Signed out
+                - button "Sign in" [ref=f32e42]
+                - text: +
+            - region "AI connector status" [ref=f32e43]:
+              - generic [ref=f32e44] [cursor=pointer]:
+                - generic [ref=f32e47]:
+                  - generic [ref=f32e48]: AI connector
+                  - strong [ref=f32e49]: Claude / Anthropic
+                  - emphasis [ref=f32e50]: claude-opus-4-1-20250805 - Local Bridge
+                - strong [ref=f32e51]: not configured
+                - button "Set up" [ref=f32e53]
+                - text: +
+        - generic [ref=f32e56]:
+          - tablist "Home sections" [ref=f32e57]:
+            - tab "Center Command overview" [selected] [ref=f32e58] [cursor=pointer]:
+              - strong [ref=f32e59]: Center
+              - generic [ref=f32e60]: Command overview
+            - tab "Connect AI Agent setup" [ref=f32e61] [cursor=pointer]:
+              - strong [ref=f32e62]: Connect AI
+              - generic [ref=f32e63]: Agent setup
+            - tab "Connect Cloud Cloud workspace" [ref=f32e64] [cursor=pointer]:
+              - strong [ref=f32e65]: Connect Cloud
+              - generic [ref=f32e66]: Cloud workspace
+          - generic [ref=f32e68]:
+            - generic [ref=f32e70]:
+              - heading "Approval workspace" [level=2] [ref=f32e71]
+              - paragraph [ref=f32e72]: "- AI prepares the review item; the wallet owner checks the details and signs only after review."
+            - region "First-time approval flow" [ref=f32e73]:
+              - generic [ref=f32e74]:
+                - generic [ref=f32e75]: Approval loop
+                - 'heading "Next: Discover wallets" [level=3] [ref=f32e76]'
+                - paragraph [ref=f32e77]: Find Solana wallet providers in this browser.
+                - generic [ref=f32e78]: "Workspace: Saved on this device"
+              - list "First-time progress" [ref=f32e79]:
+                - listitem "Use your wallet signer." [ref=f32e80]:
+                  - generic [ref=f32e81]: "1"
+                  - strong [ref=f32e82]: Connect
+                - listitem "Plan from template." [ref=f32e83]:
+                  - generic [ref=f32e84]: "2"
+                  - strong [ref=f32e85]: Create
+                - listitem "Check route and limits." [ref=f32e86]:
+                  - generic [ref=f32e87]: "3"
+                  - strong [ref=f32e88]: Review
+                - listitem "Send for approval." [ref=f32e89]:
+                  - generic [ref=f32e90]: "4"
+                  - strong [ref=f32e91]: Decide
+                - listitem "Saved after decision." [ref=f32e92]:
+                  - generic [ref=f32e93]: "5"
+                  - strong [ref=f32e94]: Receipt
+            - region "Agentic trust boundary" [ref=f32e95]:
+              - tablist "Trust boundary sections" [ref=f32e96]:
+                - tab "No key custody" [selected] [ref=f32e97] [cursor=pointer]
+                - tab "AI checks" [ref=f32e99] [cursor=pointer]
+                - tab "Receipts" [ref=f32e101] [cursor=pointer]
+              - tabpanel [ref=f32e103]:
+                - strong [ref=f32e104]: No key custody
+                - generic [ref=f32e105]: Wallet keeps private keys
+            - generic "Agentic approval loop" [ref=f32e106]:
+              - tablist "Approval loop steps" [ref=f32e107]:
+                - tab "Plan" [selected] [ref=f32e108] [cursor=pointer]
+                - tab "Check" [ref=f32e110] [cursor=pointer]
+                - tab "Approve" [ref=f32e112] [cursor=pointer]
+                - tab "Prove" [ref=f32e114] [cursor=pointer]
+              - tabpanel [ref=f32e116]:
+                - generic [ref=f32e117]: Plan
+                - paragraph [ref=f32e118]: AI or templates prepare a bounded review item.
+            - generic [ref=f32e119]:
+              - tablist "Workspace sections" [ref=f32e120]:
+                - tab "Wallet" [selected] [ref=f32e121] [cursor=pointer]
+                - tab "Approvals" [ref=f32e128] [cursor=pointer]
+                - tab "Payments" [ref=f32e135] [cursor=pointer]
+                - tab "Proof" [ref=f32e143] [cursor=pointer]
+              - tabpanel [ref=f32e150]:
+                - article [ref=f32e151]:
+                  - generic [ref=f32e152]: Wallet
+                  - strong [ref=f32e158]: Connect wallet
+                  - paragraph [ref=f32e159]: No signing authority granted
+                  - generic [ref=f32e160]:
+                    - button "Discover" [ref=f32e161] [cursor=pointer]
+                    - button "Connect" [disabled] [ref=f32e162]
+            - region "Preference snapshot" [ref=f32e163]:
+              - generic [ref=f32e164]:
+                - generic [ref=f32e165]:
+                  - generic [ref=f32e166]: Preference snapshot
+                  - heading "Current setup" [level=3] [ref=f32e167]
+                - paragraph [ref=f32e168]: Most important workspace settings at a glance.
+              - generic [ref=f32e169]:
+                - tablist "Setup sections" [ref=f32e170]:
+                  - tab "AI Path" [selected] [ref=f32e171] [cursor=pointer]
+                  - tab "Cloud" [ref=f32e180] [cursor=pointer]
+                  - tab "Connectors" [ref=f32e186] [cursor=pointer]
+                  - tab "Rules" [ref=f32e192] [cursor=pointer]
+                - tabpanel [ref=f32e198]:
+                  - article [ref=f32e199]:
+                    - generic [ref=f32e200]: AI path
+                    - strong [ref=f32e208]: Local Bridge selected
+                    - paragraph [ref=f32e209]: Claude / Anthropic - claude-opus-4-1-20250805
+                    - generic [ref=f32e210]:
+                      - emphasis [ref=f32e211]: Bridge key required
+                      - button "Connect" [ref=f32e212] [cursor=pointer]
+      - generic "Workspace navigation" [ref=f32e213]:
+        - navigation "Workspace navigation" [ref=f32e214]:
+          - button "Home" [ref=f32e215] [cursor=pointer]
+          - button "Chat" [ref=f32e217] [cursor=pointer]
+          - button "New Request" [ref=f32e219] [cursor=pointer]
+          - button "Sign Approval" [disabled] [ref=f32e221]
+          - button "More+" [ref=f32e224] [cursor=pointer]:
+            - generic [ref=f32e226]: ▾

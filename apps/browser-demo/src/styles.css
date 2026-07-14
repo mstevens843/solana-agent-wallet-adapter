@@ -39787,7 +39787,11 @@ button.danger:hover:not(:disabled) {
 .mobile-positions-stage .positions-card { padding: 12px; }
 .mobile-positions-stage .positions-card-head { flex-wrap: wrap; gap: 8px; }
 .mobile-positions-stage .positions-card-actions { flex-direction: column; align-items: stretch; }
-.mobile-positions-stage .positions-card-actions button { width: 100%; }
+/* DIRECT children only: the top-level manage buttons (Withdraw / Repay / extras) go full-width and stack.
+   A descendant selector here also caught the NESTED amount-row Max button (flex:0 0 auto), forcing it to
+   width:100% so it couldn't shrink — squashing the amount input to a sliver. The Max / Cancel / Review
+   buttons live inside .positions-manage-prompt and must keep their own flex sizing. */
+.mobile-positions-stage .positions-card-actions > button { width: 100%; }
 /* The inline manage prompt uses flex-basis:100% to drop below the buttons in the DESKTOP row layout.
    In this mobile column+wrap container that same basis sizes the main axis (height) and wraps the block
    into a new column off the right edge; reset it to auto so the prompt just stacks below (width:100% keeps
@@ -39796,6 +39800,9 @@ button.danger:hover:not(:disabled) {
 /* Phone widths (web-on-phone too, not just the native dock): comfortable touch targets + readable tiles. */
 @media (max-width: 899px) {
   .positions-card-actions button { min-height: 44px; }
+  /* Match the amount input to the 44px Max button beside it so the row is aligned and the field is a
+     comfortable tap target (it's the primary control — the wide field, not the small Max accessory). */
+  .positions-manage-amount-input { min-height: 44px; }
   .positions-details { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
 }
 
