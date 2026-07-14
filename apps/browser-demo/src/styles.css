@@ -16790,16 +16790,11 @@ button.danger:hover:not(:disabled) {
   width: 100%;
 }
 
-.ai-key-actions .ai-key-secondary-action {
-  flex: 1 1 100%;
-  min-height: 38px;
-  width: 100%;
-}
-
 .ai-review-setup-tabs {
   background: rgba(6, 10, 9, 0.72);
   border: 1px solid rgba(224, 230, 226, 0.12);
   border-radius: 10px;
+  box-sizing: border-box;
   display: grid;
   gap: 3px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -16813,6 +16808,9 @@ button.danger:hover:not(:disabled) {
   border-radius: 7px;
   color: rgba(203, 214, 210, 0.68);
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font: inherit;
   font-size: 0.78rem;
   font-weight: 900;
@@ -17004,6 +17002,40 @@ button.danger:hover:not(:disabled) {
 
 .rail-ai-settings .website-plan-connector-command button {
   width: 100%;
+}
+
+.plan-connector-command-hint {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.25;
+  margin: -3px 0 0;
+}
+
+.rail-ai-settings .website-plan-connector-refresh-only {
+  min-height: 38px;
+  width: 100%;
+}
+
+.rail-ai-settings .website-plan-connector-panel[data-plan-connector-rail="true"] {
+  gap: 8px;
+}
+
+.rail-ai-settings .website-plan-connector-panel[data-plan-connector-rail="true"] .plan-connector-summary,
+.rail-ai-settings .website-plan-connector-panel[data-plan-connector-rail="true"] .website-plan-connector-status {
+  gap: 6px;
+  padding: 10px;
+}
+
+.rail-ai-settings .website-plan-connector-panel[data-plan-connector-rail="true"] .plan-connector-summary strong,
+.rail-ai-settings .website-plan-connector-panel[data-plan-connector-rail="true"] .website-plan-connector-status strong {
+  font-size: 0.88rem;
+  line-height: 1.16;
+}
+
+.rail-ai-settings .website-plan-connector-panel[data-plan-connector-rail="true"] .plan-connector-summary p {
+  font-size: 0.76rem;
+  line-height: 1.25;
+  margin: 0;
 }
 
 .website-plan-connector-status {
@@ -23399,6 +23431,11 @@ button.danger:hover:not(:disabled) {
   padding: 10px 12px;
 }
 
+.command-ai-two-col .command-ai-data-disclosure {
+  height: 100%;
+  margin-top: 0;
+}
+
 .command-ai-data-disclosure strong {
   color: #d9ffea;
   font-size: 0.9rem;
@@ -23444,6 +23481,13 @@ button.danger:hover:not(:disabled) {
   grid-column: 1 / -1;
 }
 
+.command-ai-panel .ai-settings-card.plan-connector-settings-card[data-ai-settings-scope="command"] > .ai-review-setup-tabs {
+  justify-self: start;
+  max-width: 324px;
+  min-width: min(100%, 252px);
+  width: 324px;
+}
+
 .command-ai-panel .plan-connector-settings-card[data-ai-settings-scope="command"] .website-plan-connector-command code {
   display: block;
   overflow-x: auto;
@@ -23452,6 +23496,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] > .ai-settings-intro,
+.command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] > .ai-setup-desktop-header,
 .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] > .ai-helper-row,
 .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] > .ai-security-note,
 .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] > .ai-key-configured-note,
@@ -23482,6 +23527,14 @@ button.danger:hover:not(:disabled) {
   gap: 7px;
   grid-column: 1 / -1;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] > .ai-actions.ai-key-actions {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] > .ai-actions.ai-key-actions .ai-key-primary-action {
+  grid-column: 1 / span 1;
 }
 
 .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] > .ai-actions button {
@@ -23549,6 +23602,95 @@ button.danger:hover:not(:disabled) {
   font-size: 0.8rem;
   overflow-wrap: anywhere;
   text-align: left;
+}
+
+@media (min-width: 901px) {
+  .route-app .ai-review-setup-tabs {
+    grid-template-rows: minmax(0, 1fr);
+    height: 44px;
+    max-height: 44px;
+    min-height: 44px;
+  }
+
+  .route-app .ai-review-setup-tabs button {
+    height: 100%;
+    min-height: 0;
+    padding: 6px 10px;
+  }
+
+  .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] > .ai-setup-desktop-header {
+    align-items: stretch;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: flex-start;
+    min-width: 0;
+  }
+
+  .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] > .ai-setup-desktop-header > .ai-review-setup-tabs {
+    flex: 0 1 324px;
+    max-width: 324px;
+    min-width: min(100%, 252px);
+    width: 324px;
+  }
+
+  .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] .ai-setup-configured-stack {
+    align-content: start;
+    display: grid;
+    flex: 0 1 320px;
+    gap: 7px;
+    min-width: min(100%, 236px);
+  }
+
+  .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] .ai-setup-configured-stack .ai-key-configured-note {
+    gap: 2px;
+    min-height: 0;
+    padding: 8px 10px;
+  }
+
+  .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] .ai-setup-configured-stack .ai-key-configured-note span {
+    font-size: 0.64rem;
+    line-height: 1.1;
+  }
+
+  .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] .ai-setup-configured-stack .ai-key-configured-note strong {
+    font-size: 0.86rem;
+    line-height: 1.14;
+  }
+
+  .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] .ai-setup-configured-stack .ai-key-configured-note em {
+    font-size: 0.74rem;
+    line-height: 1.18;
+  }
+
+  .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] > .ai-setup-desktop-header > .ai-status-line {
+    align-content: center;
+    align-items: center;
+    align-self: stretch;
+    display: flex;
+    flex: 1 1 300px;
+    gap: 8px 12px;
+    justify-content: space-between;
+    min-height: 44px;
+    min-width: min(100%, 280px);
+    padding: 8px 10px;
+  }
+
+  .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] > .ai-setup-desktop-header > .ai-status-line .ai-status-primary strong {
+    font-size: 0.84rem;
+    line-height: 1.15;
+  }
+
+  .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] > .ai-setup-desktop-header > .ai-status-line .ai-status-meta {
+    align-items: center;
+    flex: 0 1 auto;
+    justify-content: flex-end;
+  }
+
+  .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] > .ai-setup-desktop-header > .ai-status-line .ai-status-meta span {
+    font-size: 0.68rem;
+    padding: 3px 8px;
+  }
 }
 
 .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] .ai-security-note {
@@ -36403,8 +36545,7 @@ button.danger:hover:not(:disabled) {
   justify-content: center;
 }
 
-.ai-key-actions .ai-key-primary-action,
-.ai-key-actions .ai-key-secondary-action {
+.ai-key-actions .ai-key-primary-action {
   flex: 0 1 340px;
   justify-content: center;
   max-width: 340px;

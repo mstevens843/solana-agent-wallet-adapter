@@ -170,7 +170,107 @@ describe('connector connect native sheet', () => {
     expect(commandAiSettingsCss).toContain('grid-template-columns: minmax(0, 1fr);');
     expect(commandAiSettingsCss).toContain('.command-ai-panel .ai-settings-card.plan-connector-settings-card[data-ai-settings-scope="command"] > *');
     expect(commandAiSettingsCss).toContain('grid-column: 1 / -1;');
+    expect(commandAiSettingsCss).toContain('.command-ai-panel .ai-settings-card.plan-connector-settings-card[data-ai-settings-scope="command"] > .ai-review-setup-tabs');
+    expect(commandAiSettingsCss).toContain('width: 324px;');
     expect(commandAiSettingsCss).toContain('.command-ai-panel .plan-connector-settings-card[data-ai-settings-scope="command"] .website-plan-connector-command code');
     expect(commandAiSettingsCss).toContain('white-space: nowrap;');
+  });
+
+  it('keeps web setup tabs fixed-height and configured API keys in the compact top row', () => {
+    const cardBlock = sourceBetween('function aiSettingsCard', 'function aiModeOptions');
+    const tabSizingCss = stylesBetween('@media (min-width: 901px) {', '.command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] .ai-security-note');
+    const actionCss = stylesBetween(
+      '.command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] > .ai-actions.ai-key-actions {',
+      '.command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] > .ai-actions button {',
+    );
+
+    expect(cardBlock).toContain('desktopConfiguredKeyHeaderVisible = desktopAiSetupHeaderVisible && currentAiKeyActionConfigured();');
+    expect(cardBlock).toContain('ai-setup-configured-stack');
+    expect(cardBlock).not.toContain('ai-setup-clear-actions');
+    expect(cardBlock).not.toContain('const clearButton =');
+    expect(cardBlock).not.toContain('ai-key-secondary-action');
+    expect(cardBlock).toContain('const inlineAiKeyActionsHtml = `');
+    expect(tabSizingCss).toContain('height: 44px;');
+    expect(tabSizingCss).toContain('max-height: 44px;');
+    expect(tabSizingCss).toContain('flex: 0 1 324px;');
+    expect(actionCss).toContain('grid-template-columns: repeat(4, minmax(0, 1fr));');
+    expect(actionCss).toContain('grid-column: 1 / span 1;');
+  });
+
+  it('keeps subscription connector setup out of the web API-key Local Bridge card', () => {
+    const statusHelpers = sourceBetween('function websiteBridgeConnectorStatusMasked', 'function shouldHideAiKeyEntry');
+    const localBridgeConnectorBlock = sourceBetween('function localBridgeConnectorSection', 'function bridgeAiConfiguredDisplay');
+    const setModeBlock = sourceBetween('function setAiPlannerMode', 'function activeWorkflowMode');
+    const clearBlock = sourceBetween('async function runClearAiKey', 'async function runRefreshDeviceAgentStatus');
+
+    expect(statusHelpers).toContain("state.aiSettings.agentEngine !== 'connector'");
+    expect(statusHelpers).toContain("state.aiReviewSetupTab === 'api-key'");
+    expect(statusHelpers).toContain("status?.engine === 'connector'");
+    expect(localBridgeConnectorBlock).toContain('if (websiteApiKeyBridgeProviderMode()) return');
+    expect(localBridgeConnectorBlock).toContain("t('Subscription connector')");
+    expect(setModeBlock).toContain("state.aiReviewSetupTab = 'api-key';");
+    expect(setModeBlock).toContain("state.aiSettings.agentEngine = 'api-key';");
+    expect(clearBlock).toContain("state.aiReviewSetupTab = 'api-key';");
+    expect(clearBlock).toContain("state.aiSettings.agentEngine = 'api-key';");
+  });
+
+  it('keeps the rail Plan Connector fast path compact and functional', () => {
+    const panelBlock = sourceBetween('function websitePlanConnectorSetupPanel', 'function commandCenterStoragePanel');
+    const actionBlock = sourceBetween("case 'connector-connect':", "case 'open-web-plan-connector':");
+    const disconnectBlock = sourceBetween('async function runDisconnectWebsitePlanConnector', 'async function runSelectConnector');
+    const cssBlock = stylesBetween(
+      '.rail-ai-settings .website-plan-connector-panel[data-plan-connector-rail="true"] {',
+      '.website-plan-connector-status {',
+    );
+
+    expect(panelBlock).toContain("scope === 'rail'");
+    expect(panelBlock).toContain('Run your paid plan from Codex, Claude, Gemini, or Antigravity.');
+    expect(panelBlock).toContain('Paste this in Terminal to connect and pair your plan.');
+    expect(panelBlock).toContain('const disconnectButton = setup.connected');
+    expect(panelBlock).not.toContain("state.aiSettings.agentEngine === 'connector' || setup.connected");
+    expect(panelBlock).toContain('websiteConnectorSelected ? state.aiStatus : null');
+    expect(panelBlock).toContain('rail && !setup.connected');
+    expect(panelBlock).toContain('website-plan-connector-refresh-only');
+    expect(panelBlock).toContain("rail ? '' : `<ol");
+    expect(panelBlock).toContain("rail ? '' : '<p class=\"ai-security-note compact\"");
+    expect(panelBlock).toContain('disconnect-web-plan-connector');
+    expect(actionBlock).toContain("case 'disconnect-web-plan-connector':");
+    expect(disconnectBlock).toContain("state.aiReviewSetupTab = 'plan-connector';");
+    expect(disconnectBlock).not.toContain("state.aiReviewSetupTab = 'api-key';");
+    expect(disconnectBlock).toContain("bridgeRequest<BridgeAiStatus>('/bridge/ai/session-key'");
+    expect(disconnectBlock).not.toContain('const stillConnected =');
+    expect(disconnectBlock).not.toContain('Plan Connector still connected');
+    expect(cssBlock).toContain('data-plan-connector-rail="true"');
+  });
+
+  it('gives every web Plan Connector option its own logo', () => {
+    const logoTypeBlock = sourceBetween('type BrandLogoId =', 'const BRAND_LOGOS');
+    const logosBlock = sourceBetween('const BRAND_LOGOS', 'const KNOWN_TOKEN_LOGOS');
+    const optionsBlock = sourceBetween('function planConnectorOptions', 'function planConnectorSelectPicker');
+    const brandLogoBlock = sourceBetween('function connectorBrandLogoId', 'function applyPairedRelayPresence');
+    const railLogoBlock = sourceBetween('function connectorRailLogoHint', 'function connectorBrandLogoId');
+
+    expect(logoTypeBlock).toContain("'antigravity'");
+    expect(logosBlock).toContain('antigravity.svg');
+    expect(optionsBlock).toContain('logoId: connectorBrandLogoId(connector)');
+    expect(brandLogoBlock).toContain("case 'antigravity':");
+    expect(brandLogoBlock).toContain("return 'antigravity';");
+    expect(railLogoBlock).toContain("case 'antigravity':");
+    expect(mainSource).toContain("const PLAN_CONNECTOR_CHOICES: AiConnector[] = ['codex', 'claude', 'gemini', 'antigravity'];");
+  });
+
+  it('keeps the Connect AI safety copy concise without dropping the key boundary', () => {
+    const noAiBlock = sourceBetween('function commandAiNoAiCard', 'function commandAiDataDisclosure');
+    const mobileBoundaryBlock = sourceBetween('function commandCenterAiPanel', 'function commandAiRouteCards');
+    const disclosureBlock = sourceBetween('function commandAiDataDisclosure', 'function commandAiPrincipleCard');
+    const cardCss = stylesBetween('.command-ai-data-disclosure {', '.command-ai-data-disclosure strong');
+
+    expect(noAiBlock).toContain('AI prepares drafts; you approve in your wallet. Private keys never leave your wallet.');
+    expect(mobileBoundaryBlock).toContain('AI prepares drafts; you approve in your wallet. Private keys never leave your wallet.');
+    expect(disclosureBlock).toContain('never your keys, seed phrase, or location');
+    expect(mainSource).not.toContain('No AI route can approve, submit, sign, move funds, or change workflow authority.');
+    expect(cardCss).toContain('.command-ai-two-col .command-ai-data-disclosure');
+    expect(cardCss).toContain('height: 100%;');
+    expect(cardCss).toContain('margin-top: 0;');
   });
 });

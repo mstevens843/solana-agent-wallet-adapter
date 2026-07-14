@@ -114,7 +114,7 @@ export function aiConnectorsQrActionButtons(input: {
 }
 
 export function normalizeAiConnectorsConnector(value: string | null | undefined): AiConnector | null {
-  return value === 'codex' || value === 'gemini' || value === 'claude' ? value : null;
+  return value === 'codex' || value === 'gemini' || value === 'claude' || value === 'antigravity' ? value : null;
 }
 
 export function aiConnectorsCommand(connector: AiConnector): string {

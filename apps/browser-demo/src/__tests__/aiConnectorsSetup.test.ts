@@ -24,6 +24,9 @@ describe('aiConnectorsCommand', () => {
     expect(aiConnectorsCommand('gemini')).toBe(
       'npm exec --yes --package @solana-agent-wallet-adapter/cli -- solana-agent-wallet aiconnectors --connector gemini',
     );
+    expect(aiConnectorsCommand('antigravity')).toBe(
+      'npm exec --yes --package @solana-agent-wallet-adapter/cli -- solana-agent-wallet aiconnectors --connector antigravity',
+    );
   });
 });
 
@@ -38,15 +41,18 @@ describe('aiConnectorsWebsiteCommand', () => {
     expect(aiConnectorsWebsiteCommand('gemini')).toBe(
       'npm exec --yes --package @solana-agent-wallet-adapter/cli -- solana-agent-wallet agent-setup --engine connector --connector gemini',
     );
+    expect(aiConnectorsWebsiteCommand('antigravity')).toBe(
+      'npm exec --yes --package @solana-agent-wallet-adapter/cli -- solana-agent-wallet agent-setup --engine connector --connector antigravity',
+    );
   });
 });
 
 describe('normalizeAiConnectorsConnector', () => {
-  it('accepts only the Android connector setup pilot connectors', () => {
+  it('accepts every supported plan connector', () => {
     expect(normalizeAiConnectorsConnector('codex')).toBe('codex');
     expect(normalizeAiConnectorsConnector('gemini')).toBe('gemini');
     expect(normalizeAiConnectorsConnector('claude')).toBe('claude');
-    expect(normalizeAiConnectorsConnector('antigravity')).toBeNull();
+    expect(normalizeAiConnectorsConnector('antigravity')).toBe('antigravity');
     expect(normalizeAiConnectorsConnector('openai')).toBeNull();
   });
 });

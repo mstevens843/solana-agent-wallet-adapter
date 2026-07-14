@@ -28,7 +28,7 @@ export interface AiSetupInventory {
 }
 
 export type AiPathClearability = Record<AiPathMode, boolean>;
-export type AiRailLogoHint = 'agentRouter' | 'agentic' | 'claude' | 'codex' | 'gemini';
+export type AiRailLogoHint = 'agentRouter' | 'agentic' | 'antigravity' | 'claude' | 'codex' | 'gemini';
 
 export interface AiRailIdentity {
   path: AiPathMode;
@@ -287,8 +287,9 @@ export function aiProviderLogoHint(input: {
       case 'codex':
         return 'codex';
       case 'gemini':
-      case 'antigravity':
         return 'gemini';
+      case 'antigravity':
+        return 'antigravity';
       case 'claude':
         return 'claude';
       default:
