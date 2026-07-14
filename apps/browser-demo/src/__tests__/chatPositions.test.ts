@@ -28,8 +28,8 @@ describe('chat Active Positions helpers', () => {
     expect(matchPositionBrowseType('')).toBeNull();
   });
 
-  it('exposes exactly the six browsable types with count labels', () => {
-    expect(POSITION_BROWSE_TYPES.map((t) => t.category)).toEqual(['limit', 'dca', 'lend', 'borrow', 'stake', 'lp']);
+  it('exposes exactly the seven browsable types with count labels', () => {
+    expect(POSITION_BROWSE_TYPES.map((t) => t.category)).toEqual(['limit', 'dca', 'lend', 'borrow', 'stake', 'lp', 'perps']);
     for (const t of POSITION_BROWSE_TYPES) expect(t.countLabel.length).toBeGreaterThan(0);
   });
 

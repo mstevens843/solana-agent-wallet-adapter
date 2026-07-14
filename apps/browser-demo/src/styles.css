@@ -37102,6 +37102,11 @@ button.danger:hover:not(:disabled) {
   animation: mobile-rail-sheet-scrim-in 180ms ease-out both;
 }
 .chat-composer-mobile:has(.chat-plus-menu.open) { z-index: 310; }
+/* Web/desktop: .chat-composer is position:sticky (a stacking context) with no z-index, so the popover's
+   own z-index:30 is trapped at the composer's auto/0 level and transcript token logos (z-index:1) paint
+   THROUGH the open menu. Lift the whole composer context above them while the menu is open — scoped to
+   open-state so nothing else changes. (Mobile already handles this via the 310 rule above.) */
+.chat-composer:not(.chat-composer-mobile):has(.chat-plus-menu.open) { z-index: 40; }
 
 /* --- Web/desktop consolidated wallet-action popover ------------------------- */
 /* Anchored above the composer; reuses the sheet field renderers in a desktop grid. */
@@ -37429,11 +37434,13 @@ button.danger:hover:not(:disabled) {
 .chat-research-panel .chat-plus-option em { color: var(--muted); font-size: 0.76rem; font-style: normal; line-height: 1.3; }
 
 /* Wallet Actions menu header row: the "WALLET ACTIONS" label + the Receive accessory pill. */
+/* Two-row header: "WALLET ACTIONS" label on its own row, the Active-Positions/Receive pills on a
+   full-width row below it — so the pills never crowd the label off the popover on any width. */
 .chat-plus-head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
 }
 .chat-plus-head .chat-plus-group { padding-bottom: 0; flex: 0 0 auto; }
 .chat-receive-pill-btn {
@@ -37456,7 +37463,7 @@ button.danger:hover:not(:disabled) {
 .chat-receive-pill-btn .wallet-action-copy-icon { fill: var(--accent); }
 .chat-receive-pill-label { font-size: 0.74rem; font-weight: 700; letter-spacing: 0.02em; }
 /* The Active Positions pill sits with Receive in a right-aligned group. */
-.chat-plus-head-actions { align-items: center; display: flex; flex: 0 0 auto; gap: 8px; }
+.chat-plus-head-actions { align-items: center; display: flex; flex: 0 0 auto; gap: 8px; flex-wrap: wrap; }
 .chat-positions-pill-btn {
   align-items: center;
   background: var(--surface);
@@ -39781,6 +39788,11 @@ button.danger:hover:not(:disabled) {
 .mobile-positions-stage .positions-card-head { flex-wrap: wrap; gap: 8px; }
 .mobile-positions-stage .positions-card-actions { flex-direction: column; align-items: stretch; }
 .mobile-positions-stage .positions-card-actions button { width: 100%; }
+/* The inline manage prompt uses flex-basis:100% to drop below the buttons in the DESKTOP row layout.
+   In this mobile column+wrap container that same basis sizes the main axis (height) and wraps the block
+   into a new column off the right edge; reset it to auto so the prompt just stacks below (width:100% keeps
+   it full-width). Covers every position kind — one shared positionManagePromptHtml renderer. */
+.mobile-positions-stage .positions-manage-prompt { flex-basis: auto; }
 /* Phone widths (web-on-phone too, not just the native dock): comfortable touch targets + readable tiles. */
 @media (max-width: 899px) {
   .positions-card-actions button { min-height: 44px; }

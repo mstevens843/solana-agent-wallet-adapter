@@ -18,6 +18,7 @@ export const POSITION_BROWSE_TYPES: ReadonlyArray<PositionBrowseType> = [
   { category: 'borrow', keywords: /^(?:borrow|borrowing)$/i, countLabel: 'Borrowing' },
   { category: 'stake', keywords: /^(?:stake|staking)$/i, countLabel: 'Staking' },
   { category: 'lp', keywords: /^(?:lp|liquidity)$/i, countLabel: 'Liquidity' },
+  { category: 'perps', keywords: /^(?:perp|perps|perpetuals?)$/i, countLabel: 'Perps' },
 ];
 
 export function matchPositionBrowseType(text: string): ActionCategory | null {
@@ -61,6 +62,14 @@ export const MANAGE_PROMPT_KINDS: ReadonlySet<string> = new Set<string>([
   'meteora_remove_liquidity',
   'orca_decrease_liquidity',
   'raydium_remove_liquidity',
+  // Keyless lend/borrow connectors — withdraw/repay take an explicit token amount (default valueField
+  // 'amount'), so they prompt like the Jupiter lend/borrow manage actions.
+  'kamino_withdraw',
+  'save_withdraw',
+  'save_repay',
+  'marginfi_withdraw',
+  'marginfi_repay',
+  'lulo_withdraw',
 ]);
 
 export function manageValueField(kind: string): string {

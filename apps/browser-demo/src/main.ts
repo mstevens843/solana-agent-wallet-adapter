@@ -1268,6 +1268,11 @@ type PreparedActionKind =
   | 'lulo_deposit'
   | 'lulo_withdraw'
   | 'lulo_complete_withdraw'
+  | 'phoenix_open'
+  | 'phoenix_close'
+  | 'phoenix_modify_collateral'
+  | 'phoenix_cancel_order'
+  | 'phoenix_place_trigger'
   | 'raydium_add_liquidity'
   | 'raydium_remove_liquidity'
   | 'raydium_collect_fees'
@@ -24881,7 +24886,11 @@ function chatComposerHtml(): string {
   const receivePill = `<button type="button" class="chat-receive-pill-btn" data-chat-receive aria-label="${escapeHtml(t('Receive'))}" title="${escapeHtml(t('Receive'))}">${copyButtonIcon()}<span class="chat-receive-pill-label">${escapeHtml(t('Receive'))}</span></button>`;
   // Active Positions: opens the in-chat positions view (counts → type a type → live cards). Sits just
   // left of Receive; short "Active Positions" pill on mobile, full "View Active Positions" on desktop.
-  const positionsPill = `<button type="button" class="chat-positions-pill-btn" data-chat-positions aria-label="${escapeHtml(t('View Active Positions'))}" title="${escapeHtml(t('View Active Positions'))}">${activePositionsIcon()}<span class="chat-positions-pill-label chat-positions-pill-label--full">${escapeHtml(t('View Active Positions'))}</span><span class="chat-positions-pill-label chat-positions-pill-label--mobile" aria-hidden="true">${escapeHtml(t('Active Positions'))}</span></button>`;
+  // Shown ONLY on the Advanced tab (positions browsing is an advanced/connector concept) — hidden on
+  // Primary so its everyday actions read clean and the header pills never crowd.
+  const positionsPill = state.chatWalletActionTab === 'advanced'
+    ? `<button type="button" class="chat-positions-pill-btn" data-chat-positions aria-label="${escapeHtml(t('View Active Positions'))}" title="${escapeHtml(t('View Active Positions'))}">${activePositionsIcon()}<span class="chat-positions-pill-label chat-positions-pill-label--full">${escapeHtml(t('View Active Positions'))}</span><span class="chat-positions-pill-label chat-positions-pill-label--mobile" aria-hidden="true">${escapeHtml(t('Active Positions'))}</span></button>`
+    : '';
   const plusOpen = state.chatComposerOpen ? ' open' : '';
   const plusMenu = `
     <div class="chat-plus-menu${plusOpen}${state.chatWalletActionTab === 'advanced' ? ' is-advanced' : ''}" role="menu">
@@ -26694,6 +26703,38 @@ function regenerateLastChatTurn(): void {
   void rerunChatTurn(session);
 }
 
+// True when the text is a machine-generated wallet-action LABEL (from compileConnectorDraftToMessage /
+// compileDcaConnectorMessage) — its segments are joined by " · " (U+00B7 middot), which is effectively
+// never hand-typed. Used to tell an automated action re-send apart from a genuine free-form prompt so the
+// former never triggers the "Connect AI first" error.
+function isChatConnectorActionLabel(text: string): boolean {
+  return text.includes(' · ');
+}
+
+// When a user turn is edited & resent, find the connector action card it produced so we can re-arm it —
+// an unchanged resend then re-prepares the SAME action (exact on-chain ids, no AI). The label text alone
+// is lossy and can't be re-parsed. Returns null when the action is already terminal (txid / approved /
+// receipted): re-preparing a completed action would show a stale, duplicate card, so those fall through
+// to the deterministic guidance reply in submitChatMessage instead.
+function recoverableChatActionForResend(
+  messages: ChatMessage[],
+  userIdx: number,
+  composerText: string,
+): ChatHeldAction | null {
+  for (let i = userIdx + 1; i < messages.length; i += 1) {
+    const msg = messages[i];
+    if (!msg || msg.role === 'user') break; // next turn reached — this turn produced no pending card
+    const id = msg.preparedActionId;
+    if (!id || !isBrowserWorkflowId(id)) continue;
+    const action = state.preparedActions.find((a) => a.id === id);
+    if (!action) return null; // dropped / unknown — nothing to re-arm
+    if (action.txid || action.status === 'approved') return null; // terminal
+    if (state.receipts.some((r) => r.actionId === id)) return null; // has a receipt
+    return { kind: 'connector', composerText, preparedAction: action };
+  }
+  return null;
+}
+
 // Edit-and-resend: truncate the conversation BEFORE the chosen user message and load
 // its text into the composer, so the normal send flow re-asks an edited version.
 function editChatMessageIntoComposer(messageId: string): void {
@@ -26703,10 +26744,14 @@ function editChatMessageIntoComposer(messageId: string): void {
   const idx = session.messages.findIndex((m) => m.id === messageId && m.role === 'user');
   if (idx === -1) return;
   const original = session.messages[idx]?.content ?? '';
+  // Capture any still-pending connector action from this turn BEFORE the slice/drop, so an unchanged
+  // resend re-prepares it deterministically (no AI) rather than falling through to the readiness guard.
+  const rearm = recoverableChatActionForResend(session.messages, idx, original);
   dropOrphanedChatPreparedActions(session.messages.slice(idx));
   session.messages = session.messages.slice(0, idx);
   chatDraft = original;
   saveChatHistoryState();
+  if (rearm) stageChatHeldAction(rearm); // re-arms state.chatHeldAction; composer value re-set below
   render();
   const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
   if (input) {
@@ -26908,14 +26953,29 @@ async function submitChatMessage(text: string): Promise<void> {
       chatStreamAbort = null;
       chatStreamMsgId = null;
       chatStreamSessionId = null;
-      appendChatMessage(session.id, {
-        id: newId('chat-msg'),
-        role: 'assistant',
-        content: '',
-        createdAt: new Date().toISOString(),
-        status: 'error',
-        error: notReady,
-      });
+      if (isChatConnectorActionLabel(content)) {
+        // A machine-generated wallet-action LABEL (e.g. a connector action resent via ✎ Edit & resend)
+        // is automated and needs no AI — answer deterministically instead of demanding a connection.
+        // Genuine free-form prompts don't match the middot-joined label shape, so they still get the
+        // connect-AI error below. (When an AI IS connected we never reach here — the label streams to
+        // the agent as before.)
+        appendChatMessage(session.id, {
+          id: newId('chat-msg'),
+          role: 'assistant',
+          content: t('This is a wallet action, not a question — no AI needed. Open "+ Wallet Actions" to prepare it again, then sign.'),
+          createdAt: new Date().toISOString(),
+          status: 'done',
+        });
+      } else {
+        appendChatMessage(session.id, {
+          id: newId('chat-msg'),
+          role: 'assistant',
+          content: '',
+          createdAt: new Date().toISOString(),
+          status: 'error',
+          error: notReady,
+        });
+      }
       chatScrollPinned = true;
       chatForceScrollBottom = true;
       render();
@@ -40772,7 +40832,7 @@ function bind(): void {
       if (!id) return;
       if (id === 'all') {
         for (const s of POSITIONS_SECTIONS) {
-          if (s.id !== 'perps') void fetchPositionCategory(s.id, true);
+          void fetchPositionCategory(s.id, true);
         }
         return;
       }
@@ -44962,8 +45022,19 @@ function positionTemplatePickerMenu(trigger: HTMLElement, menu: HTMLElement): vo
   // the right edge (right-aligned toolbar triggers like the Sign Approval / Done filters).
   const menuWidth = Math.min(menu.getBoundingClientRect().width || triggerRect.width, Math.floor(viewportWidth - 20));
   const overflowsRight = triggerRect.left + menuWidth > viewportWidth - 10;
-  menu.style.left = overflowsRight ? 'auto' : '0';
-  menu.style.right = overflowsRight ? '0' : 'auto';
+  // The New Request connector picker is a narrow, right-of-center trigger with a wide (width:max-content)
+  // menu, so the right-anchor flip below makes it appear to open sideways/left. On web/desktop, keep it
+  // dropping straight DOWN from the trigger's left, nudged left only as far as needed to stay on-screen.
+  // (Native/mobile and every other picker — incl. the right-aligned Sign Approval / Done filters — keep
+  // the flip.)
+  if (!isMobileAppViewport() && overflowsRight && trigger.closest('.connector-create-picker')) {
+    const overflowPx = Math.max(0, Math.ceil(triggerRect.left + menuWidth - (viewportWidth - 10)));
+    menu.style.left = `-${overflowPx}px`;
+    menu.style.right = 'auto';
+  } else {
+    menu.style.left = overflowsRight ? 'auto' : '0';
+    menu.style.right = overflowsRight ? '0' : 'auto';
+  }
 }
 
 function selectPickerPlacement(trigger: HTMLElement, menu: HTMLElement): SelectPickerPlacement {
@@ -48616,6 +48687,201 @@ function parseBorrowRows(res: Record<string, unknown> | null | undefined): Posit
   });
 }
 
+// --- Kamino / Save / MarginFi lend+borrow positions (keyless). Each mirrors parseLendRows/parseBorrowRows:
+// one PositionLiveRow per leg, with the hero set to the TOKEN amount (so the manage "Max" prefills the
+// withdrawable amount, not a USD figure), USD/APY/health as detail tiles, and cancel.kind routed to the
+// connector's withdraw/repay prepare action (id field per MANAGE_ID_FIELD_BY_KIND). ---
+
+// Kamino Lend supply positions. res.positions = KaminoPosition[]. Manage id field is `token` (the Kamino
+// reserve form field), which the adapter resolves from the reserve mint.
+function parseKaminoRows(res: Record<string, unknown> | null | undefined): PositionLiveRow[] {
+  if (!res) return [];
+  return posArray(res.positions).map((p) => {
+    const mint = posStr(p.reserveMint) ?? '';
+    const sym = posStr(p.reserveSymbol) ?? posSymbol(mint);
+    const details: PositionDetail[] = [];
+    if (posStr(p.suppliedAmount)) details.push({ label: 'Supplied', value: `${posAmount(p.suppliedAmount)} ${sym}` });
+    if (posStr(p.currentValue)) details.push({ label: 'Value', value: posUsd(posNum(p.currentValue, 0)) });
+    const earned = posStr(p.earnedInterest);
+    if (earned && posNum(earned) > 0) details.push({ label: 'Earned', value: `${posAmount(earned)} ${sym}`, tone: 'good' });
+    if (typeof p.supplyApy === 'number') details.push({ label: 'APY', value: `${(p.supplyApy as number).toFixed(2)}%`, tone: 'good' });
+    const { headline, rest } = extractHeadline(details, 'Supplied');
+    return {
+      section: 'lending', id: `kamino-${mint || sym}`, connectorId: 'kamino', kind: 'lend' as ActionCategory,
+      title: `${sym} supplied`, status: 'earning', headline, heroMint: mint || sym, details: rest,
+      cancel: { kind: 'kamino_withdraw' as PreparedActionKind, orderId: mint },
+    };
+  });
+}
+
+// Save (Solend) obligation legs. res.obligation.deposits (lend) / .borrows (borrow); manage id field is
+// `token` (the Save reserve form field). Borrow rows carry a health-factor tone.
+function parseSaveRows(res: Record<string, unknown> | null | undefined, section: 'lending' | 'borrowing'): PositionLiveRow[] {
+  if (!res) return [];
+  const obligation = res.obligation && typeof res.obligation === 'object' ? (res.obligation as Record<string, unknown>) : null;
+  if (!obligation) return [];
+  const hf = posNum(obligation.healthFactor);
+  const tone: PositionDetail['tone'] = section === 'borrowing' && Number.isFinite(hf)
+    ? (hf >= 2 ? 'good' : hf >= 1.2 ? 'warn' : 'bad')
+    : undefined;
+  const isLend = section === 'lending';
+  return posArray(isLend ? obligation.deposits : obligation.borrows).map((leg) => {
+    const mint = posStr(leg.reserveMint) ?? '';
+    const sym = posStr(leg.reserveSymbol) ?? posSymbol(mint);
+    const details: PositionDetail[] = [{ label: isLend ? 'Supplied' : 'Debt', value: `${posAmount(leg.amount)} ${sym}` }];
+    if (posStr(leg.valueUsd)) details.push({ label: 'Value', value: posUsd(posNum(leg.valueUsd, 0)) });
+    if (!isLend && Number.isFinite(hf)) details.push({ label: 'Health factor', value: hf.toFixed(2), tone });
+    const { headline, rest } = extractHeadline(details, isLend ? 'Supplied' : 'Debt');
+    return {
+      section, id: `save-${section}-${mint || sym}`, connectorId: 'save', kind: (isLend ? 'lend' : 'borrow') as ActionCategory,
+      title: isLend ? `${sym} supplied` : `${sym} borrowed`, ...(isLend ? { status: 'earning' } : {}),
+      headline, heroMint: mint || sym, details: rest,
+      cancel: isLend
+        ? { kind: 'save_withdraw' as PreparedActionKind, orderId: mint }
+        : { kind: 'save_repay' as PreparedActionKind, orderId: mint, label: t('Repay') },
+    };
+  });
+}
+
+// MarginFi is a 2-step read: the `positions` summary lists accounts (no legs); a per-account detail read
+// (marginfiAccount param) returns the supplied/borrowed legs. Flatten them, tagging each with its account.
+async function readMarginfiLegs(summary: Record<string, unknown>): Promise<Array<Record<string, unknown>>> {
+  const accounts = posArray(summary.accounts);
+  if (!accounts.length) return [];
+  const details = await settleReads(
+    accounts.map((a) => connectorRead('marginfi', 'positions', { marginfiAccount: posStr(a.marginfiAccount) ?? '' })),
+  );
+  const legs: Array<Record<string, unknown>> = [];
+  for (const d of details) {
+    const account = d && d.account && typeof d.account === 'object' ? (d.account as Record<string, unknown>) : null;
+    if (!account) continue;
+    const acct = posStr(account.marginfiAccount) ?? '';
+    for (const leg of posArray(account.positions)) legs.push({ ...leg, marginfiAccount: acct });
+  }
+  return legs;
+}
+
+// One row per MarginFi leg with a non-zero side. Manage id field is `bankAddress`; `marginfiAccount` rides
+// in cancel.fields (the withdraw/repay prepare wants both; the account also auto-discovers server-side).
+function parseMarginfiLegRows(legs: Array<Record<string, unknown>>, section: 'lending' | 'borrowing'): PositionLiveRow[] {
+  const isLend = section === 'lending';
+  const rows: PositionLiveRow[] = [];
+  for (const leg of legs) {
+    const amount = isLend ? posNum(leg.suppliedAmount, 0) : posNum(leg.borrowedAmount, 0);
+    if (!(amount > 0)) continue;
+    const mint = posStr(leg.bankMint) ?? '';
+    const bank = posStr(leg.bankAddress) ?? '';
+    const acct = posStr(leg.marginfiAccount) ?? '';
+    const sym = posStr(leg.tokenSymbol) ?? posSymbol(mint);
+    const usd = posStr(isLend ? leg.suppliedUsd : leg.borrowedUsd);
+    const details: PositionDetail[] = [{ label: isLend ? 'Supplied' : 'Debt', value: `${posAmount(amount)} ${sym}` }];
+    if (usd) details.push({ label: 'Value', value: posUsd(posNum(usd, 0)) });
+    const { headline, rest } = extractHeadline(details, isLend ? 'Supplied' : 'Debt');
+    rows.push({
+      section, id: `marginfi-${section}-${bank || mint}`, connectorId: 'marginfi', kind: (isLend ? 'lend' : 'borrow') as ActionCategory,
+      title: isLend ? `${sym} supplied` : `${sym} borrowed`, ...(isLend ? { status: 'earning' } : {}),
+      headline, heroMint: mint || sym, details: rest,
+      cancel: {
+        kind: (isLend ? 'marginfi_withdraw' : 'marginfi_repay') as PreparedActionKind,
+        orderId: bank,
+        ...(acct ? { fields: { marginfiAccount: acct } } : {}),
+        ...(isLend ? {} : { label: t('Repay') }),
+      },
+    });
+  }
+  return rows;
+}
+
+// Lulo earn positions (BYOK). res.snapshot.rows = LuloPositionRow[]; when no key/API is available the
+// snapshot is `{ balances_unavailable: true }` → contribute nothing (graceful skip, never an error).
+// Withdraw targets the tier the deposit is in (withdrawType), keyed by mintAddress.
+function parseLuloRows(res: Record<string, unknown> | null | undefined): PositionLiveRow[] {
+  if (!res) return [];
+  const snapshot = res.snapshot && typeof res.snapshot === 'object' ? (res.snapshot as Record<string, unknown>) : null;
+  if (!snapshot || 'balances_unavailable' in snapshot) return [];
+  return posArray(snapshot.rows).map((r) => {
+    const mint = posStr(r.mintAddress) ?? '';
+    const sym = posStr(r.symbol) ?? posSymbol(mint);
+    const tier = posStr(r.depositType) ?? 'protected';
+    const details: PositionDetail[] = [];
+    if (posStr(r.amountUi)) details.push({ label: 'Supplied', value: `${posAmount(r.amountUi)} ${sym}` });
+    const earned = posStr(r.earnedInterestUi);
+    if (earned && posNum(earned) > 0) details.push({ label: 'Earned', value: `${posAmount(earned)} ${sym}`, tone: 'good' });
+    if (typeof r.apy === 'number') details.push({ label: 'APY', value: `${(r.apy as number).toFixed(2)}%`, tone: 'good' });
+    const { headline, rest } = extractHeadline(details, 'Supplied');
+    return {
+      section: 'lending', id: `lulo-${tier}-${mint || sym}`, connectorId: 'lulo', kind: 'lend' as ActionCategory,
+      title: `${sym} supplied`, status: 'earning', headline, heroMint: mint || sym, details: rest,
+      cancel: { kind: 'lulo_withdraw' as PreparedActionKind, orderId: mint, fields: { withdrawType: tier } },
+    };
+  });
+}
+
+// Drift Vaults — READ-ONLY. Vault deposit/withdraw prepares are disabled server-side after the 2026-04
+// exploit, so no manage button is offered (it would fail); existing depositors can still monitor. Rows
+// carry no mint/symbol, so the title is generic and there's no hero token logo.
+function parseDriftRows(res: Record<string, unknown> | null | undefined): PositionLiveRow[] {
+  if (!res) return [];
+  return posArray(res.positions).map((p) => {
+    const vault = posStr(p.vaultAddress) ?? '';
+    const details: PositionDetail[] = [];
+    if (posStr(p.valueAtSharePrice)) details.push({ label: 'Value', value: posUsd(posNum(p.valueAtSharePrice, 0)) });
+    if (posStr(p.shares)) details.push({ label: 'Shares', value: posAmount(p.shares) });
+    if (posNum(p.pendingWithdrawShares, 0) > 0) details.push({ label: 'Pending', value: `${posAmount(p.pendingWithdrawShares)} shares` });
+    const { headline, rest } = extractHeadline(details, 'Value');
+    return {
+      section: 'lending', id: `drift-${vault}`, connectorId: 'drift', kind: 'lend' as ActionCategory,
+      title: t('Drift vault'), status: 'read-only', headline, details: rest,
+      // No `cancel` → the card renders read-only (monitor, no Withdraw).
+    };
+  });
+}
+
+// Phoenix Perpetuals (perps section). res.snapshot.{positions,openOrders,triggers}. Open positions get a
+// one-tap Close (full close, by symbol). Resting orders / triggers render READ-ONLY for now — phoenix_
+// cancel_order needs the order's price-in-ticks, which the positions read doesn't expose, so cancel-from-
+// tab is deferred (cancel on Phoenix or via New Request). Only Phoenix maps to the perps section.
+function parsePhoenixRows(res: Record<string, unknown> | null | undefined): PositionLiveRow[] {
+  if (!res) return [];
+  const snapshot = res.snapshot && typeof res.snapshot === 'object' ? (res.snapshot as Record<string, unknown>) : null;
+  if (!snapshot) return [];
+  const rows: PositionLiveRow[] = [];
+  for (const p of posArray(snapshot.positions)) {
+    const symbol = posStr(p.symbol);
+    if (!symbol) continue;
+    const side = posStr(p.side);
+    const details: PositionDetail[] = [];
+    if (posStr(p.baseSize)) details.push({ label: 'Size', value: `${posAmount(p.baseSize)} ${symbol}` });
+    if (posStr(p.entryPriceUsd)) details.push({ label: 'Entry', value: posUsd(posNum(p.entryPriceUsd, 0)) });
+    if (posStr(p.markPriceUsd)) details.push({ label: 'Mark', value: posUsd(posNum(p.markPriceUsd, 0)) });
+    if (posStr(p.leverage)) details.push({ label: 'Leverage', value: `${posAmount(p.leverage)}x` });
+    if (posStr(p.liquidationPriceUsd)) details.push({ label: 'Liq. price', value: posUsd(posNum(p.liquidationPriceUsd, 0)), tone: 'warn' });
+    const pnl = posNum(p.unrealizedPnlUsd);
+    if (Number.isFinite(pnl)) details.push({ label: 'uPnL', value: posUsd(pnl), tone: pnl >= 0 ? 'good' : 'bad' });
+    const { headline, rest } = extractHeadline(details, 'Size');
+    rows.push({
+      section: 'perps', id: `phoenix-pos-${symbol}`, connectorId: 'phoenix', kind: 'perps' as ActionCategory,
+      title: side ? `${symbol} ${side}` : symbol, status: side, headline, details: rest,
+      cancel: { kind: 'phoenix_close' as PreparedActionKind, orderId: symbol, label: t('Close') },
+    });
+  }
+  for (const o of [...posArray(snapshot.openOrders), ...posArray(snapshot.triggers)]) {
+    const orderId = posStr(o.orderId);
+    const symbol = posStr(o.symbol);
+    if (!orderId || !symbol) continue;
+    const details: PositionDetail[] = [];
+    if (posStr(o.baseSize)) details.push({ label: 'Size', value: `${posAmount(o.baseSize)} ${symbol}` });
+    if (posStr(o.triggerTickPrice)) details.push({ label: 'Trigger', value: posAmount(o.triggerTickPrice) });
+    const { headline, rest } = extractHeadline(details, 'Size');
+    rows.push({
+      section: 'perps', id: `phoenix-ord-${orderId}`, connectorId: 'phoenix', kind: 'perps' as ActionCategory,
+      title: `${symbol} ${posStr(o.type) ?? t('order')}`, status: posStr(o.side), headline, details: rest,
+      // Read-only (no cancel) — see note above.
+    });
+  }
+  return rows;
+}
+
 // Stake reads have per-connector shapes (marinade snapshot, jito jitoSol, sanctum rows[]); parse
 // defensively — unknown shape contributes nothing → seeded fallback. No manage button v1.
 function parseStakeRows(connectorId: string, res: Record<string, unknown> | null | undefined): PositionLiveRow[] {
@@ -48716,7 +48982,7 @@ async function settleReads(
 }
 
 async function fetchPositionCategory(section: PositionSectionId, force = false): Promise<void> {
-  if (section === 'perps' || !state.address) return;
+  if (!state.address) return;
   const cluster = state.cluster;
   const existing = state.positionsLive[section];
   if (existing?.loading) return;
@@ -48742,14 +49008,45 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
       // Agentic approval inbox, so this read is the only place they can be recorded).
       reconcileDcaLifecycle(rec);
     } else if (section === 'lending') {
-      const res = await connectorRead('jupiter', 'earn');
-      if (res === null) throw new Error('unavailable');
-      const prices = await posPrices(posArray(res.positions).map((p) => posStr(p.assetMint)));
-      rows = parseLendRows(res, prices);
+      // Jupiter earn + the keyless lend connectors + Lulo (BYOK) + Drift (read-only). Each is independent
+      // (settleReads), so one failing never drops the others; only ALL failing is "unavailable". MarginFi
+      // is a 2-step read. Lulo (no key) / Drift (no positions) returning null simply contribute no rows.
+      const [jup, kam, sav, mfi, lulo, drift] = await settleReads([
+        connectorRead('jupiter', 'earn'),
+        connectorRead('kamino', 'positions'),
+        connectorRead('save', 'positions'),
+        connectorRead('marginfi', 'positions'),
+        connectorRead('lulo', 'positions'),
+        connectorRead('drift', 'positions'),
+      ]);
+      if ([jup, kam, sav, mfi, lulo, drift].every((r) => r === null)) throw new Error('unavailable');
+      // Only the always-on keyless connectors gate seed-expiry; Lulo (BYOK) / Drift being null is expected.
+      partial = [jup, kam, sav, mfi].includes(null);
+      const prices = jup ? await posPrices(posArray(jup.positions).map((p) => posStr(p.assetMint))) : new Map<string, WalletBalancePriceInfo>();
+      const mfiLegs = mfi ? await readMarginfiLegs(mfi) : [];
+      rows = [
+        ...parseLendRows(jup, prices),
+        ...parseKaminoRows(kam),
+        ...parseSaveRows(sav, 'lending'),
+        ...parseMarginfiLegRows(mfiLegs, 'lending'),
+        ...parseLuloRows(lulo),
+        ...parseDriftRows(drift),
+      ];
     } else if (section === 'borrowing') {
-      const res = await connectorRead('jupiter', 'positions');
-      if (res === null) throw new Error('unavailable');
-      rows = parseBorrowRows(res);
+      // Jupiter borrow + Save/MarginFi debt legs (Kamino Lend is supply-only, so it has no borrow rows).
+      const [jup, sav, mfi] = await settleReads([
+        connectorRead('jupiter', 'positions'),
+        connectorRead('save', 'positions'),
+        connectorRead('marginfi', 'positions'),
+      ]);
+      if (jup === null && sav === null && mfi === null) throw new Error('unavailable');
+      partial = [jup, sav, mfi].includes(null);
+      const mfiLegs = mfi ? await readMarginfiLegs(mfi) : [];
+      rows = [
+        ...parseBorrowRows(jup),
+        ...parseSaveRows(sav, 'borrowing'),
+        ...parseMarginfiLegRows(mfiLegs, 'borrowing'),
+      ];
     } else if (section === 'staking') {
       const [m, j, s] = await settleReads([
         connectorRead('marinade', 'positions'),
@@ -48776,6 +49073,11 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
       }
       const prices = await posPrices(lpMints); // ONE price fetch for all 3 LP connectors
       rows = [...parseLpRows('meteora', me, prices), ...parseLpRows('orca', o, prices), ...parseLpRows('raydium', ra, prices)];
+    } else if (section === 'perps') {
+      // Phoenix Perpetuals is the only perps-action connector (Jupiter perps is read-only, no positions read).
+      const res = await connectorRead('phoenix', 'positions');
+      if (res === null) throw new Error('unavailable');
+      rows = parsePhoenixRows(res);
     }
     // Discard if the cluster changed mid-flight (stale fetch).
     if (state.cluster !== cluster) return;
@@ -48986,6 +49288,16 @@ const MANAGE_ID_FIELD_BY_KIND: Record<string, string> = {
   meteora_claim_rewards: 'positionAddress',
   raydium_remove_liquidity: 'positionMint',
   raydium_collect_fees: 'positionMint',
+  // Keyless lend/borrow connectors: the id field matches each connector's reserve/bank form field
+  // (Kamino/Save use `token`, MarginFi uses `bankAddress` + carries marginfiAccount in cancel.fields).
+  kamino_withdraw: 'token',
+  save_withdraw: 'token',
+  save_repay: 'token',
+  marginfi_withdraw: 'bankAddress',
+  marginfi_repay: 'bankAddress',
+  lulo_withdraw: 'mintAddress',
+  // Phoenix perps: Close targets the market by symbol (one-tap full close, no amount prompt).
+  phoenix_close: 'symbol',
 };
 
 // Manage a live/seed position IN PLACE (cancel/withdraw/repay/remove/edit/collect): build the
@@ -55885,8 +56197,20 @@ function emptyCloudSession(status: Exclude<CloudSessionStatus, 'signed-in'>): Cl
 }
 
 function cloudErrorMessage(payload: unknown, status: number): string {
-  if (payload && typeof payload === 'object') {
-    const record = payload as Record<string, unknown>;
+  const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : undefined;
+  // A cloud 401 means the CLOUD STORAGE session is missing — not a connector/dApp login. The server's
+  // generic "Sign in required." (which would otherwise be surfaced verbatim below, e.g. as the body of
+  // the "Transaction error" toast when approving a Kamino action) reads as if the user must log into
+  // the connector. Replace that vague message with an explicit cloud-storage one; leave any more
+  // specific 401 body intact.
+  if (status === 401) {
+    const raw = (typeof record?.message === 'string' ? record.message
+      : typeof record?.error === 'string' ? record.error : '').trim();
+    if (!raw || /^sign[\s-]?in required\.?$/i.test(raw)) {
+      return t('Sign in to Cloud Storage to approve this request — no connector login needed.');
+    }
+  }
+  if (record) {
     if (typeof record.message === 'string' && record.message.trim()) return record.message;
     if (typeof record.error === 'string' && record.error.trim()) {
       if (status === 404 && record.error === 'not_found') return t('Agentic Cloud workflow APIs are not available from this host yet.');
@@ -66969,8 +67293,7 @@ const POSITIONS_SECTIONS: ReadonlyArray<{ id: PositionSectionId; title: string; 
   { id: 'borrowing', title: 'Borrowing', blurb: 'Outstanding debt and collateral.', categories: ['borrow'] },
   { id: 'staking', title: 'Staking', blurb: 'Staked SOL and liquid-staking tokens.', categories: ['stake'] },
   { id: 'liquidity', title: 'Liquidity', blurb: 'Provided liquidity positions and fees.', categories: ['lp'] },
-  // Perps intentionally omitted until the perps position read is implemented — keeping the
-  // 'perps' PositionSectionId + the perps guards below makes re-enabling a one-line change.
+  { id: 'perps', title: 'Perps', blurb: 'Open perpetual positions and orders.', categories: ['perps'] },
 ];
 
 function positionCategoryLabel(category: ActionCategory): string {
@@ -67014,9 +67337,16 @@ function positionSeedManage(p: PositionRecord): { kind: string; orderId: string;
   switch (p.category) {
     case 'lend':
       if (conn === 'jupiter') return { kind: 'jupiter_lend_earn_withdraw', orderId: str('assetMint'), label: t('Withdraw') };
+      if (conn === 'kamino') return { kind: 'kamino_withdraw', orderId: str('token'), label: t('Withdraw') };
+      if (conn === 'save') return { kind: 'save_withdraw', orderId: str('token'), label: t('Withdraw') };
+      if (conn === 'marginfi') return { kind: 'marginfi_withdraw', orderId: str('bankAddress'), label: t('Withdraw') };
+      if (conn === 'lulo') return { kind: 'lulo_withdraw', orderId: str('mintAddress'), label: t('Withdraw') };
+      // Drift is read-only (vault prepares disabled post-exploit) — no seed manage button.
       break;
     case 'borrow':
       if (conn === 'jupiter') return { kind: 'jupiter_lend_borrow_repay', orderId: str('positionId'), label: t('Repay') };
+      if (conn === 'save') return { kind: 'save_repay', orderId: str('token'), label: t('Repay') };
+      if (conn === 'marginfi') return { kind: 'marginfi_repay', orderId: str('bankAddress'), label: t('Repay') };
       break;
     case 'stake':
       if (conn === 'marinade') return { kind: 'marinade_liquid_unstake', orderId: '', label: t('Unstake') };
@@ -67033,6 +67363,10 @@ function positionSeedManage(p: PositionRecord): { kind: string; orderId: string;
       break;
     case 'dca':
       if (conn === 'jupiter') return { kind: 'jupiter_recurring_cancel_order', orderId: str('orderId'), label: t('Cancel') };
+      break;
+    case 'perps':
+      // Phoenix perp: Close the position by market symbol (one-tap full close).
+      if (conn === 'phoenix') return { kind: 'phoenix_close', orderId: str('symbol'), label: t('Close') };
       break;
   }
   return undefined;
@@ -67102,9 +67436,9 @@ function positionsSectionCount(section: (typeof POSITIONS_SECTIONS)[number], ope
   return open.filter((p) => section.categories.includes(p.category)).length;
 }
 
-// Total open across every real (non-perps) section — the count on the "All" filter.
+// Total open across every section — the count on the "All" filter.
 function positionsAllCount(open: PositionRecord[]): number {
-  return POSITIONS_SECTIONS.reduce((n, s) => (s.id === 'perps' ? n : n + positionsSectionCount(s, open)), 0);
+  return POSITIONS_SECTIONS.reduce((n, s) => n + positionsSectionCount(s, open), 0);
 }
 
 // Count for a single filter (0 for 'all' or an unknown/perps id that isn't in POSITIONS_SECTIONS).
@@ -67119,7 +67453,7 @@ function positionsFilterTitle(id: PositionsFilterId): string {
 }
 function positionsFilterBlurb(id: PositionsFilterId): string {
   return id === 'all'
-    ? t('Every open position across orders, lending, borrowing, staking and liquidity.')
+    ? t('Every open position across orders, lending, borrowing, staking, liquidity and perps.')
     : positionsSectionBlurb(id);
 }
 
@@ -67130,7 +67464,7 @@ function positionsSelector(open: PositionRecord[], mobile: boolean): string {
   if (mobile) {
     const options: SelectPickerOption[] = [
       { value: 'all', label: allCount ? `${t('All')} (${allCount})` : t('All') },
-      ...POSITIONS_SECTIONS.filter((s) => s.id !== 'perps').map((s) => {
+      ...POSITIONS_SECTIONS.map((s) => {
         const count = positionsSectionCount(s, open);
         return { value: s.id, label: count ? `${positionsSectionTitle(s.id)} (${count})` : positionsSectionTitle(s.id) };
       }),
@@ -67213,14 +67547,6 @@ function renderPositionsSection(
 
   let toolbar = '';
   let body: string;
-  if (sectionId === 'perps') {
-    return {
-      toolbar: '',
-      body: `<p class="positions-empty">${escapeHtml(t('Perps positions are not available yet. Jupiter\'s perps API is still in progress.'))}</p>`,
-      hasContent: false,
-      loading: false,
-    };
-  }
   if (entry?.loading && !entry.rows.length && !seededCards.length) {
     return { toolbar: '', body: `<p class="positions-empty">${escapeHtml(t('Loading your positions…'))}</p>`, hasContent: false, loading: true };
   }
@@ -67256,7 +67582,6 @@ function renderPositionsSection(
 // the freshest "Updated {when}" and disables while any section is loading.
 function positionsAllAggregateEntry(): PositionsLiveEntry {
   const entries = POSITIONS_SECTIONS
-    .filter((s) => s.id !== 'perps')
     .map((s) => state.positionsLive[s.id])
     .filter((e): e is PositionsLiveEntry => Boolean(e) && e!.cluster === state.cluster);
   return {
@@ -67279,11 +67604,10 @@ function positionsPanel(): string {
   if (state.address) {
     if (isAll) {
       for (const s of POSITIONS_SECTIONS) {
-        if (s.id === 'perps') continue;
         const cur = state.positionsLive[s.id];
         if (!cur || cur.cluster !== state.cluster) void fetchPositionCategory(s.id);
       }
-    } else if (filter !== 'perps') {
+    } else {
       const cur = state.positionsLive[filter];
       if (!cur || cur.cluster !== state.cluster) void fetchPositionCategory(filter);
     }
@@ -67293,7 +67617,7 @@ function positionsPanel(): string {
   if (state.address && !state.positionsPrefetched) {
     state.positionsPrefetched = true;
     for (const s of POSITIONS_SECTIONS) {
-      if (s.id !== 'perps') void fetchPositionCategory(s.id);
+      void fetchPositionCategory(s.id);
     }
   }
 
@@ -67305,7 +67629,6 @@ function positionsPanel(): string {
   if (isAll) {
     toolbar = positionsRefreshButton('all', positionsAllAggregateEntry());
     const sections = POSITIONS_SECTIONS
-      .filter((s) => s.id !== 'perps')
       .map((s) => ({ s, r: renderPositionsSection(s.id, open, { showRefresh: false }) }));
     const withContent = sections.filter(({ r }) => r.hasContent);
     if (withContent.length) {
