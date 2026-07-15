@@ -3634,6 +3634,7 @@ interface DemoState {
   workspaceStoragePanelOpen: boolean | null;
   activeMobileRailSheet: MobileRailSheet | null;
   activeExpandNoteField: ExpandNoteFieldRef | null;
+  expandedCardIds: Set<string>;
   aiSettings: AiSettings;
   aiSettingsPanelOpen: boolean | null;
   aiStatus: BridgeAiStatus | null;
@@ -4831,6 +4832,7 @@ const state: DemoState = {
   workspaceStoragePanelOpen: null,
   activeMobileRailSheet: null,
   activeExpandNoteField: null,
+  expandedCardIds: new Set<string>(),
   aiSettings: {
     ...initialAiSettings,
     apiKey: loadSessionAiApiKey(initialAiSettings),
@@ -12403,7 +12405,7 @@ function cliApproveView(): string {
   return cliFocusedShell({
     title: 'Review and sign',
     subtitle: 'The terminal queued this approval. Verify the details and sign.',
-    body: preparedActionCard(action),
+    body: preparedActionCard(action, { forceExpanded: true }),
     footer: `<p class="cli-focused-note">The CLI will report back once you sign or reject.</p>`,
   });
 }
@@ -14962,7 +14964,7 @@ function guidedDemoAgentFlowCard(step: GuidedDemoAgentFlowStep): string {
           <strong>${escapeHtml(td('Local demo'))}</strong>
         </div>
         <details class="guided-demo-agent-question">
-          <summary>${escapeHtml(td('Ask agent about this request'))}</summary>
+          <summary>${escapeHtml(td('Ask a follow-up'))}</summary>
         </details>
       ` : ''}
     </article>
@@ -31591,6 +31593,14 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
   const metaHint = generatedPlanMetaHint(displayRecord, guardrailBlocked);
   const agentReviewAction = agentReviewButton(record);
   const reviewActionLayoutClass = agentReviewAction ? 'has-agent-review-action' : 'solo-primary-action';
+  const expanded = state.expandedCardIds.has(record.id);
+  const collapsedRoute = plan.actionType === 'swap'
+    ? tokenRouteDisplaySummary(plan.parameters.inputToken || 'input', plan.parameters.outputToken || 'output').value
+    : planRecipientOrRoute(plan);
+  const collapsedVerdict = record.agentReview?.required
+    ? agentReviewStripLabel(record.agentReview.status, record.agentReview)
+    : (guardrailBlocked ? t('Blocked') : '');
+  const summaryLine = [collapsedRoute, collapsedVerdict].filter(Boolean).join(' · ');
   const primaryReviewAction = approvalCapable ? `
     <button
       class="review-action-inbox"
@@ -31634,7 +31644,9 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
           ${agentReviewAction}
         </div>
       </div>
-
+      ${expanded ? '' : `<p class="review-plan-collapsed-summary"${summaryLine ? ` title="${escapeHtml(summaryLine)}"` : ''}>${escapeHtml(summaryLine || t('Plan details'))}</p>`}
+      <div class="card-expand-row"><button type="button" class="utility card-expand-toggle" data-card-expand="${escapeHtml(record.id)}" aria-expanded="${expanded ? 'true' : 'false'}">${escapeHtml(expanded ? t('Hide details') : t('Show details'))}</button></div>
+      ${expanded ? `
       ${generatedPlanReviewSummaryGrid(displayRecord)}
       ${generatedPlanUserNote(plan)}
       ${generatedPlanConsistencyWarning(displayRecord)}
@@ -31663,6 +31675,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
         </details>
         ${generatedPlanCardFooterActions(displayRecord)}
       </div>
+      ` : ''}
     </article>
   `;
 }
@@ -32243,7 +32256,7 @@ function agentAskAnythingPanel(record: GeneratedPlanRecord): string {
   `).join('');
   return `
     <details class="agent-ask-panel">
-      <summary>${escapeHtml(t('Ask agent about this request'))}${exchanges.length ? ` (${exchanges.length})` : ''}</summary>
+      <summary>${escapeHtml(t('Ask a follow-up'))}${exchanges.length ? ` (${exchanges.length})` : ''}</summary>
       <div class="agent-ask-body">
         ${exchangesHtml}
         <form
@@ -33789,6 +33802,51 @@ function generatedPlansEmptyState(oneTimeOnly = false, filterHasHiddenMatches = 
   return signaturePlaceholder(t('No plans visible'), detail);
 }
 
+// The agent is the app's centerpiece, so the "run the decision agent" control is
+// a prominent switch (AI glyph + green accent + iOS-style toggle), not a checkbox.
+// Shared by New Request and Repeat; the handler owns the toggle in JS.
+function askAgentToggle(detail: string, extraClass = ''): string {
+  const on = state.askAgentAfterDraft;
+  const disabled = state.busy;
+  return `
+    <span
+      class="ask-agent-after-draft${on ? ' checked' : ''}${disabled ? ' is-disabled' : ''}${extraClass ? ` ${extraClass}` : ''}"
+      data-ask-agent-after-draft
+      role="switch"
+      aria-checked="${on ? 'true' : 'false'}"
+      tabindex="${disabled ? '-1' : '0'}"
+      ${disabled ? 'aria-disabled="true"' : ''}
+    >
+      <span class="ask-agent-icon" aria-hidden="true">${commandCenterIcon('ai')}</span>
+      <span class="ask-agent-copy">
+        <strong>${escapeHtml(t('Ask Agent'))}</strong>
+        <em>${escapeHtml(detail)}</em>
+      </span>
+      <span class="ask-agent-switch" aria-hidden="true"><span class="ask-agent-switch-thumb"></span></span>
+    </span>
+  `;
+}
+
+// Loud disconnected state: instead of a silently-hidden control, invite the user
+// to Connect AI (reuses the open-ai-setup action).
+function connectAiInlinePrompt(extraClass = ''): string {
+  return `
+    <button
+      type="button"
+      class="agent-connect-prompt${extraClass ? ` ${extraClass}` : ''}"
+      data-ai-action="open-ai-setup"
+      ${state.busy ? 'disabled' : ''}
+    >
+      <span class="ask-agent-icon" aria-hidden="true">${commandCenterIcon('ai')}</span>
+      <span class="ask-agent-copy">
+        <strong>${escapeHtml(t('Connect AI to enable agent review'))}</strong>
+        <em>${escapeHtml(t('The decision agent checks route, amount, and policy before you sign.'))}</em>
+      </span>
+      <span class="agent-connect-arrow" aria-hidden="true">→</span>
+    </button>
+  `;
+}
+
 function agentPlannerWorkbench(): string {
   const template = selectedTemplate();
   const notesRequired = templateRequiresUserNotes(template);
@@ -33808,8 +33866,8 @@ function agentPlannerWorkbench(): string {
     ? t('Describe what you want prepared or reviewed.')
     : t('Optional context, reason, or policy note saved with this plan.');
   const askAgentDetail = mockReviewAvailable && !aiPathConnected
-    ? t('Optional. Runs a local agent decision in Check after planning. No bridge, AI key, or wallet popup.')
-    : t('Optional. Runs the agent review in Check after planning. Sending for approval stays manual.');
+    ? t('Runs a local decision agent in Check - no bridge, key, or wallet popup. Returns approve / deny / needs-input before you sign.')
+    : t('The decision agent checks route, amount, and policy, then returns approve / deny / needs-input in Check before you sign.');
   // Native compaction: the template description moves to the section subtitle (agentPlanPanel),
   // so the mid-page description is always dropped on native. When the category resolves to a
   // single template (Swap, Send) the picker offers no real choice either, so the whole block goes.
@@ -33855,17 +33913,8 @@ function agentPlannerWorkbench(): string {
           </label>
           <div class="agent-actions signature-actions intent-document-actions">
             <div class="agent-actions-row">
-              ${reviewAfterDraftAvailable ? `
-                <label class="ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''}${state.busy ? ' is-disabled' : ''}" data-ask-agent-after-draft role="checkbox" aria-checked="${state.askAgentAfterDraft ? 'true' : 'false'}" tabindex="0">
-                  <input type="checkbox" tabindex="-1" aria-hidden="true" ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
-                  <span class="ask-agent-check" aria-hidden="true">${checkIcon()}</span>
-                  <span class="ask-agent-copy">
-                    <strong>${escapeHtml(t('Ask Agent'))}</strong>
-                    <em>${escapeHtml(askAgentDetail)}</em>
-                  </span>
-                </label>
-              ` : ''}
-              <button id="generatePlan" class="primary" ${draftActionBusy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}${escapeHtml(t('Creating plan...'))}` : escapeHtml(t('Create Plan'))}</button>
+              ${reviewAfterDraftAvailable ? askAgentToggle(askAgentDetail) : connectAiInlinePrompt()}
+              <button id="generatePlan" class="primary" ${draftActionBusy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}${escapeHtml(t('Creating plan...'))}` : escapeHtml(reviewAfterDraftAvailable && state.askAgentAfterDraft ? t('Create Plan + Agent Review') : t('Create Plan'))}</button>
             </div>
           </div>
         </div>
@@ -39514,6 +39563,7 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
   const historyLabel = plan.kind === 'recurring' ? t('Repeat payment done') : t('One-time done');
   const submissionPill = completedPlanSubmissionPill(plan);
   const connectorMeta = resolveConnectorMetaForAction(plan.actionKind, (plan.metadata ?? {}) as Record<string, unknown>);
+  const expanded = state.expandedCardIds.has(plan.id);
   return `
     <article class="generated-plan-card completed-plan-card ${focused ? 'focused' : ''}" ${focused ? 'data-completed-focus="true"' : ''}>
       <div class="completed-history-head">
@@ -39535,6 +39585,8 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
           ${completedPlanHero(plan)}
         </div>
       </div>
+      <div class="card-expand-row"><button type="button" class="utility card-expand-toggle" data-card-expand="${escapeHtml(plan.id)}" aria-expanded="${expanded ? 'true' : 'false'}">${escapeHtml(expanded ? t('Hide details') : t('Show details'))}</button></div>
+      ${expanded ? `
       ${completedPlanSummaryGrid(plan)}
       ${completedPlanSummaryNote(plan)}
       ${decisionProofBlock}
@@ -39580,6 +39632,7 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
           </button>
         </div>
       </div>
+      ` : ''}
     </article>
   `;
 }
@@ -39601,6 +39654,9 @@ function completedPlanCardMobile(plan: CompletedPlanRecord): string {
   const connectorMeta = resolveConnectorMetaForAction(plan.actionKind, (plan.metadata ?? {}) as Record<string, unknown>);
   const copyLabel = completedPlanHasReceipt(plan) ? t('Copy receipt JSON') : plan.signature ? t('Copy proof JSON') : t('Copy schedule JSON');
   const rows = completedPlanMobileSummaryRows(plan);
+  const expanded = state.expandedCardIds.has(plan.id);
+  const mobileMetric = completedPlanMetric(plan);
+  const collapsedSummary = [mobileMetric.primary, mobileMetric.secondary].filter(Boolean).join(' · ');
   return `
     <article class="generated-plan-card completed-plan-card mobile-completed-card ${focused ? 'focused' : ''}" ${focused ? 'data-completed-focus="true"' : ''}>
       <div class="mobile-completed-card-head">
@@ -39617,6 +39673,9 @@ function completedPlanCardMobile(plan: CompletedPlanRecord): string {
           <span>${escapeHtml(formatDateTime(plan.completedAt))}</span>
         </p>
       </div>
+      ${expanded ? '' : `<p class="completed-collapsed-summary"${collapsedSummary ? ` title="${escapeHtml(collapsedSummary)}"` : ''}>${escapeHtml(collapsedSummary || t('Receipt'))}</p>`}
+      <div class="card-expand-row"><button type="button" class="utility card-expand-toggle" data-card-expand="${escapeHtml(plan.id)}" aria-expanded="${expanded ? 'true' : 'false'}">${escapeHtml(expanded ? t('Hide details') : t('Show details'))}</button></div>
+      ${expanded ? `
       ${rows.length ? `
         <dl class="mobile-completed-summary-list" aria-label="${escapeHtml(t('Done work summary'))}">
           ${rows.map(completedPlanMobileSummaryRow).join('')}
@@ -39652,6 +39711,7 @@ function completedPlanCardMobile(plan: CompletedPlanRecord): string {
           </div>
         </div>
       </details>
+      ` : ''}
     </article>
   `;
 }
@@ -39804,7 +39864,12 @@ function completedPlanDisplayTitle(plan: CompletedPlanRecord): string {
   const title = plan.title.trim();
   if (!title) return plan.kind === 'recurring' ? t('Repeat payment done') : t('Completed record');
   const compactTitle = title.split(':')[0]?.trim() || title;
-  return compactTitle.length <= 54 ? compactTitle : `${compactTitle.slice(0, 51)}...`;
+  if (compactTitle.length <= 54) return compactTitle;
+  // Truncate on a word boundary (not mid-word) so long titles read cleanly; the
+  // full title stays in the h3 tooltip.
+  const cut = compactTitle.slice(0, 51);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > 30 ? cut.slice(0, lastSpace) : cut).trim()}…`;
 }
 
 function completedPlanHero(plan: CompletedPlanRecord): string {
@@ -39840,14 +39905,27 @@ function completedPlanMetric(plan: CompletedPlanRecord): { primary: string; seco
   }
   return {
     primary: amount,
-    secondary: plan.recipient ? tf('To {recipient}', { recipient: recipientDisplayLabel(plan.recipient) }) : formatDateTime(plan.completedAt),
+    // Completed time lives once in the header timestamp / View details, so the hero
+    // secondary shows only the recipient (or nothing), never a duplicate date.
+    secondary: plan.recipient ? tf('To {recipient}', { recipient: recipientDisplayLabel(plan.recipient) }) : '',
   };
+}
+
+// Round the leading numeric amount so the card display matches web + mobile
+// (full precision stays in View details). Mirrors formatDisplayAmountLabel's
+// 2-decimal cap for the hero.
+function roundDisplayAmountPrefix(value: string): string {
+  return value.replace(/^([+-]?(?:\d[\d,]*(?:\.\d+)?|\.\d+))/, (match) => {
+    const n = Number(match.replace(/,/g, ''));
+    if (!Number.isFinite(n)) return match;
+    return n.toLocaleString('en-US', { maximumFractionDigits: 2, minimumFractionDigits: 0, useGrouping: false });
+  });
 }
 
 function completedPlanAmountLabel(plan: CompletedPlanRecord): string {
   if (!plan.amount) return plan.txid ? `Tx ${short(plan.txid)}` : plan.signature ? `Proof ${short(plan.signature)}` : 'Completed';
   const token = completedPlanTokenValue(plan);
-  const formattedAmount = formatCompletedAmountText(plan.amount);
+  const formattedAmount = roundDisplayAmountPrefix(formatCompletedAmountText(plan.amount));
   if (!token) return formattedAmount;
   const route = parseTokenRoute(token);
   if (route) {
@@ -40025,18 +40103,19 @@ function completedPlanSummaryGrid(plan: CompletedPlanRecord): string {
           copyLabel: stringFromJsonLike(connectorRead.priceFeedId) ? t('Copy feed') : undefined,
           copyName: tf('{brand} price feed', { brand: 'Pyth' }),
         },
-        { label: t('Completed'), value: formatDateTime(plan.completedAt) },
       ]
     : [
     { label: t('Wallet'), value: plan.walletAddress ? short(plan.walletAddress) : t('No wallet'), title: plan.walletAddress || t('No wallet'), copyValue: plan.walletAddress || undefined },
-    {
+    // Proofs have no amount - the "Amount" cell was showing the proof id with a
+    // nonsensical "Copy token". Skip it for proofs (the proof id lives in its own
+    // cell). Completed time is de-duped to the header timestamp.
+    ...(completedPlanMobileShouldShowAmount(plan, amountLabel) ? [{
       label: t('Amount'),
       value: amountLabel,
       title: amountLabel,
-      tone: 'amount',
+      tone: 'amount' as const,
       copyActions: completedPlanTokenCopyActions(plan),
-    },
-    { label: t('Completed'), value: formatDateTime(plan.completedAt) },
+    }] : []),
     {
       label: t(record.label),
       value: record.value,
@@ -41772,6 +41851,18 @@ function bind(): void {
       const planId = button.dataset.generatedPlanId;
       if (!action || !planId) return;
       void runGeneratedPlanAction(planId, action);
+    });
+  }
+  // Compact card default: toggle a plan/approval card's expanded body. Its own
+  // button (never the CTA), so a CTA click cannot reach this handler.
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-card-expand]')) {
+    bindOnce(button, 'click', () => {
+      const id = button.dataset.cardExpand;
+      if (!id) return;
+      if (state.expandedCardIds.has(id)) state.expandedCardIds.delete(id);
+      else state.expandedCardIds.add(id);
+      state.error = '';
+      render();
     });
   }
   for (const form of document.querySelectorAll<HTMLFormElement>('form.agent-review-questions')) {
@@ -68567,7 +68658,7 @@ function preparedActionsList(actions = filteredPreparedActions()): string {
   const paginatedActions = paginateList(actions, 'inbox');
   return `
     <div class="inbox-list">
-      ${paginatedActions.items.map(preparedActionCard).join('')}
+      ${paginatedActions.items.map((action) => preparedActionCard(action)).join('')}
     </div>
     ${listPagination('inbox', paginatedActions, t('Sign Approval requests'))}
   `;
@@ -69051,7 +69142,19 @@ function chatActionCard(action: PreparedAction): string {
   `;
 }
 
-function preparedActionCard(action: PreparedAction): string {
+function preparedActionCard(action: PreparedAction, opts?: { forceExpanded?: boolean }): string {
+  const forceExpanded = opts?.forceExpanded === true;
+  const expanded = forceExpanded || state.expandedCardIds.has(action.id);
+  const collapsedRecipient = recipientParam(action);
+  const collapsedTokenSummary = inboxApprovalTokenSummary(action);
+  const collapsedRoute = collapsedRecipient
+    ? tf('To {recipient}', { recipient: recipientDisplayLabel(collapsedRecipient) })
+    : (collapsedTokenSummary.value && collapsedTokenSummary.value !== 'n/a' ? collapsedTokenSummary.value : '');
+  const collapsedVerdict = action.agentReview?.required
+    ? agentReviewStripLabel(action.agentReview.status, action.agentReview)
+    : '';
+  const collapsedDue = action.dueAt ? tf('Due {due}', { due: formatDateTime(action.dueAt) }) : '';
+  const summaryLine = [collapsedRoute, collapsedVerdict, collapsedDue].filter(Boolean).join(' · ');
   const browserWorkflow = isBrowserWorkflowId(action.id);
   const cloudWorkflow = action.workflowSource === 'cloud';
   const acpOutbound = isAcpOutboundAction(action);
@@ -69090,7 +69193,7 @@ function preparedActionCard(action: PreparedAction): string {
               ${action.txStatus && action.txStatus !== 'failed' ? `<span class="status-pill ${txTone(action.txStatus)}">${escapeHtml(tf('tx {status}', { status: action.txStatus }))}</span>` : ''}
             </div>
             ${actionTimelineHtml(action)}
-            <p class="ticket-meta-line">${escapeHtml(tf('{label} on {cluster} - due {due}', { label: preparedActionMetaLabel(action), cluster: action.cluster, due: formatDateTime(action.dueAt) }))}</p>
+            ${action.cluster && action.cluster !== 'mainnet-beta' ? `<p class="ticket-meta-line">${escapeHtml(titleCaseCluster(action.cluster))}</p>` : ''}
           </div>
           <div class="inbox-approval-decision">
             ${inboxApprovalHero(action)}
@@ -69099,6 +69202,9 @@ function preparedActionCard(action: PreparedAction): string {
             </div>
           </div>
         </div>
+        ${expanded ? '' : `<p class="inbox-approval-collapsed-summary"${summaryLine ? ` title="${escapeHtml(summaryLine)}"` : ''}>${escapeHtml(summaryLine || t('Approval details'))}</p>`}
+        ${forceExpanded ? '' : `<div class="card-expand-row"><button type="button" class="utility card-expand-toggle" data-card-expand="${escapeHtml(action.id)}" aria-expanded="${expanded ? 'true' : 'false'}">${escapeHtml(expanded ? t('Hide details') : t('Show details'))}</button></div>`}
+        ${expanded ? `
         ${inboxApprovalSummaryGrid(action)}
         ${inboxAcpOutboundCartBlock(action)}
         ${inboxAp2InboundRequestBlock(action)}
@@ -69124,7 +69230,7 @@ function preparedActionCard(action: PreparedAction): string {
           ${hasPendingExecutionLedgerEntry(action) || action.txid || action.status === 'failed' ? `<button class="utility inbox-footer-action" data-attach-tx-action="open" data-action-id="${escapeHtml(action.id)}">${escapeHtml(t('Attach existing transaction'))}</button>` : ''}
           ${action.status === 'failed' || action.txError ? `<button class="utility inbox-footer-action" data-debug-export data-action-id="${escapeHtml(action.id)}">${escapeHtml(t('Copy debug log'))}</button>` : ''}
           <button class="utility inbox-footer-action" data-action-op="archive" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''} title="${escapeHtml(t('Remove from Sign Approval without signing a denial proof.'))}">${escapeHtml(t('Archive'))}</button>
-          <button class="utility danger inbox-footer-action" data-action-op="reject" data-action-id="${action.id}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
+          <button class="utility inbox-footer-action inbox-deny-action" data-action-op="reject" data-action-id="${action.id}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
           <button class="utility danger recurring-delete-mini" data-inbox-delete="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Delete'))}</button>
           <div class="mobile-card-footer-actions inbox-approval-mobile-actions" aria-label="${escapeHtml(t('Mobile approval actions'))}">
             <details class="mobile-card-action-menu">
@@ -69134,12 +69240,13 @@ function preparedActionCard(action: PreparedAction): string {
                 ${hasPendingExecutionLedgerEntry(action) || action.txid || action.status === 'failed' ? `<button class="utility inbox-footer-action" data-attach-tx-action="open" data-action-id="${escapeHtml(action.id)}">${escapeHtml(t('Attach existing transaction'))}</button>` : ''}
                 ${action.status === 'failed' || action.txError ? `<button class="utility inbox-footer-action" data-debug-export data-action-id="${escapeHtml(action.id)}">${escapeHtml(t('Copy debug log'))}</button>` : ''}
                 <button class="utility inbox-footer-action" data-action-op="archive" data-action-id="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''} title="${escapeHtml(t('Remove from Sign Approval without signing a denial proof.'))}">${escapeHtml(t('Archive'))}</button>
-                <button class="utility danger inbox-footer-action" data-action-op="reject" data-action-id="${escapeHtml(action.id)}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
+                <button class="utility inbox-footer-action inbox-deny-action" data-action-op="reject" data-action-id="${escapeHtml(action.id)}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
                 <button class="utility danger recurring-delete-mini" data-inbox-delete="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Delete'))}</button>
               </div>
             </details>
           </div>
         </div>
+        ` : ''}
       </div>
     </article>
   `;
@@ -69212,9 +69319,11 @@ function inboxApprovalHero(action: PreparedAction): string {
   const acpOutbound = isAcpOutboundAction(action);
   const ap2Inbound = isAp2InboundAction(action);
   const primary = acpOutbound ? acpTotalLabel(action) : ap2Inbound ? ap2PaymentTotalLabel(action) : amountLabel(action);
+  // Due date lives once in the DUE grid cell (expanded) / the collapsed summary,
+  // so the hero shows only the recipient for transfers and nothing for swaps.
   const secondary = recipientParam(action)
     ? tf('To {recipient}', { recipient: recipientDisplayLabel(recipientParam(action)) })
-    : formatDateTime(action.dueAt);
+    : '';
   const subject = marketAmountSubjectForAction(action);
   const context = acpOutbound
     ? tf('ACP cart {id}', { id: acpCartId(action) })
@@ -69227,7 +69336,7 @@ function inboxApprovalHero(action: PreparedAction): string {
   return `
     <div class="inbox-approval-value" title="${escapeHtml(marketHeroTitle(primary, secondary, subject))}">
       ${marketAmountLineHtml(primary, subject)}
-      <span>${escapeHtml(secondary)}</span>
+      ${secondary ? `<span>${escapeHtml(secondary)}</span>` : ''}
       ${context ? `<span class="inbox-approval-context">${escapeHtml(context)}</span>` : ''}
     </div>
   `;
@@ -69498,7 +69607,9 @@ function marketHeroTitle(primary: string, secondary: string, subject: MarketAmou
 
 function formatDisplayAmountLabel(value: string): string {
   const trimmed = value.trim();
-  const match = trimmed.match(/^([+-]?\d[\d,]*(?:\.\d+)?)\s+([A-Za-z][A-Za-z0-9-]{0,15})$/);
+  // Accept a leading-dot decimal (".02 SOL") so it normalizes to "0.02 SOL"
+  // instead of bypassing formatting and rendering without the leading zero.
+  const match = trimmed.match(/^([+-]?(?:\d[\d,]*(?:\.\d+)?|\.\d+))\s+([A-Za-z][A-Za-z0-9-]{0,15})$/);
   if (!match || !match[1] || !match[2]) return value;
   const amount = Number(match[1].replace(/,/g, ''));
   if (!Number.isFinite(amount)) return value;
@@ -71255,19 +71366,12 @@ function recurringComposer(): string {
         </label>
       </div>
       <div class="recurring-create-primary-row">
-        ${aiPathConnected ? `
-          <label class="ask-agent-after-draft recurring-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''}${state.busy ? ' is-disabled' : ''}" data-ask-agent-after-draft role="checkbox" aria-checked="${state.askAgentAfterDraft ? 'true' : 'false'}" tabindex="0">
-            <input type="checkbox" tabindex="-1" aria-hidden="true" ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
-            <span class="ask-agent-check" aria-hidden="true">${checkIcon()}</span>
-            <span class="ask-agent-copy">
-              <strong>${escapeHtml(t('Ask Agent'))}</strong>
-              <em>${escapeHtml(t('Optional. Agent denial or missing information creates the repeat paused.'))}</em>
-            </span>
-          </label>
-        ` : '<span class="recurring-action-spacer"></span>'}
+        ${aiPathConnected
+          ? askAgentToggle(t('The decision agent checks the schedule, amount, and policy, then returns approve / deny / needs-input in Check. A denial or missing info creates the repeat paused.'), 'recurring-agent-after-draft')
+          : connectAiInlinePrompt('recurring-agent-after-draft')}
         <div class="recurring-form-actions contract-actions">
           <div class="agent-actions-row recurring-actions-row">
-            <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>${escapeHtml(createLabel)}</button>
+            <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>${escapeHtml(aiPathConnected && state.askAgentAfterDraft ? tf('{label} + Agent Review', { label: createLabel }) : createLabel)}</button>
           </div>
           ${actionHelper ? `<span class="contract-helper accent-note">${escapeHtml(actionHelper)}</span>` : ''}
         </div>

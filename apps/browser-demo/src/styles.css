@@ -9753,22 +9753,20 @@ code {
   text-transform: uppercase;
 }
 
-.agent-path-pill.hosted {
-  background: rgba(140, 164, 255, 0.12);
-  border-color: rgba(140, 164, 255, 0.34);
-  color: #d9e0ff;
+/* On-palette AI-path badges: the green family marks local/on-device paths
+   (bridge / device-agent / plan-connector); cloud + session use a clean neutral
+   instead of the off-palette indigo/purple. The label text conveys the path. */
+.agent-path-pill.hosted,
+.agent-path-pill.session {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(224, 230, 226, 0.18);
+  color: rgba(214, 223, 220, 0.92);
 }
 
 .agent-path-pill.bridge {
   background: rgba(63, 189, 131, 0.14);
   border-color: rgba(139, 205, 170, 0.36);
   color: #dfffee;
-}
-
-.agent-path-pill.session {
-  background: rgba(212, 152, 246, 0.14);
-  border-color: rgba(212, 152, 246, 0.34);
-  color: #efd9ff;
 }
 
 .agent-path-pill.device-agent {
@@ -12644,6 +12642,12 @@ button.danger:hover:not(:disabled) {
   display: grid;
   gap: 8px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* When a drawer (Saved proofs / Activity) is expanded, it takes the full width
+   so its body is not trapped in the 50% column on desktop. */
+.inbox-approval-drawers:has(> details[open]) {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .inbox-approval-drawers > details {
@@ -21884,75 +21888,150 @@ button.danger:hover:not(:disabled) {
   justify-content: flex-end;
 }
 
-.route-app .agent-actions-row > .ask-agent-after-draft {
+.route-app .agent-actions-row > .ask-agent-after-draft,
+.route-app .agent-actions-row > .agent-connect-prompt {
   flex: 0 1 560px;
   margin-right: auto;
   max-width: min(560px, 100%);
   min-height: 42px;
 }
 
-.route-app .ask-agent-after-draft {
+/* Ask Agent is a first-class switch: AI glyph badge + copy + iOS-style toggle,
+   green-accented when on. The disconnected prompt shares the badge + copy. */
+.route-app .ask-agent-after-draft,
+.route-app .agent-connect-prompt {
   align-items: center;
   background: rgba(255, 255, 255, 0.022);
-  border: 1px solid rgba(224, 230, 226, 0.08);
-  border-radius: 8px;
+  border: 1px solid rgba(224, 230, 226, 0.1);
+  border-radius: 10px;
   cursor: pointer;
   display: grid;
-  gap: 10px;
-  grid-template-columns: 16px 22px minmax(0, 1fr);
+  gap: 11px;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
   min-width: 0;
-  padding: 8px 10px;
+  padding: 9px 12px;
+  text-align: left;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.route-app .agent-connect-prompt {
+  appearance: none;
+  border-style: dashed;
+  border-color: rgba(139, 205, 170, 0.3);
+  color: inherit;
+  font: inherit;
+  width: 100%;
 }
 
 .route-app .ask-agent-after-draft:hover {
-  border-color: rgba(139, 205, 170, 0.22);
+  border-color: rgba(139, 205, 170, 0.28);
 }
 
-.route-app .ask-agent-after-draft input {
-  accent-color: var(--accent);
-  margin: 0;
-  pointer-events: none;
+.route-app .agent-connect-prompt:hover:not(:disabled) {
+  background: rgba(52, 211, 153, 0.06);
+  border-color: rgba(139, 205, 170, 0.5);
 }
 
-.route-app .ask-agent-after-draft.is-disabled {
+.route-app .ask-agent-after-draft.checked {
+  background:
+    linear-gradient(180deg, rgba(21, 60, 43, 0.34), rgba(255, 255, 255, 0.014)),
+    rgba(17, 21, 20, 0.4);
+  border-color: rgba(94, 231, 158, 0.34);
+}
+
+.route-app .ask-agent-after-draft.is-disabled,
+.route-app .agent-connect-prompt:disabled {
   cursor: not-allowed;
   opacity: 0.6;
 }
 
-.route-app .ask-agent-after-draft .ask-agent-check {
+.route-app .ask-agent-after-draft .ask-agent-icon,
+.route-app .agent-connect-prompt .ask-agent-icon {
   align-items: center;
-  background: rgba(255, 255, 255, 0.028);
-  border: 1px solid rgba(224, 230, 226, 0.08);
-  border-radius: 999px;
-  color: var(--accent);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(224, 230, 226, 0.1);
+  border-radius: 8px;
+  color: rgba(139, 205, 170, 0.85);
   display: inline-flex;
-  height: 22px;
+  flex: 0 0 auto;
+  height: 34px;
   justify-content: center;
-  width: 22px;
+  width: 34px;
 }
 
-.route-app .ask-agent-after-draft .ask-agent-check svg {
-  height: 12px;
-  width: 12px;
+.route-app .ask-agent-after-draft.checked .ask-agent-icon {
+  background: rgba(52, 211, 153, 0.16);
+  border-color: rgba(94, 231, 158, 0.34);
+  color: #7de7b0;
 }
 
-.route-app .ask-agent-after-draft .ask-agent-copy {
+.route-app .ask-agent-after-draft .ask-agent-icon svg,
+.route-app .agent-connect-prompt .ask-agent-icon svg {
+  height: 18px;
+  width: 18px;
+}
+
+.route-app .ask-agent-after-draft .ask-agent-copy,
+.route-app .agent-connect-prompt .ask-agent-copy {
   display: grid;
   gap: 2px;
+  min-width: 0;
 }
 
-.route-app .ask-agent-after-draft strong {
+.route-app .ask-agent-after-draft strong,
+.route-app .agent-connect-prompt strong {
   color: var(--text);
-  font-size: 0.82rem;
+  font-size: 0.84rem;
   font-weight: 800;
   line-height: 1.15;
 }
 
-.route-app .ask-agent-after-draft em {
+.route-app .agent-connect-prompt strong {
+  color: #8fd9b2;
+}
+
+.route-app .ask-agent-after-draft em,
+.route-app .agent-connect-prompt em {
   color: var(--muted);
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   font-style: normal;
-  line-height: 1.28;
+  line-height: 1.3;
+}
+
+.route-app .agent-connect-prompt .agent-connect-arrow {
+  color: #8fd9b2;
+  flex: 0 0 auto;
+  font-size: 1.05rem;
+  font-weight: 800;
+}
+
+/* iOS-style toggle track + thumb. */
+.route-app .ask-agent-after-draft .ask-agent-switch {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 2px;
+  transition: background 150ms ease;
+  width: 38px;
+}
+
+.route-app .ask-agent-after-draft.checked .ask-agent-switch {
+  background: rgba(52, 211, 153, 0.92);
+}
+
+.route-app .ask-agent-after-draft .ask-agent-switch-thumb {
+  background: #fff;
+  border-radius: 999px;
+  height: 18px;
+  transition: transform 150ms ease;
+  width: 18px;
+}
+
+.route-app .ask-agent-after-draft.checked .ask-agent-switch-thumb {
+  transform: translateX(16px);
 }
 
 .route-app .ai-settings-panel[data-layout="ai-setup-panel"] {
@@ -24221,6 +24300,13 @@ button.danger:hover:not(:disabled) {
   margin: 0;
 }
 
+/* Evidence / proof / non-swap plans put a descriptive sentence in the Route cell.
+   Those grids reflow on equal auto-fit columns so a long Route no longer crushes
+   the fixed 180px slot while Risk sits squished at 96px. */
+.review-plan-summary-grid:not(.wallet-slippage-route-risk-grid) {
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
 .review-plan-summary-grid div {
   background: rgba(255, 255, 255, 0.024);
   border: 1px solid rgba(224, 230, 226, 0.09);
@@ -24418,16 +24504,18 @@ button.danger:hover:not(:disabled) {
   box-shadow: 0 10px 24px rgba(63, 189, 131, 0.16);
 }
 
+/* On-palette primary: "Send for approval" now uses the app's green (matching
+   "Sign proof") instead of the off-palette indigo. */
 .review-action-inbox {
-  background: rgba(140, 164, 255, 0.12);
-  border-color: rgba(140, 164, 255, 0.34);
-  color: #d9e0ff;
+  background: rgba(63, 189, 131, 0.24);
+  border-color: rgba(139, 205, 170, 0.5);
+  color: #eafff4;
 }
 
 .review-action-inbox:hover:not(:disabled) {
-  background: rgba(140, 164, 255, 0.18);
-  border-color: rgba(166, 185, 255, 0.5);
-  box-shadow: 0 10px 24px rgba(87, 107, 217, 0.16);
+  background: rgba(63, 189, 131, 0.32);
+  border-color: rgba(163, 226, 190, 0.66);
+  box-shadow: 0 10px 24px rgba(63, 189, 131, 0.18);
 }
 
 .review-action-agent {
@@ -24613,6 +24701,31 @@ button.danger:hover:not(:disabled) {
 
   .review-plan-footer-actions button {
     flex: 1 1 128px;
+  }
+}
+
+/* Desktop: collapse the secondary buttons (Check card: Use / Full details / Save
+   as template / Archive / Delete; Sign Approval: Archive / Deny / Delete + conditionals)
+   into the same compact "More actions" overflow the mobile card uses, so only the
+   primary CTA + Ask-agent stay exposed in the card header. Mobile keeps its own
+   full-width grid below 900px. */
+@media (min-width: 900px) {
+  .review-plan-footer-actions > button,
+  .inbox-approval-footer-row > button {
+    display: none;
+  }
+
+  .review-plan-footer-actions .mobile-card-footer-actions,
+  .inbox-approval-footer-row .mobile-card-footer-actions {
+    display: inline-flex;
+    width: auto;
+  }
+
+  .review-plan-footer-actions .mobile-card-action-menu > summary,
+  .inbox-approval-footer-row .mobile-card-action-menu > summary {
+    min-height: 30px;
+    padding: 0 12px;
+    width: auto;
   }
 }
 
@@ -25259,6 +25372,12 @@ button.danger:hover:not(:disabled) {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+/* When a drawer (Activity / View details) is expanded, it takes the full width
+   so its body is not trapped in the 50% column on desktop. */
+.completed-history-drawers:has(> details[open]) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .completed-history-drawers .record-activity,
 .completed-history-details {
   background: rgba(255, 255, 255, 0.022);
@@ -25494,7 +25613,8 @@ button.danger:hover:not(:disabled) {
   justify-content: space-between;
 }
 
-.route-app .recurring-create-primary-row > .ask-agent-after-draft {
+.route-app .recurring-create-primary-row > .ask-agent-after-draft,
+.route-app .recurring-create-primary-row > .agent-connect-prompt {
   align-self: start;
   max-width: min(560px, 100%);
   padding-block: 7px;
@@ -26506,7 +26626,51 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .review-plan-list {
-  gap: 8px;
+  gap: 14px;
+}
+
+/* Sign Approval list gap parity with the Check list (was 10px). */
+.route-app .inbox-list {
+  gap: 14px;
+}
+
+/* Deny is a decision, not a destructive action: amber caution, not Delete-red. */
+.route-app button.inbox-deny-action {
+  background: rgba(214, 168, 79, 0.08);
+  border-color: rgba(214, 168, 79, 0.34);
+  color: #f0cd8f;
+}
+
+.route-app button.inbox-deny-action:hover:not(:disabled) {
+  background: rgba(214, 168, 79, 0.14);
+  border-color: rgba(224, 184, 104, 0.5);
+}
+
+/* Compact card default: collapsed cards show a one-line summary + a "Show details"
+   toggle; the full body renders only when expanded. */
+.route-app .inbox-approval-collapsed-summary,
+.route-app .review-plan-collapsed-summary,
+.route-app .completed-collapsed-summary {
+  color: rgba(196, 205, 202, 0.74);
+  font-size: 0.82rem;
+  font-weight: 620;
+  line-height: 1.3;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.route-app .card-expand-row {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.route-app button.card-expand-toggle {
+  font-size: 0.76rem;
+  min-height: 28px;
+  padding: 0 12px;
+  width: auto;
 }
 
 .route-app .review-plan-list .review-plan-card,
@@ -26514,8 +26678,10 @@ button.danger:hover:not(:disabled) {
 .route-app .recurring-item.recurring-card,
 .route-app .completed-plan-card,
 .route-app .signed-artifact-row.receipt-proof-card {
+  /* Green top-accent via inset shadow (a border-color rule below overrides
+     border-top, so the accent lives in the shadow where it always wins). */
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.026),
+    inset 0 2px 0 rgba(139, 205, 170, 0.24),
     0 10px 24px rgba(0, 0, 0, 0.16);
 }
 
@@ -33361,16 +33527,10 @@ button.danger:hover:not(:disabled) {
     min-height: 50px;
   }
 
-  .route-app .agent-actions-row > .ask-agent-after-draft {
+  .route-app .agent-actions-row > .ask-agent-after-draft,
+  .route-app .agent-actions-row > .agent-connect-prompt {
     min-height: 42px;
-    padding: 8px;
-  }
-
-  .route-app .ask-agent-copy em {
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 1;
-    display: -webkit-box;
-    overflow: hidden;
+    padding: 8px 10px;
   }
 
   .route-app .draft-flow-hint {
@@ -33668,14 +33828,7 @@ button.danger:hover:not(:disabled) {
 
   .route-app .mobile-recurring-contract .recurring-agent-after-draft {
     min-height: 42px;
-    padding: 8px;
-  }
-
-  .route-app .mobile-recurring-contract .ask-agent-copy em {
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 1;
-    display: -webkit-box;
-    overflow: hidden;
+    padding: 8px 10px;
   }
 
   .route-app .mobile-recurring-contract .recurring-form-actions.contract-actions {
@@ -34812,10 +34965,10 @@ button.danger:hover:not(:disabled) {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  /* Scale the Drafted / Queued / Wallet / Signed timeline inside Needs Approval
-     cards on mobile so all phases fit without horizontal overflow. */
-  .route-app .approval-ticket.inbox-approval-card .ticket-meta-line,
-  .route-app .approval-ticket.inbox-approval-card .tx-timeline-step[data-tx-timeline-step="wallet"] {
+  /* Mobile hides the redundant sub-line only; the full 6-step timeline
+     (incl. Wallet) now shows on both platforms and scrolls horizontally if
+     it can't fit (the scaling rules below keep it compact). */
+  .route-app .approval-ticket.inbox-approval-card .ticket-meta-line {
     display: none;
   }
 
@@ -35227,11 +35380,19 @@ button.danger:hover:not(:disabled) {
     min-width: 0;
   }
 
-  /* Change 3: Details + More actions share a 50/50 footer row on the Check card. */
+  /* Change 3: Details + More actions share a 50/50 footer row on the Check card
+     while both are collapsed. When Details is expanded it must take the full card
+     width, otherwise its body (mints, constraint hash, extra context) is trapped
+     in the 50% column and wraps one character per line. */
   .route-app.android-shell .review-plan-footer-row,
   .route-app.ios-native-shell .review-plan-footer-row {
     align-items: start;
     grid-template-columns: 1fr 1fr;
+  }
+
+  .route-app.android-shell .review-plan-footer-row:has(> .review-plan-details[open]),
+  .route-app.ios-native-shell .review-plan-footer-row:has(> .review-plan-details[open]) {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   /* Change 4: swap summary grid -> Wallet (full) / Slippage | Risk / Route (full).

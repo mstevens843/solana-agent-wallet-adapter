@@ -556,8 +556,11 @@ function connectorOperationDisplayLabel(
   actionKind: string | undefined,
 ): string {
   const connectorLabel = compactConnectorName(connector?.name ?? form.connectorId);
+  // When a specific sub-action branch is chosen, its label is the authoritative
+  // action - don't also prepend the parent form's both-directions operationLabel
+  // (e.g. Lulo's "Deposit or withdraw"), which leaks "Or Withdraw" into the title.
   const baseParts = branch
-    ? [form.operationLabel, branch.label]
+    ? [branch.label]
     : [form.operationLabel];
   const normalizedBase = baseParts
     .map(connectorTitleSegment)
