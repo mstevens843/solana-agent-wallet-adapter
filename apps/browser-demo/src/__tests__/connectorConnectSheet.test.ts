@@ -218,6 +218,9 @@ describe('connector connect native sheet', () => {
     const panelBlock = sourceBetween('function websitePlanConnectorSetupPanel', 'function commandCenterStoragePanel');
     const actionBlock = sourceBetween("case 'connector-connect':", "case 'open-web-plan-connector':");
     const disconnectBlock = sourceBetween('async function runDisconnectWebsitePlanConnector', 'async function runSelectConnector');
+    const routeActivateBlock = sourceBetween('function activateWebsitePlanConnectorSetup', 'function activateAiReviewSetupTab');
+    const tabActivateBlock = sourceBetween('function activateAiReviewSetupTab', 'function closeMobileRailSheet');
+    const connectorControlBlock = sourceBetween("for (const control of document.querySelectorAll<HTMLSelectElement>('[data-ai-control=\"plan-connector-connector\"]'))", "for (const control of document.querySelectorAll<HTMLSelectElement>('[data-ai-control=\"device-agent-secret-store-mode\"]'))");
     const cssBlock = stylesBetween(
       '.rail-ai-settings .website-plan-connector-panel[data-plan-connector-rail="true"] {',
       '.website-plan-connector-status {',
@@ -235,6 +238,12 @@ describe('connector connect native sheet', () => {
     expect(panelBlock).toContain("rail ? '' : '<p class=\"ai-security-note compact\"");
     expect(panelBlock).toContain('disconnect-web-plan-connector');
     expect(actionBlock).toContain("case 'disconnect-web-plan-connector':");
+    expect(routeActivateBlock).toContain("state.aiSettings.agentEngine = 'connector';");
+    expect(routeActivateBlock).toContain('Plan Connector route selected.');
+    expect(tabActivateBlock).toContain("state.aiReviewSetupTab = tab;");
+    expect(tabActivateBlock).toContain('Plan Connector setup opened.');
+    expect(tabActivateBlock).not.toContain("state.aiSettings.agentEngine = 'connector';");
+    expect(connectorControlBlock).not.toContain("state.aiSettings.agentEngine = 'connector';");
     expect(disconnectBlock).toContain("state.aiReviewSetupTab = 'plan-connector';");
     expect(disconnectBlock).not.toContain("state.aiReviewSetupTab = 'api-key';");
     expect(disconnectBlock).toContain("bridgeRequest<BridgeAiStatus>('/bridge/ai/session-key'");

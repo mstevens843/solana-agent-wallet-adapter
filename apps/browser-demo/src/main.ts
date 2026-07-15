@@ -15960,7 +15960,7 @@ function activateWebsitePlanConnectorSetup(options: { focus?: boolean } = {}): v
   state.aiSettings.connector = preferredPlanConnector();
   state.aiSettings.apiKey = '';
   clearCurrentSessionAiApiKey();
-  resetAiPlannerConfirmation('Plan Connector selected. Run the command in Terminal, then refresh status.');
+  resetAiPlannerConfirmation('Plan Connector route selected. Run the command in Terminal, then refresh status.');
   savePersistedState();
   void syncCloudPreference('ai-settings');
   render();
@@ -15968,8 +15968,16 @@ function activateWebsitePlanConnectorSetup(options: { focus?: boolean } = {}): v
 }
 
 function activateAiReviewSetupTab(tab: AiReviewSetupTab): void {
-  if (tab === 'plan-connector' && websitePlanConnectorSetupAvailable()) {
-    activateWebsitePlanConnectorSetup();
+  if (tab === 'plan-connector') {
+    if (state.aiReviewSetupTab === tab) return;
+    state.aiReviewSetupTab = tab;
+    if (websitePlanConnectorSetupAvailable()) {
+      resetAiPlannerConfirmation('Plan Connector setup opened. Use the route card or command to select it.');
+      savePersistedState();
+      render();
+      return;
+    }
+    render();
     return;
   }
   state.aiReviewSetupTab = tab;
@@ -21225,7 +21233,7 @@ function commandAiRouteCards(): string {
       detail: hostedCloudSignInRequired
         ? t('Cloud sign-in required for Hosted BYOK relay. Your AI key is not stored.')
         : t('Connect a preset provider key through Agentic for AI agent requests.'),
-      meta: t('Cloud AI connection'),
+      meta: t('Cloud'),
       available: true,
     },
     {
@@ -21233,7 +21241,7 @@ function commandAiRouteCards(): string {
       mode: 'bridge',
       title: t('Local Bridge AI'),
       detail: t('Connect the local runtime so AI agent requests can use this machine.'),
-      meta: t('Local AI connection'),
+      meta: t('Local'),
       available: !mobileAiPathPolicy,
     },
     {
@@ -21241,7 +21249,7 @@ function commandAiRouteCards(): string {
       mode: 'session',
       title: IS_ANDROID_APP ? t('Android Session') : (IS_IOS_APP || state.iosNativeEnvironment.isIosNative) ? t('iOS Session') : t('Browser Session'),
       detail: tf('Connect a temporary key in {location} without saving it to Agentic.', { location: (IS_ANDROID_APP || IS_IOS_APP || state.iosNativeEnvironment.isIosNative) ? t('this app runtime') : t('this tab') }),
-      meta: t('Session AI connection'),
+      meta: t('Session'),
       // Session is a browser/web route, not a native mobile app route.
       available: !IS_TAURI_APP && !mobileAiPathPolicy,
     },
@@ -21249,16 +21257,16 @@ function commandAiRouteCards(): string {
       id: 'device-agent',
       mode: 'device-agent',
       title: IS_TAURI_APP && state.tauriBridgeStatus?.bridgeReachable
-        ? t('Desktop Device Agent AI')
-        : t('Device Agent AI'),
+        ? t('Desktop Device Agent')
+        : t('Device Agent'),
       detail: IS_TAURI_APP && state.tauriBridgeStatus?.bridgeReachable
         ? t('Routed through the local desktop bridge. Agent requests stay on this machine and never round-trip to the cloud.')
         : IS_ANDROID_APP
           ? t('Connect the on-device runtime so agent requests stay inside this app boundary.')
           : t('Connect the gated Device Agent setup for this wallet.'),
       meta: IS_TAURI_APP && state.tauriBridgeStatus?.bridgeReachable
-        ? t('Desktop AI connection')
-        : t('Device AI connection'),
+        ? t('Desktop')
+        : t('On-device'),
       available: mobileAiPathPolicy || deviceAgentModeVisible(),
     },
     {
@@ -21630,7 +21638,7 @@ function commandAiRouteCard(mode: AiSettings['mode'], title: string, detail: str
   return `
     <article class="command-route-card ${active ? 'active' : ''} ${configured && !active ? 'configured-inactive' : ''}">
       <div>
-        <span>${escapeHtml(configured && !active ? tf('{meta} - configured', { meta }) : meta)}</span>
+        <span>${escapeHtml(configured && !active ? tf('{meta} - configured', { meta }) : meta)}${mode === 'device-agent' ? `<span class="command-route-recommended">${escapeHtml(t('Recommended'))}</span>` : ''}</span>
         <strong>${escapeHtml(title)}</strong>
         <p>${escapeHtml(detail)}</p>
         ${tagline ? `<em class="command-route-foot">${escapeHtml(tagline)}</em>` : ''}
@@ -21683,7 +21691,7 @@ function commandPlanConnectorRouteCard(): string {
     : paired;
   const action = website ? 'open-web-plan-connector' : 'open-plan-connector-sheet';
   const meta = website
-    ? connected ? t('Website plan connected') : t('Website plan connection')
+    ? connected ? t('Plan connected') : t('Plan')
     : paired ? t('Computer plan connected') : t('Computer plan connection');
   const detail = website
     ? connected
@@ -21929,12 +21937,8 @@ function commandCenterStoragePanel(): string {
 
         ${localWorkspacePrompt('cloud')}
 
-        ${commandCloudStorageEducation()}
-
-        <div class="command-storage-note">
-          <strong>${escapeHtml(t('Wallet safety'))}</strong>
-          <span>${escapeHtml(t('Cloud sign-in uses your wallet as identity only. It does not grant spending authority.'))}</span>
-          <span>${escapeHtml(t('Signed-out plans, approvals, and proofs stay on this device. No localhost is required.'))}</span>
+        <div class="command-storage-docs-link">
+          <a href="/docs/cloud-storage" data-site-link="/docs/cloud-storage">${escapeHtml(t('How Cloud Storage works'))} →</a>
         </div>
 
         ${commandCloudStorageDangerZone()}
@@ -22093,7 +22097,7 @@ function commandStorageDeviceCard(): string {
       </div>
       <div class="command-storage-actions">
         ${signedIn
-          ? `<button type="button" class="utility" data-cloud-action="sign-out" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Sign out to use device'))}</button>`
+          ? `<button type="button" class="utility" data-cloud-action="sign-out" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Use device'))}</button>`
           : active
             ? `<button type="button" class="utility" disabled>${escapeHtml(t('Active'))}</button>`
             : `<button type="button" class="utility" data-workflow-mode="auto" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Use browser storage'))}</button>`}
@@ -36734,7 +36738,8 @@ function currentAiKeyActionConfigured(): boolean {
     const status = visibleBridgeAiStatus();
     return Boolean(isBridgeAiConfigured(status) && bridgeAiEngine(status) !== 'connector');
   }
-  return false;
+  // Hosted BYOK / Browser Session: configured once a key is present and the route is confirmed.
+  return stagedKey && isAiPlannerConfirmedForCurrentSettings();
 }
 
 function canSetAndConfirmAiKey(): boolean {
@@ -36802,7 +36807,6 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const setupHelperMessages = Array.from(new Set(
     (mobilePlannerSetup ? [modeHelperText] : [modeHelperText, providerHelperText]).filter(Boolean),
   ));
-  const routeLabel = aiRouteStatusLabel(status);
   const readinessLabel = aiReadinessLabel(status);
   const confirmationLabel = aiConfirmationLabel();
   const hideKeyEntry = shouldHideAiKeyEntry(status);
@@ -36846,19 +36850,26 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
     || state.aiSettings.model
     || 'model configured';
   const deviceAgentConfiguredDetail = `${deviceAgentConfiguredProvider} - ${deviceAgentConfiguredModel}`;
-  const configuredKeyNote = state.aiSettings.mode === 'device-agent'
-    ? `
+  const configuredKeyCardLabel = state.aiSettings.mode === 'device-agent'
+    ? 'Device Agent'
+    : state.aiSettings.mode === 'hosted'
+      ? 'Hosted BYOK'
+      : state.aiSettings.mode === 'session'
+        ? 'Browser Session'
+        : 'Local Bridge AI';
+  const configuredKeyCardTitle = state.aiSettings.mode === 'bridge'
+    ? bridgeConfiguredDisplay.title
+    : t('Configured for review');
+  const configuredKeyCardDetail = state.aiSettings.mode === 'device-agent'
+    ? (nativeDeviceAgentConfiguredWithoutStagedKey ? tf('{detail}. Clear API key to change provider or model.', { detail: deviceAgentConfiguredDetail }) : deviceAgentConfiguredDetail)
+    : state.aiSettings.mode === 'bridge'
+      ? bridgeConfiguredDisplay.detail
+      : `${state.aiSettings.provider} - ${state.aiSettings.model || 'model configured'}`;
+  const configuredKeyNote = `
         <div class="ai-key-configured-note" aria-live="polite">
-          <span>Device Agent</span>
-          <strong>${escapeHtml(t('Configured for review'))}</strong>
-          <em>${escapeHtml(nativeDeviceAgentConfiguredWithoutStagedKey ? tf('{detail}. Clear API key to change provider or model.', { detail: deviceAgentConfiguredDetail }) : deviceAgentConfiguredDetail)}</em>
-        </div>
-      `
-    : `
-        <div class="ai-key-configured-note" aria-live="polite">
-          <span>Local Bridge AI</span>
-          <strong>${escapeHtml(bridgeConfiguredDisplay.title)}</strong>
-          <em>${escapeHtml(bridgeConfiguredDisplay.detail)}</em>
+          <span>${escapeHtml(configuredKeyCardLabel)}</span>
+          <strong>${escapeHtml(configuredKeyCardTitle)}</strong>
+          <em>${escapeHtml(configuredKeyCardDetail)}</em>
         </div>
       `;
   // Web/desktop drops the orange "inactive AI path" notice card entirely (it claimed a Device Agent
@@ -36885,8 +36896,6 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
             </div>
             <div class="ai-status-meta">
               <span>${escapeHtml(readinessLabel)}</span>
-              <span>${escapeHtml(routeLabel)}</span>
-              <span>${escapeHtml(t('Review only'))}</span>
             </div>
           </div>
   `;
@@ -36914,6 +36923,13 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         ${aiKeySetupActionHtml(scope)}
       </div>
     `;
+  const setupRouteName = state.aiSettings.mode === 'hosted'
+    ? t('Hosted BYOK')
+    : state.aiSettings.mode === 'bridge'
+      ? t('Local Bridge')
+      : state.aiSettings.mode === 'session'
+        ? t('Browser Session')
+        : t('Device Agent');
   if (aiReviewSetupTabsVisible && state.aiReviewSetupTab === 'plan-connector') {
     return `
       <aside class="ai-settings-card plan-connector-settings-card" data-ai-settings-scope="${escapeHtml(scope)}">
@@ -36929,7 +36945,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
       ${aiReviewSetupTabsVisible && !desktopAiSetupHeaderVisible ? aiReviewSetupTabs() : ''}
       ${isRail || mobilePlannerSetup ? '' : `<div class="ai-settings-intro">
         <span class="workbench-kicker">${escapeHtml(t('Connect AI'))}</span>
-        <h3>${escapeHtml(t('Agent setup'))}</h3>
+        <h3>${escapeHtml(tf('Set up {route}', { route: setupRouteName }))}</h3>
         <p>${escapeHtml(securityCopy)}</p>
       </div>`}
       ${inlineKeyEntryHtml}
@@ -37025,7 +37041,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         : `
           ${bridgeSetupCard}
           ${desktopAiSetupHeaderVisible ? '' : plannerStatusHtml}
-          ${aiDiagnosticsPanel()}
+          ${SHOW_DEV_CONTROLS ? aiDiagnosticsPanel() : ''}
           ${nativeRuntimeDiagnosticsPanel()}
           <p class="ai-security-note">${escapeHtml(t('AI helps review requests. Signing and submission stay in the wallet workflow; private local bridge is optional.'))}</p>
         `}
@@ -37127,10 +37143,7 @@ function aiModeSelectOptions(): SelectPickerOption[] {
       detail: rawDisabledReason
         || (hostedCloudSignInNeeded
           ? t('Cloud sign-in required for Hosted BYOK relay. Your AI key is not stored.')
-          : '')
-        || (configured
-          ? tf('{state} configured path; approvals and signatures stay separate.', { state: active ? t('Active') : t('Inactive') })
-          : t('Review only; approvals and signatures stay separate.')),
+          : undefined),
       disabled: Boolean(disabledReason),
       title: disabledReason,
     };
@@ -38032,14 +38045,11 @@ function isAiPlannerFailedForCurrentSettings(): boolean {
 }
 
 function aiConfirmationLabel(): string {
-  if (isAiPlannerConfirmedForCurrentSettings()) {
-    if (state.aiSettings.mode === 'hosted') return t('Route confirmed');
-    if (state.aiSettings.mode === 'device-agent') return t('Runtime ready');
-    if (state.aiSettings.mode === 'session') return t('Config checked');
-    return t('Status confirmed');
-  }
+  // One vocabulary across every path: Configured (key + route confirmed) / Ready (set up,
+  // not yet confirmed) / Not ready (nothing set) / Check failed.
+  if (isAiPlannerConfirmedForCurrentSettings()) return t('Configured');
   if (isAiPlannerFailedForCurrentSettings()) return t('Check failed');
-  if (isAiConfiguredForCurrentMode()) return t('Confirm planner');
+  if (isAiConfiguredForCurrentMode()) return t('Ready');
   return t('Not ready');
 }
 
@@ -38493,7 +38503,12 @@ function shouldHideAiKeyEntry(status: BridgeAiStatus | null = state.aiStatus): b
     if (bridgeAiEngine(status) === 'connector') return true;
     return Boolean(isBridgeAiConfigured(status) && !stagedKey);
   }
-  return state.aiSettings.mode === 'device-agent' && Boolean(state.deviceAgentStatus?.configured && !stagedKey);
+  if (state.aiSettings.mode === 'device-agent') {
+    return Boolean(state.deviceAgentStatus?.configured && !stagedKey);
+  }
+  // Hosted BYOK / Browser Session: hide the key input and show the configured card once
+  // a key is present and the route is confirmed (parity with Device Agent).
+  return stagedKey && isAiPlannerConfirmedForCurrentSettings();
 }
 
 function aiProviderReadyForCurrentMode(): boolean {
@@ -38557,23 +38572,21 @@ function aiReadinessLabel(status: BridgeAiStatus | null): string {
       if (auth === 'binary-not-found') return tf('{connector} CLI not installed', { connector });
       return tf('{connector} sign-in needed', { connector });
     }
-    return status?.available ? t('Bridge AI verified') : t('Bridge key required');
+    return status?.available ? t('Configured') : t('Key required');
   }
   if (state.aiSettings.mode === 'device-agent') {
     const status = state.deviceAgentStatus;
     if (!deviceAgentModeVisible()) return t('Device Agent gated off');
     if (status?.available && status.configured) {
-      if (status.state === 'running') return t('Device Agent running');
-      if (deviceAgentStatusReadyForDrafts(status)) return t('Device Agent ready');
-      return t('Device Agent configured');
+      return t('Configured');
     }
-    return state.aiSettings.apiKey.trim() ? t('Device config ready') : t('Device key required');
+    return state.aiSettings.apiKey.trim() ? t('Configured') : t('Key required');
   }
   if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
     return t('Use hosted or bridge for OpenAI');
   }
   if (!state.aiSettings.apiKey.trim()) {
-    return state.aiSettings.mode === 'hosted' ? t('Hosted key required') : t('Browser key required');
+    return t('Key required');
   }
   if (!state.aiSettings.model.trim()) {
     return t('Choose a model');
@@ -38585,7 +38598,7 @@ function aiReadinessLabel(status: BridgeAiStatus | null): string {
   if (hostedBlockReason) {
     return t('Hosted key staged');
   }
-  return state.aiSettings.mode === 'hosted' ? t('Hosted key entered') : t('Config ready for this tab');
+  return t('Configured');
 }
 
 function aiRouteDiagnostic(path: string, method = 'POST'): AiDiagnosticEntry {
@@ -42515,8 +42528,6 @@ function bind(): void {
       }
       state.aiSettings.connector = connector;
       if (websitePlanConnectorSetupAvailable() && state.aiReviewSetupTab === 'plan-connector') {
-        state.aiSettings.mode = 'bridge';
-        state.aiSettings.agentEngine = 'connector';
         resetAiPlannerConfirmation(`${aiConnectorPreset(connector).label} selected. Run the updated command, then refresh status.`);
       }
       savePersistedState();

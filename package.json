@@ -12,7 +12,7 @@
     "dev": "node scripts/dev.mjs",
     "dev:mobile": "node scripts/dev.mjs --mobile",
     "dev:trace": "AGENT_WALLET_TRACE=1 node scripts/dev.mjs",
-    "dev:stop": "lsof -ti tcp:8787 | xargs kill 2>/dev/null || true; lsof -ti tcp:5174 | xargs kill 2>/dev/null || true",
+    "dev:stop": "node scripts/dev-stop.mjs",
     "cli": "node packages/cli/dist/index.js",
     "desktop:dev": "pnpm -F @solana-agent-wallet-adapter/desktop-shell dev",
     "desktop:tauri:dev": "pnpm -F @solana-agent-wallet-adapter/desktop-shell tauri:dev",

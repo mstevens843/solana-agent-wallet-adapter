@@ -23217,6 +23217,21 @@ button.danger:hover:not(:disabled) {
   justify-self: start;
 }
 
+/* Subtle "Recommended" badge on the Device Agent card (the default path). */
+.command-route-card .command-route-recommended {
+  background: rgba(63, 189, 131, 0.14);
+  border: 1px solid rgba(139, 205, 170, 0.28);
+  border-radius: 999px;
+  color: #8bcdaa;
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  margin-left: 7px;
+  padding: 2px 7px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
 .command-bridge-prereq {
   background:
     linear-gradient(180deg, rgba(28, 34, 32, 0.88), rgba(13, 17, 16, 0.96)),
@@ -23247,6 +23262,20 @@ button.danger:hover:not(:disabled) {
   flex-wrap: wrap;
   gap: 8px 14px;
   padding: 10px 12px;
+}
+
+.command-storage-docs-link {
+  padding: 0 2px 2px;
+}
+
+.command-storage-docs-link a {
+  color: #7ef0b0;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.command-storage-docs-link a:hover {
+  text-decoration: underline;
 }
 
 .command-storage-danger-zone {
@@ -25845,6 +25874,16 @@ button.danger:hover:not(:disabled) {
   border-color: rgba(224, 230, 226, 0.08);
   box-shadow: none;
   color: rgba(196, 205, 202, 0.44);
+}
+
+/* Set-and-confirm key button stays green even before a key is entered - dimmed to
+   read as disabled, but never neutral/gray. */
+.route-app .ai-key-primary-action.primary:disabled {
+  background: rgba(63, 189, 131, 0.42);
+  border-color: rgba(63, 189, 131, 0.34);
+  box-shadow: none;
+  color: rgba(6, 12, 9, 0.62);
+  cursor: not-allowed;
 }
 
 .route-app button.danger,

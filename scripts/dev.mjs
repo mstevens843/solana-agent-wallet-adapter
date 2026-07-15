@@ -64,20 +64,23 @@ const browser = start('browser', 'pnpm', [
 
 printUrls();
 
-for (const signal of ['SIGINT', 'SIGTERM']) {
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGTSTP']) {
   process.on(signal, () => {
+    if (shuttingDown) return;
     console.log(`\n[dev] ${signal} received, stopping local dev processes...`);
     shutdown(0);
   });
 }
 
 bridge.on('exit', (code, signal) => {
+  if (shuttingDown) return;
   if (signal) return;
   console.error(`[dev] bridge exited with code ${code ?? 0}`);
   shutdown(code ?? 1);
 });
 
 browser.on('exit', (code, signal) => {
+  if (shuttingDown) return;
   if (signal) return;
   console.error(`[dev] browser exited with code ${code ?? 0}`);
   shutdown(code ?? 1);
@@ -188,12 +191,23 @@ function shutdown(code) {
   shuttingDown = true;
   const exitCode = code === 0 && children.size > 0 ? 0 : code;
   for (const child of children) {
-    child.kill('SIGTERM');
+    signalChild(child, 'SIGCONT');
+    signalChild(child, 'SIGTERM');
   }
   setTimeout(() => {
     for (const child of children) {
-      child.kill('SIGKILL');
+      signalChild(child, 'SIGKILL');
     }
     process.exit(exitCode);
   }, 1500).unref();
+}
+
+function signalChild(child, signal) {
+  try {
+    child.kill(signal);
+  } catch (err) {
+    if (err?.code !== 'ESRCH') {
+      console.error(`[dev] Failed to send ${signal} to pid ${child.pid}: ${err.message}`);
+    }
+  }
 }
