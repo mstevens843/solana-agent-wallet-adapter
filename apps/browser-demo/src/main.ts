@@ -17741,9 +17741,12 @@ function cloudWorkspaceCard(): string {
   return `
     <details class="workspace-storage-panel ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''}" data-layout="workspace-storage-panel" aria-label="${escapeHtml(t('Workspace storage status'))}" ${open}>
       <summary>
-        <span class="workspace-storage-summary-copy">
-          <span>${escapeHtml(t('Workspace storage'))}</span>
-          <em>${escapeHtml(summaryDetail)}</em>
+        <span class="rail-cloud-identity">
+          <span class="rail-cloud-summary-icon ${signedIn && matched ? 'connected' : ''}">${commandCenterIcon('cloud')}</span>
+          <span class="workspace-storage-summary-copy">
+            <span>${escapeHtml(t('Workspace storage'))}</span>
+            <em>${escapeHtml(summaryDetail)}</em>
+          </span>
         </span>
         ${signedIn ? `<strong>${escapeHtml(status)}</strong>` : `<button
           type="button"
@@ -17776,9 +17779,9 @@ function cloudWorkspaceRailBody(): string {
     <section class="rail-cloud-card ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''}" aria-label="${escapeHtml(t('Workspace storage details'))}">
       <p>${escapeHtml(detail)}</p>
       <div class="rail-cloud-facts">
-        <span>${escapeHtml(t('Active'))} <strong>${escapeHtml(t(activeWorkflowLabel()))}</strong></span>
-        ${matched ? `<span>${escapeHtml(t('Wallet'))} <strong>${escapeHtml(short(state.cloudSession.walletAddress))}</strong></span>` : ''}
-        ${state.cloudLastSync && matched ? `<span>${escapeHtml(t('Synced'))} <strong>${escapeHtml(formatDateTime(state.cloudLastSync))}</strong></span>` : ''}
+        <span>${escapeHtml(t('Active'))} <strong title="${escapeHtml(t(activeWorkflowLabel()))}">${escapeHtml(t(activeWorkflowLabel()))}</strong></span>
+        ${matched ? `<span>${escapeHtml(t('Wallet'))} <strong title="${escapeHtml(state.cloudSession.walletAddress ?? '')}">${escapeHtml(short(state.cloudSession.walletAddress))}</strong></span>` : ''}
+        ${state.cloudLastSync && matched ? `<span>${escapeHtml(t('Synced'))} <strong title="${escapeHtml(formatDateTime(state.cloudLastSync))}">${escapeHtml(formatDateTime(state.cloudLastSync))}</strong></span>` : ''}
       </div>
       <div class="rail-cloud-actions">
         ${signedIn ? `
@@ -34249,7 +34252,7 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
               <span>${escapeHtml(t('AI connector'))}</span>
               <em>${escapeHtml(summaryDetail)}</em>
             </span>
-            <strong class="ai-summary-status">${escapeHtml(confirmed ? t('confirmed') : configured ? t('configured') : surfaceInactiveAiPath ? t('configured inactive') : t('not configured'))}</strong>
+            <strong class="ai-summary-status">${escapeHtml(confirmed ? t('Configured') : configured ? t('Ready') : surfaceInactiveAiPath ? t('Configured') : t('Not ready'))}</strong>
           `}
       </summary>
       ${aiSettingsCard(location)}
@@ -34371,17 +34374,31 @@ function mobileAiRailQuickActions(identity: AiRailIdentity): string {
   `;
 }
 
+// Normalize the rail status pill to the tab's vocabulary (Configured / Ready /
+// Not ready) instead of the internal keys (confirmed / configured / not configured).
+function railAiStatusDisplayLabel(statusLabel: string): string {
+  switch (statusLabel) {
+    case 'confirmed':
+    case 'configured inactive':
+      return t('Configured');
+    case 'configured':
+      return t('Ready');
+    default:
+      return t('Not ready');
+  }
+}
+
 function aiRailSummaryContent(identity: AiRailIdentity, options: { actionLabel?: string; actionHtml?: string } = {}): string {
   return `
     <span class="ai-summary-identity">
       ${brandLogo(identity.logoHint, 'ai-summary-logo')}
       <span class="ai-summary-copy">
         <span>${escapeHtml(t('AI connector'))}</span>
-        <strong>${escapeHtml(identity.provider)}</strong>
-        <em>${escapeHtml(identity.detail)}</em>
+        <strong title="${escapeHtml(identity.provider)}">${escapeHtml(identity.provider)}</strong>
+        <em title="${escapeHtml(identity.detail)}">${escapeHtml(identity.detail)}</em>
       </span>
     </span>
-    <strong class="ai-summary-status ${escapeHtml(identity.statusTone)}" title="${escapeHtml(t(identity.statusTitle))}">${escapeHtml(t(identity.statusLabel))}</strong>
+    <strong class="ai-summary-status ${escapeHtml(identity.statusTone)}" title="${escapeHtml(t(identity.statusTitle))}">${escapeHtml(railAiStatusDisplayLabel(identity.statusLabel))}</strong>
     ${options.actionHtml ?? (options.actionLabel ? `<span class="rail-conn-action">${escapeHtml(options.actionLabel)}</span>` : '')}
   `;
 }
@@ -37155,16 +37172,16 @@ function aiModeSelectOptions(): SelectPickerOption[] {
     const disabledReason = selectableNativeMobilePath ? '' : rawDisabledReason;
     const pathState = inventory.paths.find((path) => path.mode === option.id);
     const configured = pathState?.configured === true;
-    const active = option.id === state.aiSettings.mode;
     const hostedCloudSignInNeeded = option.id === 'hosted' && Boolean(hostedByokCloudSessionReasonForMode('hosted'));
     return {
       value: option.id,
       label: option.label,
       meta: t('AI path'),
+      // Normalized to the tab's vocabulary: any set-up path reads "Configured".
       metaSuffix: hostedCloudSignInNeeded
         ? t('cloud sign-in needed')
         : configured
-          ? active ? t('active configured') : t('configured')
+          ? t('Configured')
           : undefined,
       detail: rawDisabledReason
         || (hostedCloudSignInNeeded

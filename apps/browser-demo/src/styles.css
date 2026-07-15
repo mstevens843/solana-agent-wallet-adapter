@@ -6111,17 +6111,17 @@ code {
 .workspace-storage-panel > .mobile-rail-sheet-trigger::after {
   align-self: center;
   color: var(--accent-2);
-  content: "+";
+  content: "▾";
   font-weight: 900;
   line-height: 1;
 }
 
 .workspace-storage-panel[open] > summary::after {
-  content: "-";
+  content: "▴";
 }
 
 .workspace-storage-panel > .mobile-rail-sheet-trigger[aria-expanded="true"]::after {
-  content: "-";
+  content: "▴";
 }
 
 /* Native app Connections re-org (reviewer feedback): one prioritized "Connections" group with
@@ -6265,6 +6265,43 @@ code {
   margin: 0;
 }
 
+/* Cloud rail header leads with a cloud glyph (matching the AI rail's provider
+   logo). It lights up blue with its built-in check when the workspace is
+   connected, and stays a dim neutral otherwise. */
+.rail-cloud-identity {
+  align-items: center;
+  display: flex;
+  gap: 9px;
+  min-width: 0;
+}
+
+.rail-cloud-summary-icon {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 8px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 32px;
+  justify-content: center;
+  width: 32px;
+}
+
+.rail-cloud-summary-icon .command-center-card-icon {
+  color: rgba(196, 205, 202, 0.55);
+  height: 17px;
+  width: 17px;
+}
+
+.rail-cloud-summary-icon.connected {
+  background: rgba(112, 170, 229, 0.14);
+  border-color: rgba(112, 170, 229, 0.32);
+}
+
+.rail-cloud-summary-icon.connected .command-center-card-icon {
+  color: rgba(138, 190, 240, 0.95);
+}
+
 .rail-cloud-facts {
   display: grid;
   gap: 6px;
@@ -6282,7 +6319,7 @@ code {
 .rail-cloud-facts strong {
   color: var(--text);
   font-size: 0.78rem;
-  max-width: 60%;
+  max-width: 66%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -6308,8 +6345,10 @@ code {
   border-color: rgba(112, 170, 229, 0.34);
 }
 
+/* Reassurance line ("identity only, no spending authority") is not a warning -
+   keep it a calm neutral, not amber. */
 .rail-cloud-warning {
-  color: #e1c178 !important;
+  color: rgba(196, 205, 202, 0.66) !important;
 }
 
 .rail-cloud-action-note {
@@ -17855,14 +17894,15 @@ button.danger:hover:not(:disabled) {
 
 .ai-summary-copy em {
   color: rgba(218, 229, 224, 0.82);
+  display: -webkit-box;
   font-size: 0.82rem;
   font-style: normal;
   font-weight: 650;
   line-height: 1.25;
   max-width: 100%;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .ai-settings-panel > summary > .ai-summary-status {
@@ -17918,17 +17958,17 @@ button.danger:hover:not(:disabled) {
 .ai-settings-panel > .mobile-rail-sheet-trigger::after {
   align-self: center;
   color: var(--accent-2);
-  content: "+";
+  content: "▾";
   font-weight: 900;
   line-height: 1;
 }
 
 .ai-settings-panel[open] > summary::after {
-  content: "-";
+  content: "▴";
 }
 
 .ai-settings-panel > .mobile-rail-sheet-trigger[aria-expanded="true"]::after {
-  content: "-";
+  content: "▴";
 }
 
 .ai-settings-panel[open] > .ai-settings-card {
@@ -23290,7 +23330,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .command-storage-docs-link a {
-  color: #7ef0b0;
+  color: #8bc4f2;
   font-weight: 700;
   text-decoration: none;
 }
@@ -23892,6 +23932,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .command-storage-card .command-storage-card-icon .command-center-card-icon {
+  color: rgba(138, 190, 240, 0.9);
   height: 18px;
   width: 18px;
 }
@@ -23927,13 +23968,24 @@ button.danger:hover:not(:disabled) {
 }
 
 .command-storage-card-head .command-storage-status.is-active {
-  background: rgba(52, 211, 153, 0.14);
-  border-color: rgba(94, 231, 158, 0.28);
-  color: #9defc4;
+  background: rgba(112, 170, 229, 0.16);
+  border-color: rgba(112, 170, 229, 0.38);
+  color: #a9d0f5;
 }
 
 .command-storage-card-head .command-storage-status.is-off {
   color: rgba(196, 205, 202, 0.58);
+}
+
+/* Blue identity for the active storage card - outline and tint pulled from the
+   workspace-storage rail card (rgba(112,170,229)) instead of the green AI
+   accent. Scoped to the storage panel so the Connect AI route cards stay green. */
+.command-storage-panel .command-storage-card.active,
+.route-app .command-storage-panel .command-storage-card.active {
+  background:
+    linear-gradient(180deg, rgba(22, 44, 66, 0.5), rgba(15, 21, 27, 0.94)),
+    rgba(15, 20, 25, 0.94);
+  border-color: rgba(112, 170, 229, 0.42);
 }
 
 .command-storage-facts {
