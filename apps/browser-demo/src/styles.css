@@ -23232,6 +23232,27 @@ button.danger:hover:not(:disabled) {
   white-space: nowrap;
 }
 
+/* Docs-style icon badge on each route card: a thin soft-green glyph on a
+   neutral square, so the icon reads as an accent, not another green surface.
+   Mirrors .docs-icon-card-icon, sized down for the denser app card. */
+.command-route-card .command-route-icon {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.048);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 8px;
+  display: inline-flex;
+  height: 34px;
+  justify-content: center;
+  justify-self: start;
+  margin-bottom: 2px;
+  width: 34px;
+}
+
+.command-route-card .command-route-icon .command-center-card-icon {
+  height: 18px;
+  width: 18px;
+}
+
 .command-bridge-prereq {
   background:
     linear-gradient(180deg, rgba(28, 34, 32, 0.88), rgba(13, 17, 16, 0.96)),
@@ -23397,13 +23418,23 @@ button.danger:hover:not(:disabled) {
 }
 
 .command-ai-info-card em,
-.command-ai-panel .command-route-grid > .command-route-card .command-route-foot,
 .command-ai-no-ai em {
   color: rgba(139, 205, 170, 0.88);
   font-size: 0.74rem;
   font-style: normal;
   font-weight: 820;
   line-height: 1.24;
+}
+
+/* Route-card tagline is supporting detail, not an accent: keep it a quiet
+   neutral caption so green stays on the primary action and genuine state,
+   matching the restraint of the docs pages. */
+.command-ai-panel .command-route-grid > .command-route-card .command-route-foot {
+  color: rgba(196, 205, 202, 0.66);
+  font-size: 0.74rem;
+  font-style: normal;
+  font-weight: 600;
+  line-height: 1.28;
 }
 
 /* Taller route cards (a row was removed) with the button pinned to the bottom so
@@ -23846,6 +23877,25 @@ button.danger:hover:not(:disabled) {
   margin: 0;
 }
 
+/* Docs-style icon badge on each storage card, matching the Connect AI route
+   cards: a thin soft-green glyph on a neutral square. */
+.command-storage-card .command-storage-card-icon {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.048);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 8px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 34px;
+  justify-content: center;
+  width: 34px;
+}
+
+.command-storage-card .command-storage-card-icon .command-center-card-icon {
+  height: 18px;
+  width: 18px;
+}
+
 .command-storage-card-head {
   align-items: center;
   display: flex;
@@ -23853,18 +23903,37 @@ button.danger:hover:not(:disabled) {
   justify-content: space-between;
 }
 
+/* Card name now leads the header (bold), like the docs connector cards; the
+   status moves into a dedicated pill on the right that only turns green for a
+   genuine positive state. */
 .command-storage-card-head strong {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.command-storage-card-head .command-storage-status {
   background: rgba(2, 8, 6, 0.38);
   border: 1px solid rgba(224, 230, 226, 0.12);
   border-radius: 999px;
-  font-size: 0.78rem;
-  padding: 5px 8px;
+  color: rgba(218, 229, 224, 0.9);
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  line-height: 1.1;
+  padding: 4px 9px;
+  text-transform: none;
   white-space: nowrap;
 }
 
-.command-storage-card.active .command-storage-card-head strong {
+.command-storage-card-head .command-storage-status.is-active {
   background: rgba(52, 211, 153, 0.14);
   border-color: rgba(94, 231, 158, 0.28);
+  color: #9defc4;
+}
+
+.command-storage-card-head .command-storage-status.is-off {
+  color: rgba(196, 205, 202, 0.58);
 }
 
 .command-storage-facts {

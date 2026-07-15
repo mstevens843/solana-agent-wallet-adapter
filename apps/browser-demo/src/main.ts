@@ -21630,14 +21630,34 @@ function aiRouteTagline(mode: AiSettings['mode']): string {
   }
 }
 
+// Docs-style icon per route so each card leads with a glyph, not a bare label.
+// Distinct icons keyed to what the path is: cloud relay, local bridge/link,
+// ephemeral session, on-device shield, connected computer plan.
+function aiRouteIconId(mode: AiSettings['mode']): CommandCenterIconId {
+  switch (mode) {
+    case 'hosted':
+      return 'cloud';
+    case 'bridge':
+      return 'connectors';
+    case 'session':
+      return 'ai';
+    case 'device-agent':
+      return 'guardrails';
+    default:
+      return 'ai';
+  }
+}
+
 function commandAiRouteCard(mode: AiSettings['mode'], title: string, detail: string, meta: string): string {
   const active = state.aiSettings.mode === mode;
   const disabledReason = aiModeDisabledReason(mode);
   const configured = aiSetupInventory().paths.find((path) => path.mode === mode)?.configured === true;
   const tagline = isMobileAppViewport() ? '' : aiRouteTagline(mode);
+  const routeIcon = isMobileAppViewport() ? '' : commandCenterIcon(aiRouteIconId(mode));
   return `
     <article class="command-route-card ${active ? 'active' : ''} ${configured && !active ? 'configured-inactive' : ''}">
       <div>
+        ${routeIcon ? `<span class="command-route-icon">${routeIcon}</span>` : ''}
         <span>${escapeHtml(configured && !active ? tf('{meta} - configured', { meta }) : meta)}${mode === 'device-agent' ? `<span class="command-route-recommended">${escapeHtml(t('Recommended'))}</span>` : ''}</span>
         <strong>${escapeHtml(title)}</strong>
         <p>${escapeHtml(detail)}</p>
@@ -21706,6 +21726,7 @@ function commandPlanConnectorRouteCard(): string {
   return `
     <article class="command-route-card plan-connector-route-card ${active ? 'active' : ''} ${connected ? 'connected' : ''}">
       <div>
+        ${isMobileAppViewport() ? '' : `<span class="command-route-icon">${commandCenterIcon('aiConnected')}</span>`}
         <span>${escapeHtml(meta)}</span>
         <strong>Plan Connector</strong>
         <p>${escapeHtml(detail)}</p>
@@ -22084,11 +22105,13 @@ function commandStorageCardsGroup(): string {
 function commandStorageDeviceCard(): string {
   const active = activeWorkflowMode() === 'browser-workflow';
   const signedIn = state.cloudSession.status === 'signed-in';
+  const storageIcon = isMobileAppViewport() ? '' : commandCenterIcon('guardrails');
   return `
     <article class="command-storage-card ${active ? 'active' : ''}">
       <div class="command-storage-card-head">
-        <span>${escapeHtml(t('Saved on device'))}</span>
-        <strong>${escapeHtml(active ? t('Active') : t('Available'))}</strong>
+        ${storageIcon ? `<span class="command-storage-card-icon">${storageIcon}</span>` : ''}
+        <strong>${escapeHtml(t('Saved on device'))}</strong>
+        <span class="command-storage-status ${active ? 'is-active' : ''}">${escapeHtml(active ? t('Active') : t('Available'))}</span>
       </div>
       <p>${escapeHtml(t('Plans, approvals, repeat payments, and proofs stay on this device. No localhost required.'))}</p>
       <div class="command-storage-facts">
@@ -22239,11 +22262,14 @@ function commandStorageCloudCard(): string {
   const detail = signedIn && !matched
     ? `${tf('Signed in as {address}.', { address: short(state.cloudSession.walletAddress) })} ${reconnectNeeded ? t('Reconnect that wallet to use cloud workflow.') : t('Connect that wallet to use cloud workflow.')}`
     : t('Optional sync for one-time drafts, approvals, repeat payments, proofs, and done work.');
+  const storageIcon = isMobileAppViewport() ? '' : commandCenterIcon('cloud');
+  const statusPillClass = active || (signedIn && matched) ? 'is-active' : unavailable ? 'is-off' : '';
   return `
     <article class="command-storage-card ${active ? 'active' : ''}">
       <div class="command-storage-card-head">
-        <span>Agentic Cloud</span>
-        <strong>${escapeHtml(status)}</strong>
+        ${storageIcon ? `<span class="command-storage-card-icon">${storageIcon}</span>` : ''}
+        <strong>Agentic Cloud</strong>
+        <span class="command-storage-status ${statusPillClass}">${escapeHtml(status)}</span>
       </div>
       <p>${escapeHtml(detail)}</p>
       <div class="command-storage-facts">
