@@ -62,8 +62,11 @@ describe('connector connect native sheet', () => {
   it('renders connector-specific credential controls instead of the old global client-key row', () => {
     const panelBody = sourceBetween('function connectedDappsPanel', 'function connectedDappRow');
 
-    expect(panelBody).toContain('protocolConnectorCredentialInline(selectedCatalogConnector)');
+    // Credential entry now lives inline on each connector card (the middle-phase
+    // control in the action slot), not in a single catalog-tied row.
+    expect(panelBody).toContain('connectorCardCredentialControl');
     expect(panelBody).toContain('data-protocol-connector-credential-paste');
+    expect(panelBody).toContain('confirm-credential');
     expect(panelBody).not.toContain('Dialect client key');
     expect(mainSource).toContain('function enableProtocolConnectorFromPreferences');
   });

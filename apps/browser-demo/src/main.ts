@@ -638,8 +638,11 @@ import {
 } from './transactionLedger.js';
 import {
   classifyTransactionFailure,
+  isAutoRetryableSignedBroadcastKind,
   isRpcAuthRejected,
+  signedBroadcastRetryDecision,
   transactionFailureToastCopy,
+  type SignedBroadcastRetryDecision,
   type TransactionFailureKind,
 } from './transactionFailure.js';
 import {
@@ -1674,8 +1677,27 @@ const AGENT_POLICIES_STORAGE_KEY = 'solana-agent-wallet-agent-policies-v1';
 const CUSTOM_TOKENS_STORAGE_KEY = 'solana-agent-wallet-custom-tokens-v1';
 const AGENTS_STORAGE_KEY = 'solana-agent-wallet-agents-v1';
 const PLANNER_PREFS_STORAGE_KEY = 'solana-agent-wallet-planner-prefs-v1';
-const PROTOCOL_CONNECTOR_PREFS_STORAGE_KEY = 'solana-agent-wallet-protocol-connector-prefs-v1';
-const PLANNER_HOUSE_RULES_MAX = 1000;
+const PLANNER_HOUSE_RULES_MAX = 2000;
+// Multi-agent review is one LLM call role-playing 4 reviewer personas (not real multi-agent) and it
+// silently no-ops in direct-BYOK "session" mode. Hidden from the UI for now; ALL of its wiring —
+// the state field, persistence, the mode:'multi' request flag, the mcp-server branch, and the
+// reviewer-row rendering — stays intact and default-off, so flipping this back to true re-surfaces it
+// with no other change.
+const SHOW_MULTI_AGENT_REVIEW = false;
+// Agent Policies (the structured 7-kind review-policy panel) is the redundant, weakest guardrail
+// layer: every kind it offers is also expressible as a deterministic Safety Rail / Recipient Rule or
+// as free-text Instructions (which is actually STRONGER — its prose is extracted into policy atoms
+// that can force a deny, whereas these are advisory-only via context.userPolicies). Hidden from the
+// UI; the state, persistence, cloud sync, and userPolicies request mapping stay intact and
+// default-empty, so flipping this to true re-surfaces it unchanged.
+const SHOW_AGENT_POLICIES = false;
+// Custom Tokens is a display-only mint→symbol overlay that ranks BELOW the built-in registry and
+// BirdEye auto-resolution in every card-labeling chain, and its decimals field is stored/validated/
+// synced but never read by amount math or transaction building (amount conversion resolves decimals
+// from the known registry or an on-chain read, never from custom tokens). Hidden from the UI like
+// SHOW_AGENT_POLICIES; the state, CRUD, persistence, and 'custom-tokens' cloud sync stay intact and
+// default-empty, so flipping this to true re-surfaces it unchanged.
+const SHOW_CUSTOM_TOKENS = false;
 const FAILURE_POLICIES_STORAGE_KEY = 'solana-agent-wallet-failure-policies-v1';
 const PROGRAM_RULES_STORAGE_KEY = 'solana-agent-wallet-program-rules-v1';
 const POSITIONS_STORAGE_KEY = 'solana-agent-wallet-positions-v1';
@@ -1694,6 +1716,10 @@ const TX_CONFIRMATION_POLL_INTERVAL_MS = 1_500;
 const TX_CONFIRMATION_RPC_CALL_TIMEOUT_MS = 5_000;
 const PENDING_RECONCILIATION_INTERVAL_MS = 10_000;
 const TX_RETRY_MAX_ATTEMPTS = 2;
+// Hard ceiling on same-bytes rebroadcast attempts. The per-kind failure policy (maxAttempts, clamped
+// 0–10 in the UI) is what actually stops the loop; this is only the backstop so a bad policy value can
+// never spin. Keep it >= the policy clamp so a maxAttempts of 10 can be reached.
+const TX_RETRY_ATTEMPT_CEILING = 10;
 const TX_RETRY_DELAY_MS = 2_500;
 const TX_SIGNATURE_NOT_FOUND_STALE_MS = 90_000;
 const TOKEN_PRICE_CACHE_MS = 60_000;
@@ -1851,6 +1877,11 @@ const CUSTOM_AI_MODEL_VALUE = '__custom__';
 const ROUTE_PATHS = ['/', '/docs', '/docs/ai-connectors', '/docs/how-it-works', '/docs/cloud-storage', '/docs/connectors', '/docs/agent-payments', '/builders', '/app', '/connect', '/disconnect', '/approve', '/sign', '/sign-in', '/sign-out', '/delete-storage', '/qr-connect', '/cli', '/desktop', '/aiconnectors', '/android', '/demo', '/mwa-test', '/privacy', '/terms', '/delete-account', '/agentic-login'] as const;
 const ROUTE_PATH_SET = new Set<string>(ROUTE_PATHS);
 const SHOW_DEV_CONTROLS = resolveDevControls();
+// The standalone "Connector API keys" panel (connectorKeys.ts) is hidden: the
+// same Add-API-key / Add-access-code entry now lives inline on the protocol
+// connector cards. Flip to true to bring the separate panel back. The mount
+// auto-no-ops when its container isn't rendered, so no other change is needed.
+const SHOW_CONNECTOR_KEYS_PANEL = false;
 const IS_ANDROID_APP = resolveAndroidAppSurface();
 const IS_TAURI_APP = resolveTauriAppSurface();
 const IS_IOS_APP = detectIosNativeEnvironment().isIosNative;
@@ -2311,10 +2342,6 @@ interface CloudRecurringBacklogCleanupResponse {
   schedulesAffected: number;
   kept: number;
   cancelled: number;
-}
-
-interface ProtocolConnectorPrefs {
-  dialectClientKey: string;
 }
 
 interface ConnectorCredentialDraft {
@@ -3794,7 +3821,6 @@ interface DemoState {
   connectorSecrets: ConnectorSecretsUiState;
   protocolConnectorCatalogId: ConnectedDappId | '';
   protocolConnectorCredentialDrafts: Partial<Record<ByoKeyConnectorId, ConnectorCredentialDraft>>;
-  protocolConnectorPrefs: ProtocolConnectorPrefs;
   agentPolicies: UserAgentPolicy[];
   agentPolicyDraft: AgentPolicyDraft;
   agentPolicyErrors: Record<string, string>;
@@ -3806,6 +3832,9 @@ interface DemoState {
   agentErrors: Record<string, string>;
   agentReveal: AgentRevealState | null;
   plannerPrefs: PlannerPrefs;
+  // Transient edit buffer for the rules textarea so it has an explicit Save (matching quick prompts)
+  // instead of silently auto-saving. `plannerPrefs.houseRules` stays the committed/persisted value.
+  houseRulesDraft: string;
   savedPromptDraft: SavedPromptDraft;
   savedPromptErrors: Record<string, string>;
   failurePolicies: FailureRetryPolicy[];
@@ -4234,9 +4263,13 @@ const FAILURE_KIND_HELP: Record<TransactionFailureKind, string> = {
   unknown_maybe_submitted: 'The app cannot tell whether the transaction reached the network.',
 };
 
+// Kinds "Use recommended defaults" flips to Auto. Every one MUST be auto-retryable (see
+// AUTO_RETRYABLE_SIGNED_BROADCAST_KINDS) or the default is inert. expired_blockhash used to be here but
+// its dead blockhash rides in the same signed bytes, so rebroadcast can't help — it was recommending an
+// Auto that never fired. unknown_maybe_submitted is auto-retryable but intentionally left on Ask so an
+// ambiguous send prompts before replaying.
 const FAILURE_RECOMMENDED_AUTO: ReadonlySet<TransactionFailureKind> = new Set([
   'rpc_timeout',
-  'expired_blockhash',
   'rate_limited',
   'network_unreachable',
 ]);
@@ -4347,7 +4380,6 @@ const initialBrowserWorkflow = loadBrowserWorkflowState();
 const initialChatHistory = loadChatHistoryState();
 const initialRecipientRules = loadRecipientRules();
 const initialConnectedDapps = loadConnectedDapps();
-const initialProtocolConnectorPrefs = loadProtocolConnectorPrefs();
 const initialAgentPolicies = loadAgentPolicies();
 const initialCustomTokens = loadCustomTokens();
 const initialAgents = loadAgents();
@@ -5000,7 +5032,6 @@ const state: DemoState = {
   },
   protocolConnectorCatalogId: '',
   protocolConnectorCredentialDrafts: {},
-  protocolConnectorPrefs: initialProtocolConnectorPrefs,
   agentPolicies: initialAgentPolicies,
   agentPolicyDraft: defaultAgentPolicyDraft(),
   agentPolicyErrors: {},
@@ -5012,6 +5043,7 @@ const state: DemoState = {
   agentErrors: {},
   agentReveal: null,
   plannerPrefs: initialPlannerPrefs,
+  houseRulesDraft: initialPlannerPrefs.houseRules,
   savedPromptDraft: defaultSavedPromptDraft(),
   savedPromptErrors: {},
   failurePolicies: initialFailurePolicies,
@@ -17278,9 +17310,9 @@ function localWorkspacePrompt(context: 'backup' | 'cloud'): string {
   const importButton = context === 'cloud' && cloudSessionMatchesWallet() && importCount > 0
     ? `<button type="button" class="primary" data-cloud-action="copy-local-to-cloud" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Transfer to storage'))}</button>`
     : '';
-  const action = context === 'backup'
-    ? `<button type="button" class="primary" data-workspace-backup-action="export" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Back up'))}</button>`
-    : importButton;
+  // In 'backup' context this prompt lives inside the Workspace-backup panel, which already renders the
+  // primary Export button — keep the reminder + local-item counts but don't duplicate the button.
+  const action = context === 'backup' ? '' : importButton;
   const detail = context === 'cloud'
     ? state.cloudSession.status === 'unavailable'
       ? t('These items stay on this device until storage is available.')
@@ -17334,8 +17366,8 @@ function localWorkspaceCountPhrase(count: number, singular: string, plural: stri
 
 function savedPromptCountLabel(count: number): string {
   return count === 1
-    ? tf('{count} saved prompt', { count })
-    : tf('{count} saved prompts', { count });
+    ? tf('{count} quick prompt', { count })
+    : tf('{count} quick prompts', { count });
 }
 
 function preferencesViewButton(view: PreferencesView, title: string, detail: string): string {
@@ -17367,9 +17399,9 @@ function preferencesViewSummary(view: PreferencesView): string {
     }
     case 'ai': {
       const extras = [
-        state.aiSettings.multiReviewer ? t('multi-review') : '',
+        SHOW_MULTI_AGENT_REVIEW && state.aiSettings.multiReviewer ? t('multi-review') : '',
         state.aiSettings.autoBackgroundWatch ? t('background watch') : '',
-        state.plannerPrefs.houseRules.trim() ? t('house rules') : '',
+        state.plannerPrefs.houseRules.trim() ? t('rules') : '',
         state.plannerPrefs.savedPrompts.length ? tf('{n} prompts', { n: state.plannerPrefs.savedPrompts.length }) : '',
       ].filter(Boolean);
       return extras.length ? extras.join(' · ') : t('review defaults');
@@ -17381,12 +17413,23 @@ function preferencesViewSummary(view: PreferencesView): string {
       return tf('{enabledAgents}/{total} agents · {enabledConnectors} connectors on', { enabledAgents, total: state.agents.length, enabledConnectors });
     }
     case 'rules': {
-      const enabledPolicies = state.agentPolicies.filter((policy) => policy.enabled).length;
       const railsOn = safetyRailsEnabledCount();
-      return tf('{recipients} recipients · {railsOn} rails · {enabledPolicies} policies', { recipients: state.recipientRules.recipients.length, railsOn, enabledPolicies });
+      const recipients = state.recipientRules.recipients.length;
+      // Agent Policies is hidden (SHOW_AGENT_POLICIES); drop its count from the chip so it doesn't
+      // reference a panel the user can't see.
+      if (!SHOW_AGENT_POLICIES) {
+        return tf('{recipients} recipients · {railsOn} rails', { recipients, railsOn });
+      }
+      const enabledPolicies = state.agentPolicies.filter((policy) => policy.enabled).length;
+      return tf('{recipients} recipients · {railsOn} rails · {enabledPolicies} policies', { recipients, railsOn, enabledPolicies });
     }
     case 'tokens': {
-      const autoRetries = state.failurePolicies.filter((policy) => policy.mode === 'auto').length;
+      const autoRetries = autoRetryEnabledCount(state.failurePolicies);
+      // Custom Tokens is hidden (SHOW_CUSTOM_TOKENS), so don't surface a stale count for a panel the
+      // user can't see — the tab is auto-retry only.
+      if (!SHOW_CUSTOM_TOKENS) {
+        return tf('{autoRetries} auto retries', { autoRetries });
+      }
       return tf('{customTokens} custom tokens · {autoRetries} auto retries', { customTokens: state.customTokens.length, autoRetries });
     }
   }
@@ -17521,16 +17564,20 @@ function preferencesActiveView(): string {
           <div class="preferences-card-grid access-preferences-grid">
             ${connectedDappsPanel()}
           </div>
-          <div id="connector-keys-panel" class="connector-keys-mount"></div>
+          ${SHOW_CONNECTOR_KEYS_PANEL ? '<div id="connector-keys-panel" data-connector-keys-panel class="connector-keys-mount"></div>' : ''}
           ${state.tauriNativeEnvironment.isTauriNative ? '<div id="tauri-local-runtime-panel" class="connector-keys-mount"></div>' : ''}
         `)
         : preferencesGroup(t('Agent Access'), t('Manage bridge agents and protocol connectors used to prepare actions.'), `
-          <div class="preferences-card-grid access-preferences-grid">
-            ${connectedAgentsPanel()}
-            ${publicBridgeStatusCard()}
-            ${connectedDappsPanel()}
+          <div class="access-agent-grid">
+            <div class="access-agent-main">
+              ${connectedDappsPanel()}
+            </div>
+            <aside class="access-agent-side">
+              ${publicBridgeStatusCard()}
+              ${connectedAgentsPanel()}
+            </aside>
           </div>
-          <div id="connector-keys-panel" class="connector-keys-mount"></div>
+          ${SHOW_CONNECTOR_KEYS_PANEL ? '<div id="connector-keys-panel" data-connector-keys-panel class="connector-keys-mount"></div>' : ''}
           ${state.tauriNativeEnvironment.isTauriNative ? '<div id="tauri-local-runtime-panel" class="connector-keys-mount"></div>' : ''}
         `);
     case 'rules':
@@ -17544,21 +17591,37 @@ function preferencesActiveView(): string {
           ${agentPoliciesPanel()}
         </div>
       `);
-    case 'tokens':
+    case 'tokens': {
+      // Custom Tokens is hidden (SHOW_CUSTOM_TOKENS), so the subtitle shouldn't promise token display
+      // names the tab no longer shows — it's failure-retry only until the flag flips back.
+      const tokensSubtitle = SHOW_CUSTOM_TOKENS
+        ? t('Token display names and failure retry defaults.')
+        : t('Failure retry defaults.');
       if (isMobileAppViewport()) {
-        return preferencesGroup(t('Tokens & Retry'), t('Token display labels and retry behavior.'), mobileTokensPreferencesContent());
+        return preferencesGroup(t('Tokens & Retry'), tokensSubtitle, mobileTokensPreferencesContent());
       }
-      return preferencesGroup(t('Tokens & Retry'), t('Token display names and failure retry defaults.'), `
+      return preferencesGroup(t('Tokens & Retry'), tokensSubtitle, `
         <div class="preferences-card-grid tokens-preferences-grid">
           ${customTokensPanel()}
           ${failurePoliciesPanel()}
         </div>
       `);
+    }
   }
 }
 
 function mobileAccessPreferencesContent(): string {
   const active = state.preferencesAccessMobileTab;
+  // The separate API Keys panel is hidden (SHOW_CONNECTOR_KEYS_PANEL); credential
+  // entry now lives on the connector cards themselves. When it's off there's only
+  // one subtab left, so drop the tab strip and show the connectors directly.
+  if (!SHOW_CONNECTOR_KEYS_PANEL) {
+    return `
+      <div class="preferences-mobile-subview">
+        <div class="preferences-card-grid access-preferences-grid">${connectedDappsPanel()}</div>
+      </div>
+    `;
+  }
   return `
     ${preferencesMobileSectionTabs('access', [
       { id: 'protocols', label: t('Protocols') },
@@ -17566,7 +17629,7 @@ function mobileAccessPreferencesContent(): string {
     ], active)}
     <div class="preferences-mobile-subview">
       ${active === 'keys'
-        ? `<div id="connector-keys-panel" class="connector-keys-mount mobile-connector-keys-mount"></div>`
+        ? `<div id="connector-keys-panel" data-connector-keys-panel class="connector-keys-mount mobile-connector-keys-mount"></div>`
         : `<div class="preferences-card-grid access-preferences-grid">${connectedDappsPanel()}</div>`}
       ${active === 'keys' && state.tauriNativeEnvironment.isTauriNative ? '<div id="tauri-local-runtime-panel" class="connector-keys-mount"></div>' : ''}
     </div>
@@ -17574,13 +17637,17 @@ function mobileAccessPreferencesContent(): string {
 }
 
 function mobileRulesPreferencesContent(): string {
-  const active = state.preferencesRulesMobileTab;
+  // Agent Policies (the 'policies' subtab) is hidden, so drop that tab and never leave the phone on an
+  // empty 'policies' subview if it was the last-selected one.
+  let active = state.preferencesRulesMobileTab;
+  if (!SHOW_AGENT_POLICIES && active === 'policies') active = 'recipients';
+  const tabs = [
+    { id: 'recipients', label: t('Recipients') },
+    { id: 'rails', label: t('Rails') },
+    ...(SHOW_AGENT_POLICIES ? [{ id: 'policies', label: t('Policies') }] : []),
+  ];
   return `
-    ${preferencesMobileSectionTabs('rules', [
-      { id: 'recipients', label: t('Recipients') },
-      { id: 'rails', label: t('Rails') },
-      { id: 'policies', label: t('Policies') },
-    ], active)}
+    ${preferencesMobileSectionTabs('rules', tabs, active)}
     <div class="preferences-mobile-subview">
       ${active === 'rails'
         ? safetyRailsPanel()
@@ -17592,6 +17659,15 @@ function mobileRulesPreferencesContent(): string {
 }
 
 function mobileTokensPreferencesContent(): string {
+  // Custom Tokens (the 'labels' subtab) is hidden, so Retry is the only subtab left. Drop the tab strip
+  // and show it directly — otherwise the phone opens this tab on an empty 'labels' subview (its default).
+  if (!SHOW_CUSTOM_TOKENS) {
+    return `
+      <div class="preferences-mobile-subview">
+        ${failurePoliciesPanel()}
+      </div>
+    `;
+  }
   const active = state.preferencesTokensMobileTab;
   return `
     ${preferencesMobileSectionTabs('tokens', [
@@ -17650,9 +17726,9 @@ function preferencesGroup(title: string, detail: string, content: string): strin
 
 function aiReviewPreferencesPanel(): string {
   const extras = [
-    state.aiSettings.multiReviewer ? t('Multi-agent review') : '',
-    state.aiSettings.autoBackgroundWatch ? t('Background re-check') : '',
-    state.plannerPrefs.houseRules.trim() ? t('House rules') : '',
+    SHOW_MULTI_AGENT_REVIEW && state.aiSettings.multiReviewer ? t('Multi-agent review') : '',
+    state.aiSettings.autoBackgroundWatch ? t('Re-check scheduled plans') : '',
+    state.plannerPrefs.houseRules.trim() ? t('Rules') : '',
     state.plannerPrefs.savedPrompts.length ? savedPromptCountLabel(state.plannerPrefs.savedPrompts.length) : '',
   ].filter(Boolean);
   const status = extras.length ? extras.join(' · ') : t('Defaults');
@@ -17661,12 +17737,15 @@ function aiReviewPreferencesPanel(): string {
       <div class="ai-review-preferences-head">
         <div>
           <span>${escapeHtml(t('AI connector'))}</span>
-          <p>${escapeHtml(t('Saved prompts and review extras affect the AI connector only. Wallet approval, submission, and signing stay separate.'))}</p>
+          <p>${escapeHtml(t('Rules and quick prompts guide how the agent helps you - in chat and when it prepares a request. Wallet approval, submission, and signing stay separate.'))}</p>
         </div>
         <em>${escapeHtml(status)}</em>
       </div>
-      <div class="ai-advanced-toggles" aria-label="${escapeHtml(t('Agent review extras'))}">
-        <label class="ai-toggle">
+      ${agentRulesCard('preferences')}
+      ${quickPromptsCard()}
+      <div class="ai-advanced-toggles ai-automation-toggles" aria-label="${escapeHtml(t('Agent review extras'))}">
+        <span class="ai-automation-eyebrow">${escapeHtml(t('Automation'))}</span>
+        ${SHOW_MULTI_AGENT_REVIEW ? `<label class="ai-toggle">
           <input
             type="checkbox"
             data-ai-toggle="multiReviewer"
@@ -17677,7 +17756,7 @@ function aiReviewPreferencesPanel(): string {
             <strong>${escapeHtml(t('Multi-agent review'))}</strong>
             <em>${escapeHtml(t('Ask the agent to weigh in as risk, quote, policy, and protocol reviewers in one review call.'))}</em>
           </span>
-        </label>
+        </label>` : ''}
         <label class="ai-toggle">
           <input
             type="checkbox"
@@ -17686,12 +17765,11 @@ function aiReviewPreferencesPanel(): string {
             ${state.busy ? 'disabled' : ''}
           />
           <span>
-            <strong>${escapeHtml(t('Background re-check'))}</strong>
-            <em>${escapeHtml(t('While this tab is open, older drafts are re-reviewed and surfaced only if the recommendation changes.'))}</em>
+            <strong>${escapeHtml(t('Re-check scheduled plans'))}</strong>
+            <em>${escapeHtml(t('Re-checks your recurring and queued drafts about once an hour and alerts you only if a plan’s approve/deny changes — for example when a price crosses a threshold you set.'))}</em>
           </span>
         </label>
       </div>
-      ${plannerPrefsSection('preferences')}
     </section>
   `;
 }
@@ -17913,7 +17991,7 @@ function safetyRailsProgramsSection(): string {
       <div class="safety-rails-section-head">
         <strong>${t('Programs')}</strong>
         <button type="button" class="safety-rails-toggle ${section.enabled ? 'active' : ''}" data-safety-rails-action="toggle-programs">${section.enabled ? t('on') : t('off')}</button>
-        <button type="button" class="safety-rails-mode" data-safety-rails-action="cycle-mode" data-safety-rails-section="programs">${section.mode === 'block' ? t('Hard block') : t('Warn only')}</button>
+        <button type="button" class="safety-rails-mode" data-safety-rails-action="cycle-mode" data-safety-rails-section="programs">${section.mode === 'block' ? t('Block') : t('Warn only')}</button>
       </div>
       <p>${t('Programs you trust to clear without a warning. Other programs surface a warning before approval.')}</p>
       <div class="safety-rails-input-row">
@@ -17939,7 +18017,7 @@ function safetyRailsTokensSection(): string {
       <div class="safety-rails-section-head">
         <strong>${t('Tokens')}</strong>
         <button type="button" class="safety-rails-toggle ${section.enabled ? 'active' : ''}" data-safety-rails-action="toggle-tokens">${section.enabled ? t('on') : t('off')}</button>
-        <button type="button" class="safety-rails-mode" data-safety-rails-action="cycle-mode" data-safety-rails-section="tokens">${section.mode === 'block' ? t('Hard block') : t('Warn only')}</button>
+        <button type="button" class="safety-rails-mode" data-safety-rails-action="cycle-mode" data-safety-rails-section="tokens">${section.mode === 'block' ? t('Block') : t('Warn only')}</button>
       </div>
       <p>${t('Token symbols or mints you trust. Off-list tokens surface a warning on transfers and swaps.')}</p>
       <div class="safety-rails-input-row">
@@ -17965,7 +18043,7 @@ function safetyRailsSpendSection(): string {
       <div class="safety-rails-section-head">
         <strong>${t('Spend caps')}</strong>
         <button type="button" class="safety-rails-toggle ${section.enabled ? 'active' : ''}" data-safety-rails-action="toggle-spend">${section.enabled ? t('on') : t('off')}</button>
-        <button type="button" class="safety-rails-mode" data-safety-rails-action="cycle-mode" data-safety-rails-section="spend">${section.mode === 'block' ? t('Hard block') : t('Warn only')}</button>
+        <button type="button" class="safety-rails-mode" data-safety-rails-action="cycle-mode" data-safety-rails-section="spend">${section.mode === 'block' ? t('Block') : t('Warn only')}</button>
       </div>
       <p>${t('Maximum amount per token in rolling windows. Calculated from confirmed transfers in this browser.')}</p>
       <div class="safety-rails-input-row safety-rails-cap-row">
@@ -17995,7 +18073,7 @@ function safetyRailsSlippageSection(): string {
       <div class="safety-rails-section-head">
         <strong>${t('Slippage cap')}</strong>
         <button type="button" class="safety-rails-toggle ${section.enabled ? 'active' : ''}" data-safety-rails-action="toggle-slippage">${section.enabled ? t('on') : t('off')}</button>
-        <button type="button" class="safety-rails-mode" data-safety-rails-action="cycle-mode" data-safety-rails-section="slippage">${section.mode === 'block' ? t('Hard block') : t('Warn only')}</button>
+        <button type="button" class="safety-rails-mode" data-safety-rails-action="cycle-mode" data-safety-rails-section="slippage">${section.mode === 'block' ? t('Block') : t('Warn only')}</button>
       </div>
       <p>${t('Maximum slippage allowed for swap quotes. Higher quotes surface a warning before approval.')}</p>
       <div class="safety-rails-input-row">
@@ -18126,8 +18204,14 @@ function connectedDappsPanel(): string {
   // connectedDappRow communicates that it needs no connection (covered by the shared Jupiter API key).
   const enabledConnectors = enabledProtocolConnectors(dapps, state.cluster);
   const disabledConnectors = disabledProtocolConnectors(dapps, state.cluster);
-  const selectedCatalogId = protocolConnectorCatalogSelection(disabledConnectors);
-  const selectedCatalogConnector = disabledConnectors.find((connector) => connector.id === selectedCatalogId);
+  // Credential connectors (Magic Eden, Tensor, Sanctum, Lulo, Phoenix) get their
+  // own cards even when disabled, so their inline key entry replaces the hidden
+  // "Connector API keys" panel. Everything else stays in the catalog dropdown.
+  const disabledCredentialConnectors = disabledConnectors.filter((connector) => connectorNeedsCredential(connector.id));
+  const catalogConnectors = disabledConnectors.filter((connector) => !connectorNeedsCredential(connector.id));
+  const cardConnectors = [...enabledConnectors, ...disabledCredentialConnectors];
+  const selectedCatalogId = protocolConnectorCatalogSelection(catalogConnectors);
+  const selectedCatalogConnector = catalogConnectors.find((connector) => connector.id === selectedCatalogId);
   const enabledCount = enabledConnectors.length;
   const summary = connectedDappsSummary(dapps, state.cluster);
   const mobile = isMobileAppViewport();
@@ -18144,9 +18228,9 @@ function connectedDappsPanel(): string {
           ${selectPicker({
             id: 'protocolConnectorCatalog',
             value: selectedCatalogId,
-            options: protocolConnectorSelectOptions(disabledConnectors),
+            options: protocolConnectorSelectOptions(catalogConnectors),
             attrs: { 'data-connected-dapp-catalog': true },
-            disabled: disabledConnectors.length === 0 || state.busy,
+            disabled: catalogConnectors.length === 0 || state.busy,
             labelId: 'protocolConnectorCatalogLabel',
             className: 'protocol-connector-picker',
           })}
@@ -18158,10 +18242,9 @@ function connectedDappsPanel(): string {
           ${enableSelectedDisabled ? 'disabled' : ''}
         >${mobile ? t('Enable') : t('+ Enable protocol')}</button>
       </div>
-      ${protocolConnectorCredentialInline(selectedCatalogConnector)}
       <div class="connected-dapps-list">
-        ${enabledConnectors.length
-          ? enabledConnectors.map((adapter) => connectedDappRow(adapter)).join('')
+        ${cardConnectors.length
+          ? cardConnectors.map((adapter) => connectedDappRow(adapter)).join('')
           : `<div class="connected-dapps-empty">${t('No protocol connectors enabled. Add one from the catalog when you want the agent to inspect or prepare protocol work.')}</div>`}
       </div>
     </section>
@@ -18272,6 +18355,99 @@ function protocolConnectorCredentialInline(connector: ProtocolConnector | undefi
 // a wall instead of a summary.
 const CONNECTOR_ACTION_CHIP_CAP = 8;
 
+// The middle phase for a credential connector that has no saved key yet: an
+// inline key/code input with the shared paste button, and a Confirm button that
+// sits where Enable/Disable would. Rendered in the card's action slot in place
+// of the toggle. Reuses .ai-key-input-wrap / .ai-key-paste-btn (same paste
+// handler as everywhere else) and the existing credential draft input binding.
+function connectorCardCredentialControl(adapter: ConnectedDappAdapter): string {
+  const id = adapter.id;
+  if (!connectorNeedsCredential(id)) return '';
+  const meta = BYO_KEY_CONNECTOR_META[id];
+  const isAccessCode = meta?.credentialKind === 'access-code';
+  const fieldLabel = isAccessCode ? t('Access code') : t('API key');
+  const draft = connectorCredentialDraft(id);
+  const storageBlocked = !state.connectorSecrets.available || Boolean(state.connectorSecrets.error);
+  // The entry UI is always shown (matching how the old panel behaved), with a
+  // note when storage is still loading or unconfigured. Confirm surfaces the
+  // storage error cleanly if the user tries to save before it's available.
+  // Keep the note clean: surface a short human message when storage is blocked
+  // rather than leaking the raw fetch/parse error string onto every card.
+  const note = state.connectorSecrets.loading
+    ? t('Checking saved credential…')
+    : storageBlocked
+      ? t('Connector key storage is not configured on this server yet.')
+      : '';
+  const confirmDisabled = state.busy || state.connectorSecrets.loading || draft.apiKey.trim().length === 0;
+  const confirmLabel = isAccessCode ? t('Confirm access code') : t('Confirm API key');
+  return `
+    <div class="connector-card-credential">
+      <span class="connector-card-credential-label">${escapeHtml(fieldLabel)}</span>
+      <div class="ai-key-input-wrap">
+        <input
+          data-protocol-connector-credential="${escapeHtml(id)}"
+          data-protocol-connector-credential-field="apiKey"
+          type="password"
+          value="${escapeHtml(draft.apiKey)}"
+          placeholder="${escapeHtml(isAccessCode ? t('Paste access code') : t('Paste API key'))}"
+          autocomplete="off"
+          spellcheck="false"
+          ${state.busy ? 'disabled' : ''}
+        />
+        <button
+          type="button"
+          class="ai-key-paste-btn"
+          data-protocol-connector-credential-paste="${escapeHtml(id)}"
+          title="${escapeHtml(t('Paste from clipboard'))}"
+          aria-label="${escapeHtml(t('Paste from clipboard'))}"
+        >${escapeHtml(t('Paste'))}</button>
+      </div>
+      <button
+        type="button"
+        class="primary connector-card-confirm"
+        data-connected-dapp-action="confirm-credential"
+        data-connected-dapp-id="${escapeHtml(id)}"
+        ${confirmDisabled ? 'disabled' : ''}
+      >${escapeHtml(confirmLabel)}</button>
+      ${note ? `<p class="connector-card-credential-status ${storageBlocked ? 'blocked' : ''}">${escapeHtml(note)}</p>` : ''}
+      ${meta?.portalUrl
+        ? `<a class="connector-card-credential-link" href="${escapeHtml(meta.portalUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(isAccessCode ? t('Request an access code') : t('Get an API key'))} →</a>`
+        : ''}
+    </div>
+  `;
+}
+
+// The card's action slot: the credential middle-phase when a key is required but
+// not yet saved, otherwise the normal Enable/Disable button.
+function connectorCardActionSlot(adapter: ConnectedDappAdapter, opts: { enabled: boolean; clusterOk: boolean; alwaysOn: boolean; toggleLabel: string; toggleTitle: string }): string {
+  if (opts.alwaysOn) {
+    return `<span class="connected-dapp-always-on-note">${escapeHtml(t('Always on, no connection needed. Covered by Agentic’s Jupiter API.'))}</span>`;
+  }
+  if (connectorNeedsCredential(adapter.id) && !connectorHasSavedCredential(adapter.id) && opts.clusterOk) {
+    return connectorCardCredentialControl(adapter);
+  }
+  return `<button
+    type="button"
+    class="primary"
+    data-connected-dapp-action="toggle"
+    data-connected-dapp-id="${escapeHtml(adapter.id)}"
+    data-connected-dapp-next="${opts.enabled ? 'off' : 'on'}"
+    title="${escapeHtml(opts.toggleTitle)}"
+    ${state.busy || !opts.clusterOk ? 'disabled' : ''}
+  >${escapeHtml(opts.toggleLabel)}</button>`;
+}
+
+// Pill label for the card header, including the credential middle state.
+function connectorCardStateLabel(adapter: ConnectedDappAdapter, enabled: boolean, alwaysOn: boolean): { label: string; tone: 'connected' | 'disconnected' | 'needs-credential' } {
+  if (alwaysOn) return { label: t('Always on'), tone: 'connected' };
+  if (enabled) return { label: t('Enabled'), tone: 'connected' };
+  if (connectorNeedsCredential(adapter.id) && !connectorHasSavedCredential(adapter.id)) {
+    const isAccessCode = BYO_KEY_CONNECTOR_META[adapter.id]?.credentialKind === 'access-code';
+    return { label: isAccessCode ? t('Needs access code') : t('Needs API key'), tone: 'needs-credential' };
+  }
+  return { label: t('Off'), tone: 'disconnected' };
+}
+
 function connectedDappRow(adapter: ConnectedDappAdapter): string {
   const entry = state.connectedDapps.entries[adapter.id];
   const clusterOk = isClusterSupported(adapter, state.cluster);
@@ -18317,17 +18493,20 @@ function connectedDappRow(adapter: ConnectedDappAdapter): string {
       ? tf('Disable {name}', { name: adapter.name })
       : tf('Enable {name}', { name: adapter.name })
     : tf('{name} is only available on {clusters}', { name: adapter.name, clusters: adapter.supportedClusters.join(', ') });
+  const statePill = connectorCardStateLabel(adapter, enabled, alwaysOn);
   if (isMobileAppViewport()) {
     return connectedDappRowMobile({
       adapter,
       enabled,
       clusterOk,
+      alwaysOn,
       clusterChip,
       capabilityChips,
       actionChips,
       capabilityRows,
       toggleLabel,
       toggleTitle,
+      statePill,
     });
   }
   return `
@@ -18341,7 +18520,7 @@ function connectedDappRow(adapter: ConnectedDappAdapter): string {
         </div>
         <div class="connected-dapp-row-meta">
           ${clusterChip}
-          <span class="connected-dapp-state-pill ${enabled || alwaysOn ? 'connected' : 'disconnected'}">${alwaysOn ? t('Always on') : enabled ? t('Enabled') : t('Off')}</span>
+          <span class="connected-dapp-state-pill ${statePill.tone}">${escapeHtml(statePill.label)}</span>
         </div>
       </div>
       <div class="connected-dapp-capability-chips">${capabilityChips}</div>
@@ -18350,17 +18529,7 @@ function connectedDappRow(adapter: ConnectedDappAdapter): string {
         ${capabilityRows}
       </dl>
       <div class="connected-dapp-row-actions">
-        ${alwaysOn
-          ? `<span class="connected-dapp-always-on-note">${escapeHtml(t('Always on, no connection needed. Covered by Agentic’s Jupiter API.'))}</span>`
-          : `<button
-          type="button"
-          class="primary"
-          data-connected-dapp-action="toggle"
-          data-connected-dapp-id="${escapeHtml(adapter.id)}"
-          data-connected-dapp-next="${enabled ? 'off' : 'on'}"
-          title="${escapeHtml(toggleTitle)}"
-          ${state.busy || !clusterOk ? 'disabled' : ''}
-        >${toggleLabel}</button>`}
+        ${connectorCardActionSlot(adapter, { enabled, clusterOk, alwaysOn, toggleLabel, toggleTitle })}
       </div>
     </article>
   `;
@@ -18370,15 +18539,16 @@ function connectedDappRowMobile(input: {
   adapter: ConnectedDappAdapter;
   enabled: boolean;
   clusterOk: boolean;
+  alwaysOn: boolean;
   clusterChip: string;
   capabilityChips: string;
   actionChips: string;
   capabilityRows: string;
   toggleLabel: string;
   toggleTitle: string;
+  statePill: { label: string; tone: 'connected' | 'disconnected' | 'needs-credential' };
 }): string {
-  const { adapter, enabled, clusterOk, clusterChip, capabilityChips, actionChips, capabilityRows, toggleLabel, toggleTitle } = input;
-  const alwaysOn = adapter.id === 'jupiter' && clusterOk;
+  const { adapter, enabled, clusterOk, alwaysOn, clusterChip, capabilityChips, actionChips, capabilityRows, toggleLabel, toggleTitle, statePill } = input;
   return `
     <details class="connected-dapp-row mobile-connected-dapp-row ${enabled ? 'enabled' : 'disabled'} ${clusterOk ? '' : 'cluster-blocked'}" data-connected-dapp="${escapeHtml(adapter.id)}">
       <summary class="mobile-connected-dapp-summary">
@@ -18389,7 +18559,7 @@ function connectedDappRowMobile(input: {
         </span>
         <span class="connected-dapp-row-meta">
           ${clusterChip}
-          <span class="connected-dapp-state-pill ${enabled || alwaysOn ? 'connected' : 'disconnected'}">${alwaysOn ? t('Always on') : enabled ? t('Enabled') : t('Off')}</span>
+          <span class="connected-dapp-state-pill ${statePill.tone}">${escapeHtml(statePill.label)}</span>
         </span>
       </summary>
       <div class="mobile-connected-dapp-detail">
@@ -18401,17 +18571,7 @@ function connectedDappRowMobile(input: {
           ${capabilityRows}
         </dl>
         <div class="connected-dapp-row-actions">
-          ${alwaysOn
-            ? `<span class="connected-dapp-always-on-note">${escapeHtml(t('Always on, no connection needed. Covered by Agentic’s Jupiter API.'))}</span>`
-            : `<button
-            type="button"
-            class="primary"
-            data-connected-dapp-action="toggle"
-            data-connected-dapp-id="${escapeHtml(adapter.id)}"
-            data-connected-dapp-next="${enabled ? 'off' : 'on'}"
-            title="${escapeHtml(toggleTitle)}"
-            ${state.busy || !clusterOk ? 'disabled' : ''}
-          >${toggleLabel}</button>`}
+          ${connectorCardActionSlot(adapter, { enabled, clusterOk, alwaysOn, toggleLabel, toggleTitle })}
         </div>
       </div>
     </details>
@@ -18586,6 +18746,7 @@ function formatConnectedDappHostname(url: string): string {
 }
 
 function agentPoliciesPanel(): string {
+  if (!SHOW_AGENT_POLICIES) return '';
   const policies = state.agentPolicies;
   const enabledCount = policies.filter((policy) => policy.enabled).length;
   const open = isMobileAppViewport() || policies.length > 0 ? 'open' : '';
@@ -18653,6 +18814,7 @@ function customTokenFieldError(key: string): string {
 }
 
 function customTokensPanel(): string {
+  if (!SHOW_CUSTOM_TOKENS) return '';
   const tokens = state.customTokens;
   const open = isMobileAppViewport() || tokens.length > 0 ? 'open' : '';
   const summary = tokens.length === 0
@@ -19074,6 +19236,20 @@ function savedRecipientForAddress(address: string): SavedRecipient | undefined {
   const normalized = address.trim();
   if (!normalized) return undefined;
   return state.recipientRules.recipients.find((recipient) => recipient.address === normalized);
+}
+
+// "This is your own wallet" affordance for the pre-sign card. A recipient is yours when it's the
+// connected address, or a saved recipient the user marked as Mine. Returns the label to show
+// ("Your wallet" / "Your wallet (Savings)"), or null when the recipient isn't self. This is what the
+// "Mine" flag's Preferences hint always promised but never rendered.
+function recipientSelfWalletLabel(address: string): string | null {
+  const normalized = address.trim();
+  if (!normalized) return null;
+  const saved = savedRecipientForAddress(normalized);
+  const isSelf = (state.address && normalized === state.address) || saved?.isMine === true;
+  if (!isSelf) return null;
+  const name = saved?.name?.trim();
+  return name ? tf('Your wallet ({name})', { name }) : t('Your wallet');
 }
 
 function recipientDisplayLabel(address: string): string {
@@ -19599,6 +19775,21 @@ function handleConnectedDappAction(button: HTMLButtonElement): void {
   if (!id) return;
   const adapter = getAdapterMeta(id);
   if (!adapter) return;
+  // Inline "Confirm API key / Access code" on a connector card: same save-then-
+  // enable path as the catalog Enable, so the draft key is persisted and the
+  // connector turns on (which swaps the card into its Disable state).
+  if (action === 'confirm-credential') {
+    if (!isClusterSupported(adapter, state.cluster)) {
+      pushToast(
+        'error',
+        tf('{name} unavailable here', { name: adapter.name }),
+        tf('{name} is only available on {clusters}.', { name: adapter.name, clusters: adapter.supportedClusters.join(', ') }),
+      );
+      return;
+    }
+    void enableProtocolConnectorFromPreferences(id);
+    return;
+  }
   if (action === 'toggle' || action === 'add-selected') {
     if (!isClusterSupported(adapter, state.cluster)) {
       pushToast(
@@ -19635,6 +19826,7 @@ function handleConnectedDappAction(button: HTMLButtonElement): void {
 async function enableProtocolConnectorFromPreferences(id: ConnectedDappId): Promise<void> {
   const adapter = getAdapterMeta(id);
   if (!adapter) return;
+  let savedCredential = false;
   const readiness = connectorReadinessForConnector(adapter, null, connectorCredentialReady(id));
   if (!readiness.canEnable) {
     pushToast('error', readiness.label, readiness.detail);
@@ -19661,6 +19853,7 @@ async function enableProtocolConnectorFromPreferences(id: ConnectedDappId): Prom
       const summary = await saveConnectorSecret(id, { apiKey });
       updateConnectorSecretSummary(id, summary);
       state.protocolConnectorCredentialDrafts[id] = { apiKey: '' };
+      savedCredential = true;
     } catch (err) {
       pushToast('error', t('Could not save credential'), err instanceof Error ? err.message : String(err));
       render();
@@ -19668,16 +19861,19 @@ async function enableProtocolConnectorFromPreferences(id: ConnectedDappId): Prom
     }
   }
   connectorConnectEnable(id);
-  pushToast('success', tf('{name} enabled', { name: adapter.name }), t('No wallet signature was requested.'));
-  render();
-}
-
-function updateProtocolConnectorPref(field: HTMLInputElement): void {
-  const key = field.dataset.protocolConnectorPref;
-  if (key === 'dialectClientKey') {
-    state.protocolConnectorPrefs.dialectClientKey = field.value.slice(0, 160);
-    saveProtocolConnectorPrefs();
+  if (savedCredential) {
+    // Confirm-and-save flow: lead the toast with the credential being stored, per
+    // the card's "Confirm API key / access code" affordance.
+    const isAccessCode = connectorNeedsCredential(id) && BYO_KEY_CONNECTOR_META[id]?.credentialKind === 'access-code';
+    pushToast(
+      'success',
+      isAccessCode ? t('Access code saved') : t('API key saved'),
+      tf('{name} is now enabled.', { name: adapter.name }),
+    );
+  } else {
+    pushToast('success', tf('{name} enabled', { name: adapter.name }), t('No wallet signature was requested.'));
   }
+  render();
 }
 
 function updateProtocolConnectorCatalogSelection(field: HTMLSelectElement): void {
@@ -20851,11 +21047,14 @@ function commandCenterOverviewPanel(): string {
         `;
   return `
     <div class="command-overview-stack">
-      <section class="approval-object signature-stage stage-overview stage-anchor ${openApprovals.length ? 'stage-active' : 'stage-draft'}">
-        <div class="signature-object-head command-center-head">
-          ${sectionTitleLine(t('Approval workspace'), t('AI prepares the review item; the wallet owner checks the details and signs only after review.'))}
-          ${headerActions}
-        </div>
+      <section class="approval-object signature-stage stage-overview stage-anchor form-kit ${openApprovals.length ? 'stage-active' : 'stage-draft'}">
+        ${formKitHero({
+          eyebrow: t('Home'),
+          title: t('Approval workspace.'),
+          detail: t('AI prepares the review item; the wallet owner checks the details and signs only after review.'),
+          icon: 'wallet',
+          aside: headerActions,
+        })}
 
         ${SHOW_DEV_CONTROLS ? '' : firstRunActionBand()}
         ${SHOW_DEV_CONTROLS ? '' : trustLayerPanel()}
@@ -21125,14 +21324,16 @@ function commandConnectorsPreferenceSnapshotCard(): CommandPreferenceSnapshotCar
 
 function commandGuardrailsPreferenceSnapshotCard(): CommandPreferenceSnapshotCard {
   const railsOn = safetyRailsEnabledCount();
-  const enabledPolicies = state.agentPolicies.filter((policy) => policy.enabled).length;
+  // Agent Policies is hidden (SHOW_AGENT_POLICIES), so its count neither shows in the detail nor
+  // flips this card to "set" on its own.
+  const enabledPolicies = SHOW_AGENT_POLICIES ? state.agentPolicies.filter((policy) => policy.enabled).length : 0;
   const recipients = state.recipientRules.recipients.length;
   const alertsOn = notificationEnabledCount();
   const hasCustomReview = railsOn > 0 || enabledPolicies > 0 || recipients > 0 || alertsOn > 0;
   return {
     label: t('Review rules'),
     value: hasCustomReview ? t('Preferences set') : t('Defaults active'),
-    detail: `${countPhrase(recipients, t('recipient'), t('recipients'))} - ${countPhrase(railsOn, t('rail'), t('rails'))} - ${countPhrase(enabledPolicies, t('policy'), t('policies'))} - ${countPhrase(alertsOn, t('alert'), t('alerts'))}`,
+    detail: `${countPhrase(recipients, t('recipient'), t('recipients'))} - ${countPhrase(railsOn, t('rail'), t('rails'))}${SHOW_AGENT_POLICIES ? ` - ${countPhrase(enabledPolicies, t('policy'), t('policies'))}` : ''} - ${countPhrase(alertsOn, t('alert'), t('alerts'))}`,
     meta: hasCustomReview ? t('Review extras on') : t('No extra rules'),
     tone: hasCustomReview ? 'good' : 'idle',
     icon: 'guardrails',
@@ -21255,11 +21456,14 @@ function commandCenterAiPanel(): string {
         `;
   return `
     <div class="command-detail-stack command-ai-panel">
-      <section class="approval-object signature-stage command-page-card">
-        <div class="signature-object-head command-center-head">
-          ${sectionTitleLine(t('Connect AI'), t('Set up the agent route, provider, model, and connection boundary. Workflow actions still require explicit review.'))}
-          ${headerActions}
-        </div>
+      <section class="approval-object signature-stage command-page-card form-kit">
+        ${formKitHero({
+          eyebrow: t('Connect AI'),
+          title: t('Connect an AI route.'),
+          detail: t('Set up the agent route, provider, model, and connection boundary. Workflow actions still require explicit review.'),
+          icon: 'ai',
+          aside: headerActions,
+        })}
 
         <div class="command-route-grid" aria-label="${escapeHtml(t('AI route capabilities'))}">
           ${commandAiRouteCards()}
@@ -22015,13 +22219,16 @@ function commandCenterStoragePanel(): string {
           >${escapeHtml(t('Connect Cloud Storage'))}</button>`;
   return `
     <div class="command-detail-stack command-storage-panel">
-      <section class="approval-object signature-stage command-page-card">
-        <div class="signature-object-head command-center-head">
-          ${sectionTitleLine(t('Connect Cloud Storage'), t('Choose browser-local storage or sign in to Agentic Cloud. No localhost required.'))}
-          <div class="command-center-actions" ${headerAction ? '' : 'hidden'}>
+      <section class="approval-object signature-stage command-page-card form-kit">
+        ${formKitHero({
+          eyebrow: t('Cloud Storage'),
+          title: t('Choose your storage.'),
+          detail: t('Choose browser-local storage or sign in to Agentic Cloud. No localhost required.'),
+          icon: 'cloud',
+          aside: `<div class="command-center-actions" ${headerAction ? '' : 'hidden'}>
             ${headerAction}
-          </div>
-        </div>
+          </div>`,
+        })}
 
         ${commandStorageCardsGroup()}
 
@@ -22954,7 +23161,7 @@ function chatPanel(): string {
           ? messages.map((m) => chatMessageHtml(m, displaySessionId)).join('')
           : chatEmptyState();
   return `
-    <section class="chat-surface" data-layout="chat">
+    <section class="chat-surface form-kit" data-layout="chat">
       ${chatHeaderHtml(session)}
       ${chatMobileToolStripHtml(session)}
       <div class="chat-transcript" data-chat-scroll aria-live="polite" aria-atomic="false">
@@ -26825,7 +27032,7 @@ async function runDirectBrowserChatLoop(
   const transport = resolveChatTransport(profile);
   const adapter = chatTransportAdapter(transport);
   const loopRequest = deviceAgentChatLoopRequest(request);
-  const system = chatAgenticSystemPrompt({ ...(loopRequest.walletAddress ? { walletAddress: loopRequest.walletAddress } : {}), ...(loopRequest.context ? { context: loopRequest.context } : {}) });
+  const system = chatAgenticSystemPrompt({ ...(loopRequest.walletAddress ? { walletAddress: loopRequest.walletAddress } : {}), ...(loopRequest.context ? { context: loopRequest.context } : {}), ...(chatAgentInstructions() ? { instructions: chatAgentInstructions() } : {}) });
   const runProviderTurn = createStreamingProviderTurn({ adapter, profile, apiKey, systemPrompt: system, model: profile.model });
   await runAgentChatLoop({
     request: loopRequest,
@@ -26899,7 +27106,7 @@ async function runDeviceAgentChatLoop(
   // only when the binary advertises 'complete'. Otherwise use the planner interim.
   if ((route === 'android-native' || route === 'ios-native') && deviceAgentRuntimeSupportsChatComplete()) {
     const adapter = chatTransportAdapter(transport);
-    const system = chatAgenticSystemPrompt({ ...(loopRequest.walletAddress ? { walletAddress: loopRequest.walletAddress } : {}), ...(loopRequest.context ? { context: loopRequest.context } : {}) });
+    const system = chatAgenticSystemPrompt({ ...(loopRequest.walletAddress ? { walletAddress: loopRequest.walletAddress } : {}), ...(loopRequest.context ? { context: loopRequest.context } : {}), ...(chatAgentInstructions() ? { instructions: chatAgentInstructions() } : {}) });
     // New binaries that advertise chatCompleteStream stream token-by-token; others use
     // the proven non-streaming complete. The streaming path self-heals to non-streaming.
     // stream_options.include_usage + reasoning_effort are only valid on genuine OpenAI /
@@ -31350,9 +31557,29 @@ function bindChat(): void {
   }
 }
 
+// Marketing-grade section header for the form-kit surfaces: an eyebrow kicker, a
+// large near-white title, a sub-line, and a gradient icon tile on the right (with
+// an optional status aside). Mirrors the /docs + /builders hierarchy so the app
+// forms stop reading as stock dark inputs. Scoped visuals live under `.form-kit`.
+function formKitHero(opts: { eyebrow: string; title: string; detail: string; icon: CommandCenterIconId; aside?: string }): string {
+  return `
+    <div class="fk-hero">
+      <div class="fk-hero-main">
+        <p class="fk-eyebrow">${escapeHtml(opts.eyebrow)}</p>
+        <h2 class="fk-title">${escapeHtml(opts.title)}</h2>
+        <p class="fk-sub">${escapeHtml(opts.detail)}</p>
+      </div>
+      <div class="fk-hero-aside">
+        ${opts.aside ?? ''}
+        <span class="fk-hero-icon" aria-hidden="true">${commandCenterIcon(opts.icon)}</span>
+      </div>
+    </div>
+  `;
+}
+
 function agentPlanPanel(): string {
   const reviewCount = generatedPlansForPanel(true).filter(isGeneratedPlanActiveInReview).length;
-  const headerTitle = state.oneTimePlanView === 'review' ? t('Check request') : t('New Request');
+  const reviewing = state.oneTimePlanView === 'review';
   // On the native apps the static create subtitle is replaced by the active template's
   // per-tab description (Swap/Send/Proof/Evidence each differ) so it doubles as the
   // section subtitle and lets us drop the redundant mid-page template description.
@@ -31368,11 +31595,14 @@ function agentPlanPanel(): string {
     ? `<span class="signature-state accent-note ${state.agentSignature ? 'complete' : state.agentPlan ? 'active' : ''}">${escapeHtml(reviewCountLabel)}</span>`
     : '';
   return `
-    <section class="approval-object signature-stage stage-agent ${state.agentSignature ? 'stage-complete' : state.agentPlan ? 'stage-active' : 'stage-draft'}">
-      <div class="signature-object-head">
-        ${sectionTitleLine(headerTitle, headerDetail)}
-        ${statusMarker}
-      </div>
+    <section class="approval-object signature-stage stage-agent form-kit ${state.agentSignature ? 'stage-complete' : state.agentPlan ? 'stage-active' : 'stage-draft'}">
+      ${formKitHero({
+        eyebrow: reviewing ? t('Check') : t('New Request'),
+        title: reviewing ? t('Review requests.') : t('Create a request.'),
+        detail: headerDetail,
+        icon: reviewing ? 'proofs' : 'approvals',
+        aside: statusMarker,
+      })}
 
       ${oneTimePlanTabs()}
       ${state.oneTimePlanView === 'review' ? generatedPlansPanel(true) : oneTimeCreatePlanPanel()}
@@ -33981,7 +34211,7 @@ function agentPlannerWorkbench(): string {
   const showTemplateDescription = !nativeShell;
   return `
     <div class="agent-planner-grid planner-single-column">
-      <div class="intent-capsule intent-document-card planner-card ${state.agentPlan ? 'plan-linked' : 'draft'}">
+      <div class="intent-capsule intent-document-card planner-card fk-surface ${state.agentPlan ? 'plan-linked' : 'draft'}">
         <div class="intent-document-head">
           <div>
             <h3 class="plan-method-title">
@@ -36550,7 +36780,11 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
   const ownedOption = (a: WalletBalanceAsset): SelectPickerOption => ({
     value: a.mint,
     label: a.symbol || `${a.mint.slice(0, 4)}…${a.mint.slice(-4)}`,
-    meta: `${formatChatCompactAmount(a.amount)}${a.symbol ? ` ${a.symbol}` : ''}`,
+    // Balance shown to at most 2 decimals (compact past 1,000, "<0.01" for dust).
+    // The symbol is dropped here because it sits right next to the token symbol.
+    meta: a.amount >= 1000
+      ? formatChatCompactAmount(a.amount)
+      : a.amount > 0 && a.amount < 0.01 ? '<0.01' : a.amount.toFixed(2),
     detail: formatChatCompactUsd(a.valueUsd) || '',
   });
   const curatedOption = (option: string): SelectPickerOption => ({
@@ -39418,10 +39652,13 @@ function approvalInboxPanel(): string {
   }
   const actions = filteredPreparedActions();
   return `
-    <section class="approval-object signature-stage stage-inbox stage-anchor ${actions.length ? 'stage-active' : 'stage-draft'}">
-      <div class="signature-object-head">
-        ${sectionTitleLine(t('Sign Approval'), approvalInboxDescription())}
-        <div class="inbox-toolbar signature-toolbar">
+    <section class="approval-object signature-stage stage-inbox stage-anchor form-kit ${actions.length ? 'stage-active' : 'stage-draft'}">
+      ${formKitHero({
+        eyebrow: t('Sign Approval'),
+        title: t('Review & sign.'),
+        detail: approvalInboxDescription(),
+        icon: 'approvals',
+        aside: `<div class="inbox-toolbar signature-toolbar">
           <label class="inbox-filter-control filter-field" for="inboxFilter">
             <span class="filter-field-label">${escapeHtml(t('Filter'))}</span>
             ${selectPicker({
@@ -39439,8 +39676,8 @@ function approvalInboxPanel(): string {
           </label>
           ${inboxRefreshButton('refreshInbox')}
           <button id="deleteAllInbox" class="utility danger" ${state.busy || actions.length === 0 ? 'disabled' : ''}>${escapeHtml(t('Delete All'))}</button>
-        </div>
-      </div>
+        </div>`,
+      })}
 
       ${queueStatusLine(actions.length)}
       ${preparedActionsList(actions)}
@@ -39457,21 +39694,24 @@ function completedPlansPanel(): string {
   const recurringCount = plans.filter((plan) => plan.kind === 'recurring').length;
   const mobile = isMobileAppViewport();
   return `
-    <section class="approval-object signature-stage stage-completed stage-anchor ${mobile ? 'mobile-completed-stage' : ''} ${plans.length ? 'stage-active' : 'stage-draft'}">
+    <section class="approval-object signature-stage stage-completed stage-anchor form-kit ${mobile ? 'mobile-completed-stage' : ''} ${plans.length ? 'stage-active' : 'stage-draft'}">
       ${mobile ? completedPlansMobileHeader({
         visibleCount: visiblePlans.length,
         receiptCount,
         proofCount,
         recurringCount,
       }) : `
-        <div class="signature-object-head">
-          ${sectionTitleLine(t('Done'), t('Approved, denied, cancelled, signed, and ended work stays here until you delete it.'))}
-          <div class="generated-plans-toolbar signature-toolbar">
+        ${formKitHero({
+          eyebrow: t('Done'),
+          title: t('Completed work.'),
+          detail: t('Approved, denied, cancelled, signed, and ended work stays here until you delete it.'),
+          icon: 'backup',
+          aside: `<div class="generated-plans-toolbar signature-toolbar">
             <span class="signature-state">${escapeHtml(tf('{n} completed', { n: plans.length }))}</span>
             ${inboxRefreshButton('refreshCompletedPlans')}
             <button id="deleteAllDone" class="utility danger" ${state.busy || visiblePlans.length === 0 ? 'disabled' : ''}>${escapeHtml(t('Delete All'))}</button>
-          </div>
-        </div>
+          </div>`,
+        })}
 
         ${completedPlanFilterControls()}
         <div class="queue-status completed-plan-status">
@@ -40398,13 +40638,16 @@ function scheduledApprovalsPanel(): string {
       )
     : recurringComposer();
   return `
-    <section class="approval-object signature-stage stage-schedule stage-anchor ${mobile ? 'mobile-recurring-stage' : ''} ${recurringPayments.length ? 'stage-active' : 'stage-draft'}">
-      <div class="signature-object-head app-inline-head ${mobile ? 'mobile-recurring-title-head' : ''}">
-        ${mobile ? mobileRecurringHeader(activeCount) : `
-          ${sectionTitleLine(t('Repeat Payments'), t('Set up payments that repeat. Each payment still asks for approval before it sends.'))}
-          ${inboxRefreshButton('refreshInbox')}
-        `}
-      </div>
+    <section class="approval-object signature-stage stage-schedule stage-anchor form-kit ${mobile ? 'mobile-recurring-stage' : ''} ${recurringPayments.length ? 'stage-active' : 'stage-draft'}">
+      ${mobile
+        ? `<div class="signature-object-head app-inline-head mobile-recurring-title-head">${mobileRecurringHeader(activeCount)}</div>`
+        : formKitHero({
+            eyebrow: t('Repeat Payments'),
+            title: active ? t('Active repeats.') : t('Create a repeat payment.'),
+            detail: t('Set up payments that repeat. Each payment still asks for approval before it sends.'),
+            icon: 'recurring',
+            aside: inboxRefreshButton('refreshInbox'),
+          })}
 
       ${mobile ? (active ? mobileRecurringStatsLine(recurringPayments) : '') : scheduleStatusLine()}
       ${mobile ? recurringMobileModeControls() : recurringViewTabs(activeCount)}
@@ -40533,11 +40776,14 @@ function labsPanel(): string {
         : `${t('Review wallet-signed proofs saved on this device')}${state.bridgeActive ? t(' and mirrored to the local bridge archive') : ''}.`
       : t('Save wallet-signed proof for a request, approval, denial, or result.');
   return `
-    <section class="approval-object signature-stage stage-labs stage-anchor ${mobile ? 'mobile-proof-stage' : ''} ${complete ? 'stage-complete' : 'stage-draft'}">
-      <div class="signature-object-head artifact-workspace-head">
-        ${sectionTitleLine(t('Save Proof'), detail)}
-        ${artifactWorkspaceTabs()}
-      </div>
+    <section class="approval-object signature-stage stage-labs stage-anchor form-kit ${mobile ? 'mobile-proof-stage' : ''} ${complete ? 'stage-complete' : 'stage-draft'}">
+      ${formKitHero({
+        eyebrow: t('Save Proof'),
+        title: state.artifactView === 'signed' ? t('Saved proofs.') : t('Save a proof.'),
+        detail,
+        icon: 'proofs',
+      })}
+      ${artifactWorkspaceTabs()}
 
       ${state.artifactView === 'signed' ? signedArtifactsPanel() : createArtifactPanel()}
       ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
@@ -40577,7 +40823,7 @@ function createArtifactPanel(): string {
   const artifact = latestLabArtifact(lab.id);
   const publicReceipt = isPublicReceiptLab(lab);
   return `
-      <div class="lab-panel lab-workbench ${publicReceipt ? 'common-proof-workbench' : 'advanced-proof-workbench'}">
+      <div class="lab-panel lab-workbench fk-surface ${publicReceipt ? 'common-proof-workbench' : 'advanced-proof-workbench'}">
         <div class="artifact-create-status">
           <span class="signature-state">${escapeHtml(labIndexLabel())}</span>
         </div>
@@ -43249,11 +43495,6 @@ function bind(): void {
     });
   }
 
-  for (const field of document.querySelectorAll<HTMLInputElement>('[data-protocol-connector-pref]')) {
-    bindOnce(field, 'input', () => updateProtocolConnectorPref(field));
-    bindOnce(field, 'change', () => updateProtocolConnectorPref(field));
-  }
-
   for (const field of document.querySelectorAll<HTMLInputElement>('[data-custom-token-field]')) {
     bindOnce(field, 'input', () => updateCustomTokenDraftField(field));
     bindOnce(field, 'change', () => updateCustomTokenDraftField(field));
@@ -43279,6 +43520,10 @@ function bind(): void {
   for (const textarea of document.querySelectorAll<HTMLTextAreaElement>('textarea[data-planner-pref="houseRules"]')) {
     bindOnce(textarea, 'input', () => updateHouseRules(textarea.value));
     bindOnce(textarea, 'change', () => updateHouseRules(textarea.value));
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-house-rules-action="save"]')) {
+    bindOnce(button, 'click', () => saveHouseRules());
   }
 
   for (const field of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('[data-saved-prompt-field]')) {
@@ -58446,6 +58691,23 @@ function recurringDraftFromPayment(payment: RecurringPayment): RecurringDraft {
 
 async function runPreparedActionOp(actionId: string, op: string): Promise<void> {
   const action = state.preparedActions.find((candidate) => candidate.id === actionId);
+  // Safety-rails "Block" gate. A hard-block rail (slippage/spend/token/program set to Block) makes an
+  // over-limit action require a deliberate, audited override before it executes — the enforcement that
+  // was missing (evaluateActionPolicy computed a 'block' severity, but nothing consumed it). Gated
+  // here, once, so it covers the cloud, browser, and every downstream execute handler. Overridable by
+  // design: this is a non-custodial wallet, so the confirm + audit trail is the friction, not a wall.
+  if (op === 'execute' && action) {
+    const blockReason = actionPolicyBlockReason(action);
+    if (blockReason) {
+      const outcome = confirmSafetyRailOverride(blockReason);
+      if (!outcome.proceed) return;
+      recordBrowserActionActivity(action.id, 'safety.rail.override', {
+        kind: action.kind,
+        reason: blockReason,
+        ...(outcome.userReason ? { userReason: outcome.userReason } : {}),
+      });
+    }
+  }
   if (action?.workflowSource === 'cloud') {
     await run('inbox', async () => {
       await runCloudPreparedActionOp(action, op);
@@ -60923,7 +61185,10 @@ async function executeSignedJupiterSwapWithRetry(
 ): Promise<Record<string, unknown>> {
   const signedTxid = signedTransactionId(signedTransactionBase64);
   let lastError: unknown;
-  for (let attempt = 1; attempt <= TX_RETRY_MAX_ATTEMPTS; attempt += 1) {
+  // Governs the "Retry N of M" copy; updated from each failure's per-kind policy so the toast shows
+  // the cap the owner actually set, not the old hardcoded 2.
+  let activeMaxAttempts = TX_RETRY_MAX_ATTEMPTS;
+  for (let attempt = 1; attempt <= TX_RETRY_ATTEMPT_CEILING; attempt += 1) {
     const knownStatus = await transactionStatusSeenForRetry(action.cluster, signedTxid);
     if (knownStatus) {
       updateTransactionToast(toastContext, 'pending', 'Transaction already submitted', short(signedTxid), signedTxid);
@@ -60936,7 +61201,7 @@ async function executeSignedJupiterSwapWithRetry(
       attempt === 1 ? 'Sending swap transaction' : 'Retrying swap transaction',
       attempt === 1
         ? 'Submitting the signed swap through Jupiter.'
-        : tf('Retry {attempt} of {max} with the same signed transaction.', { attempt, max: TX_RETRY_MAX_ATTEMPTS }),
+        : tf('Retry {attempt} of {max} with the same signed transaction.', { attempt, max: activeMaxAttempts }),
       signedTxid,
     );
 
@@ -60959,15 +61224,16 @@ async function executeSignedJupiterSwapWithRetry(
         updateTransactionToast(toastContext, 'pending', 'Transaction already submitted', short(signedTxid), signedTxid);
         return { signature: signedTxid, status: landedStatus };
       }
-      if (attempt >= TX_RETRY_MAX_ATTEMPTS || !shouldRetryTransactionSend(err, signedTxid)) {
-        break;
-      }
-      await waitBeforeTransactionRetry(toastContext, err, attempt, signedTxid);
+      const retry = transactionSendRetryDecision(err, signedTxid, attempt);
+      activeMaxAttempts = retry.maxAttempts;
+      if (retry.decision === 'stop') break;
+      if (retry.decision === 'ask' && !confirmTransactionSendRetry(retry)) break;
+      await waitBeforeTransactionRetry(toastContext, err, attempt, retry.maxAttempts, signedTxid);
     }
   }
 
   if (lastError && classifyTransactionFailure(lastError, { hasSignedBytes: true, txid: signedTxid }).maybeSubmitted) {
-    await waitBeforeTransactionRetry(toastContext, lastError, TX_RETRY_MAX_ATTEMPTS, signedTxid);
+    await waitBeforeTransactionRetry(toastContext, lastError, activeMaxAttempts, activeMaxAttempts, signedTxid);
     return { signature: signedTxid, status: await finalTransactionStatusOrPending(action.cluster, signedTxid) };
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError ?? t('Jupiter swap execution failed.')));
@@ -60980,7 +61246,8 @@ async function broadcastSignedBrowserTransactionWithRetry(
 ): Promise<string> {
   const signedTxid = signedTransactionId(signedTransactionBase64);
   let lastError: unknown;
-  for (let attempt = 1; attempt <= TX_RETRY_MAX_ATTEMPTS; attempt += 1) {
+  let activeMaxAttempts = TX_RETRY_MAX_ATTEMPTS;
+  for (let attempt = 1; attempt <= TX_RETRY_ATTEMPT_CEILING; attempt += 1) {
     const knownStatus = await transactionStatusSeenForRetry(cluster, signedTxid);
     if (knownStatus) {
       updateTransactionToast(toastContext, 'pending', 'Transaction already submitted', short(signedTxid), signedTxid);
@@ -60993,7 +61260,7 @@ async function broadcastSignedBrowserTransactionWithRetry(
       attempt === 1 ? 'Sending transaction' : 'Retrying transaction send',
       attempt === 1
         ? 'Broadcasting the signed transaction to Solana RPC.'
-        : tf('Retry {attempt} of {max} with the same signed transaction.', { attempt, max: TX_RETRY_MAX_ATTEMPTS }),
+        : tf('Retry {attempt} of {max} with the same signed transaction.', { attempt, max: activeMaxAttempts }),
       signedTxid,
     );
 
@@ -61008,15 +61275,16 @@ async function broadcastSignedBrowserTransactionWithRetry(
         updateTransactionToast(toastContext, 'pending', 'Transaction already submitted', short(signedTxid), signedTxid);
         return signedTxid;
       }
-      if (attempt >= TX_RETRY_MAX_ATTEMPTS || !shouldRetryTransactionSend(err, signedTxid)) {
-        break;
-      }
-      await waitBeforeTransactionRetry(toastContext, err, attempt, signedTxid);
+      const retry = transactionSendRetryDecision(err, signedTxid, attempt);
+      activeMaxAttempts = retry.maxAttempts;
+      if (retry.decision === 'stop') break;
+      if (retry.decision === 'ask' && !confirmTransactionSendRetry(retry)) break;
+      await waitBeforeTransactionRetry(toastContext, err, attempt, retry.maxAttempts, signedTxid);
     }
   }
 
   if (lastError && classifyTransactionFailure(lastError, { hasSignedBytes: true, txid: signedTxid }).maybeSubmitted) {
-    await waitBeforeTransactionRetry(toastContext, lastError, TX_RETRY_MAX_ATTEMPTS, signedTxid);
+    await waitBeforeTransactionRetry(toastContext, lastError, activeMaxAttempts, activeMaxAttempts, signedTxid);
     await finalTransactionStatusOrPending(cluster, signedTxid);
     return signedTxid;
   }
@@ -61570,14 +61838,16 @@ async function waitBeforeTransactionRetry(
   toastContext: TransactionToastContext,
   err: unknown,
   attempt: number,
+  maxAttempts: number,
   txid: string,
 ): Promise<void> {
   const message = redactSecrets(err instanceof Error ? err.message : String(err));
+  const finalCheck = attempt >= maxAttempts;
   updateTransactionToast(
     toastContext,
     'pending',
-    attempt >= TX_RETRY_MAX_ATTEMPTS ? 'Checking transaction status' : 'Send retry queued',
-    attempt >= TX_RETRY_MAX_ATTEMPTS
+    finalCheck ? 'Checking transaction status' : 'Send retry queued',
+    finalCheck
       ? tf('Checking {tx} before reporting the final status.', { tx: short(txid) })
       : tf('First send failed: {message}. Retrying in {seconds} seconds with the same signed transaction.', {
         message,
@@ -61668,16 +61938,45 @@ function isZeroSignature(signature: Uint8Array): boolean {
   return signature.every((byte) => byte === 0);
 }
 
-function shouldRetryTransactionSend(err: unknown, signedTxid?: string, attemptCount: number = 0): boolean {
+interface TransactionSendRetryDecision {
+  decision: SignedBroadcastRetryDecision;
+  kind: TransactionFailureKind;
+  maxAttempts: number;
+}
+
+// Reconcile the failure classifier with the wallet owner's per-kind failure policy for a same-bytes
+// rebroadcast. `attemptCount` is the 1-based number of the attempt that just failed. Returns 'stop'
+// (not safe / disabled / cap reached), 'ask' (retryable but the owner wants a confirm first), or
+// 'auto' (retryable and allowed to replay silently). The pure decision lives in transactionFailure.ts
+// so it is unit-tested; this only supplies the live policy lookup.
+function transactionSendRetryDecision(
+  err: unknown,
+  signedTxid: string | undefined,
+  attemptCount: number,
+): TransactionSendRetryDecision {
   const classification = classifyTransactionFailure(err, {
     hasSignedBytes: true,
     txid: signedTxid,
   });
-  if (!classification.retryableSignedBroadcast) return false;
   const policy = policyForFailure(classification.kind);
-  if (policy.mode === 'disabled') return false;
-  if (attemptCount >= policy.maxAttempts) return false;
-  return true;
+  return {
+    decision: signedBroadcastRetryDecision(classification, policy, attemptCount),
+    kind: classification.kind,
+    maxAttempts: policy.maxAttempts,
+  };
+}
+
+// "Ask" mode: pause the retry loop and let the owner decide before replaying the signed bytes. Uses
+// window.confirm — the same WebView-safe pattern as the safety-rail and agent-review overrides — since
+// this fires mid-execution, after the wallet already signed. No new wallet approval is needed to
+// replay the exact same bytes; the copy says so.
+function confirmTransactionSendRetry(decision: TransactionSendRetryDecision): boolean {
+  const label = FAILURE_KIND_LABEL[decision.kind] ? t(FAILURE_KIND_LABEL[decision.kind]) : decision.kind;
+  const help = FAILURE_KIND_HELP[decision.kind] ? t(FAILURE_KIND_HELP[decision.kind]) : '';
+  const detail = help ? `${label} — ${help}` : label;
+  return window.confirm(
+    tf('{detail}\n\nRetry the same signed transaction? No new wallet approval is needed.', { detail }),
+  );
 }
 
 async function browserLatestBlockhash(cluster: Cluster): Promise<BrowserLatestBlockhash> {
@@ -65997,6 +66296,17 @@ interface AgentOverrideOutcome {
   userReason?: string;
 }
 
+// The safety-rails counterpart of confirmAgentReviewQueueOverride: a hard-block rail was violated, so
+// require an explicit confirm before executing and capture an optional reason for the audit trail.
+// Mirrors the AI-deny override's confirm+prompt so the two feel identical (both WebView-safe).
+function confirmSafetyRailOverride(reason: string): AgentOverrideOutcome {
+  const confirmed = window.confirm(tf('Safety rail: {reason}\n\nApprove anyway?', { reason }));
+  if (!confirmed) return { proceed: false };
+  const rawReason = window.prompt(t('Why are you approving anyway? (Optional. Saved in your audit trail.)'), '') ?? '';
+  const trimmed = rawReason.trim();
+  return trimmed ? { proceed: true, userReason: trimmed } : { proceed: true };
+}
+
 function confirmAgentReviewQueueOverride(record: GeneratedPlanRecord | undefined): AgentOverrideOutcome {
   const message = agentReviewQueueOverridePrompt(record);
   if (!message) return { proceed: true };
@@ -68713,15 +69023,18 @@ function positionsPanel(): string {
   }
 
   return `
-    <section class="approval-object signature-stage stage-anchor positions-stage ${mobile ? 'mobile-positions-stage' : ''} ${open.length ? 'stage-active' : 'stage-draft'}">
-      <div class="signature-object-head">
-        ${sectionTitleLine(t('Positions'), t('Monitor and manage what you have open: orders, lending, borrowing, staking, liquidity, perps.'))}
-        <div class="generated-plans-toolbar signature-toolbar">
+    <section class="approval-object signature-stage stage-anchor positions-stage form-kit ${mobile ? 'mobile-positions-stage' : ''} ${open.length ? 'stage-active' : 'stage-draft'}">
+      ${formKitHero({
+        eyebrow: t('Positions'),
+        title: t('Open positions.'),
+        detail: t('Monitor and manage what you have open: orders, lending, borrowing, staking, liquidity, perps.'),
+        icon: 'tokens',
+        aside: `<div class="generated-plans-toolbar signature-toolbar">
           <span class="signature-state">${escapeHtml(isAll
             ? tf('{n} open', { n: positionsAllCount(open) })
             : tf('{n} open in {section}', { n: positionsFilterSectionCount(filter, open), section: positionsFilterTitle(filter) }))}</span>
-        </div>
-      </div>
+        </div>`,
+      })}
       ${positionsSelector(open, mobile)}
       <div class="positions-section" data-positions-section="${escapeHtml(filter)}" role="tabpanel" aria-label="${escapeHtml(headTitle)}">
         <div class="positions-section-head">
@@ -69310,9 +69623,12 @@ function preparedActionPrimaryButtonHtml(action: PreparedAction): string {
     ?? connectorExecutionBlockReason(action);
   const confirmable = canConfirmCloudFinalization(action) || canConfirmCloudBrowserTransaction(action) || canConfirmBrowserTransaction(action);
   const executeDisabled = state.busy || !executable || hasPendingExecutionLedgerEntry(action) || Boolean(executionBlockReason);
+  // A hard-block safety rail keeps the button ENABLED (the confirm gate in runPreparedActionOp is the
+  // friction), but restyles it as a deliberate override so the block doesn't feel like a silent pop-up.
+  const railBlock = !executionBlockReason && executable && !executeDisabled ? actionPolicyBlockReason(action) : null;
   return confirmable
     ? `<button data-action-op="confirm" data-action-id="${action.id}" class="primary" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Check confirmation'))}</button>`
-    : `<button data-action-op="execute" data-action-id="${action.id}" class="primary" ${executeDisabled ? 'disabled' : ''} ${executionBlockReason ? `title="${escapeHtml(executionBlockReason)}"` : ''}>${escapeHtml(decisionLabels.approve)}</button>`;
+    : `<button data-action-op="execute" data-action-id="${action.id}" class="primary${railBlock ? ' approve-override' : ''}" ${executeDisabled ? 'disabled' : ''} title="${escapeHtml(railBlock ?? executionBlockReason ?? '')}">${escapeHtml(railBlock ? t('Approve anyway') : decisionLabels.approve)}</button>`;
 }
 
 // Compact token logo chip: monogram base layer + lazy logo overlay. Reuses the wallet-balance
@@ -71147,9 +71463,18 @@ function inboxApprovalSummaryItem(row: ApprovalSummaryRow): string {
   `;
 }
 
+// "Sending to your own wallet" chip — reassurance for a self-transfer, which otherwise looks like any
+// other send. Only for transfers (a swap has no recipient wallet in the usual sense).
+function selfWalletChip(action: PreparedAction): string {
+  if (action.kind !== 'transfer_sol' && action.kind !== 'transfer_spl') return '';
+  const label = recipientSelfWalletLabel(recipientParam(action));
+  if (!label) return '';
+  return `<div class="self-wallet-chip is-mine" aria-label="${escapeHtml(t('Recipient is your own wallet'))}"><span aria-hidden="true">→</span> ${escapeHtml(label)}</div>`;
+}
+
 function preSignReviewBlock(action: PreparedAction): string {
   if (action.kind === 'swap' || action.kind === 'transfer_sol' || action.kind === 'transfer_spl') {
-    return policyWarningsStrip(action);
+    return `${selfWalletChip(action)}${policyWarningsStrip(action)}`;
   }
   if (!isExecutableBrowserAction(action) && action.workflowSource !== 'local-bridge') return '';
   if (hasPendingExecutionLedgerEntry(action)) return '';
@@ -71674,7 +71999,7 @@ function recurringComposer(): string {
         ? t('Future swaps will appear in Sign Approval.')
         : t('Future payments will appear in Sign Approval.');
   return `
-    <div class="recurring-panel recurring-contract ${mobile ? 'mobile-recurring-contract' : ''}">
+    <div class="recurring-panel recurring-contract fk-surface ${mobile ? 'mobile-recurring-contract' : ''}">
       ${mobile ? '' : `<div class="contract-head app-inline-head recurring-composer-head">
         <div>
           <h3>${escapeHtml(composerTitle)}</h3>
@@ -75484,10 +75809,6 @@ function emptyPlannerPrefs(): PlannerPrefs {
   return { houseRules: '', savedPrompts: [] };
 }
 
-function emptyProtocolConnectorPrefs(): ProtocolConnectorPrefs {
-  return { dialectClientKey: '' };
-}
-
 function defaultLabInputs(): Record<string, string> {
   return Object.fromEntries(LABS.map((lab) => [lab.id, isPublicReceiptLab(lab) ? '' : lab.defaultInput]));
 }
@@ -77152,7 +77473,7 @@ function loadPlannerPrefs(): PlannerPrefs {
   }
 }
 
-function savePlannerPrefs(): void {
+function savePlannerPrefsLocalOnly(): void {
   try {
     window.localStorage.setItem(PLANNER_PREFS_STORAGE_KEY, JSON.stringify(state.plannerPrefs));
   } catch {
@@ -77160,29 +77481,12 @@ function savePlannerPrefs(): void {
   }
 }
 
-function loadProtocolConnectorPrefs(): ProtocolConnectorPrefs {
-  try {
-    const raw = window.localStorage.getItem(PROTOCOL_CONNECTOR_PREFS_STORAGE_KEY);
-    if (!raw) return emptyProtocolConnectorPrefs();
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return emptyProtocolConnectorPrefs();
-    const rawObj = parsed as { dialectClientKey?: unknown };
-    return {
-      dialectClientKey: typeof rawObj.dialectClientKey === 'string'
-        ? rawObj.dialectClientKey.slice(0, 160)
-        : '',
-    };
-  } catch {
-    return emptyProtocolConnectorPrefs();
-  }
-}
-
-function saveProtocolConnectorPrefs(): void {
-  try {
-    window.localStorage.setItem(PROTOCOL_CONNECTOR_PREFS_STORAGE_KEY, JSON.stringify(state.protocolConnectorPrefs));
-  } catch {
-    // Best-effort browser persistence.
-  }
+// A local edit to Instructions / Quick prompts: persist AND push to the cloud so it follows the wallet
+// across devices. applyCloudAiSettings uses savePlannerPrefsLocalOnly instead, so applying a RECEIVED
+// value never bounces back out as a fresh sync.
+function savePlannerPrefs(): void {
+  savePlannerPrefsLocalOnly();
+  void syncCloudPreference('ai-settings');
 }
 
 function parseSavedPrompt(value: unknown): SavedPrompt | null {
@@ -77207,6 +77511,13 @@ function injectHouseRules(userNotes: string): string {
   if (!rules) return trimmed;
   if (!trimmed) return `House rules:\n${rules}`;
   return `${trimmed}\n\nHouse rules:\n${rules}`;
+}
+
+// The wallet owner's standing instructions, for the CHAT agent's system prompt. Same source as the
+// planner's injectHouseRules (state.plannerPrefs.houseRules) so one Preferences field governs both
+// agents. Empty string when unset (the caller omits the field entirely).
+function chatAgentInstructions(): string {
+  return state.plannerPrefs.houseRules.trim();
 }
 
 async function issueAgentViaBridge(input: AgentDraft): Promise<RegisteredAgent | null> {
@@ -77390,6 +77701,11 @@ function cloudPreferencePayload(namespace: CloudPreferenceNamespace): unknown {
         multiReviewer: state.aiSettings.multiReviewer === true,
         autoBackgroundWatch: state.aiSettings.autoBackgroundWatch === true,
         ...(state.aiSettings.reasoningEffort ? { reasoningEffort: state.aiSettings.reasoningEffort } : {}),
+        // The agent Instructions + Quick prompts ride the ai-settings namespace so they follow the
+        // wallet across devices. Neither is a secret (secrets never sync). Nested under the same key
+        // the planner prefs already share, so no new cloud namespace is needed.
+        instructions: state.plannerPrefs.houseRules,
+        quickPrompts: state.plannerPrefs.savedPrompts,
       };
     case 'recipient-rules':
       return state.recipientRules;
@@ -77528,6 +77844,20 @@ function applyCloudAiSettings(payload: unknown): boolean {
   );
   ensureAiProviderAllowedForMode();
   restoreVisibleAiKeyAfterRouteChange(previousApiKey);
+  // Apply the synced Instructions + Quick prompts into plannerPrefs (their own store), guarding shape
+  // and re-clamping to the local cap so a payload from a device with a higher limit can't overflow.
+  if (typeof payload.instructions === 'string') {
+    state.plannerPrefs.houseRules = payload.instructions.slice(0, PLANNER_HOUSE_RULES_MAX);
+    // Keep the edit buffer in step with a synced value so the textarea + Saved/Unsaved state are correct.
+    state.houseRulesDraft = state.plannerPrefs.houseRules;
+    savePlannerPrefsLocalOnly();
+  }
+  if (Array.isArray(payload.quickPrompts)) {
+    state.plannerPrefs.savedPrompts = payload.quickPrompts
+      .map(parseSavedPrompt)
+      .filter((entry): entry is SavedPrompt => entry !== null);
+    savePlannerPrefsLocalOnly();
+  }
   savePersistedState();
   if (state.aiSettings.autoBackgroundWatch) {
     startAgentBackgroundWatch();
@@ -80216,51 +80546,71 @@ function openLabArchiveDb(): Promise<IDBDatabase> {
   });
 }
 
-function plannerPrefsSection(scope: string): string {
-  const houseRules = state.plannerPrefs.houseRules;
-  const remaining = PLANNER_HOUSE_RULES_MAX - houseRules.length;
+// The agent's standing rules/memory — the important, always-visible half. Explicit Save (the draft +
+// Saved/Unsaved pill) so it never silently auto-saves, and kept separate from Quick prompts below.
+function agentRulesCard(scope: string): string {
+  const draft = state.houseRulesDraft;
+  const remaining = PLANNER_HOUSE_RULES_MAX - draft.length;
+  const dirty = houseRulesDirty();
+  return `
+    <section class="agent-rules-card" aria-label="${escapeHtml(t('Agent rules & memory'))}">
+      <div class="agent-rules-head">
+        <div>
+          <strong>${escapeHtml(t('Agent rules & memory'))}</strong>
+          <p>${escapeHtml(t('Standing rules the agent remembers for every request and every chat. Wallet approval and signing stay separate.'))}</p>
+        </div>
+        <span class="agent-rules-status${dirty ? ' is-dirty' : ''}" data-house-rules-status>${escapeHtml(dirty ? t('Unsaved changes') : t('Saved'))}</span>
+      </div>
+      <textarea
+        id="plannerHouseRules-${escapeHtml(scope)}"
+        class="agent-rules-textarea"
+        data-planner-pref="houseRules"
+        rows="5"
+        maxlength="${PLANNER_HOUSE_RULES_MAX}"
+        placeholder="${escapeHtml(t("e.g. Never propose meme coins. Prefer USDC for stables. Always memo as 'work expense'."))}"
+        ${state.busy ? 'disabled' : ''}
+      >${escapeHtml(draft)}</textarea>
+      <div class="agent-rules-foot">
+        <em class="agent-rules-counter" data-house-rules-counter>${escapeHtml(tf('The agent keeps these in mind for every request and every chat. {remaining} characters left.', { remaining }))}</em>
+        <button type="button" class="primary agent-rules-save" data-house-rules-action="save" ${!dirty || state.busy ? 'disabled' : ''}>${escapeHtml(t('Save rules'))}</button>
+      </div>
+    </section>
+  `;
+}
+
+// Quick prompts — reusable request shortcuts. A DISTINCT card with its own Save, so it's clear these
+// are not rules and the "Save quick prompt" button only saves a prompt.
+function quickPromptsCard(): string {
   const prompts = state.plannerPrefs.savedPrompts;
   const draft = state.savedPromptDraft;
   const errors = state.savedPromptErrors;
-  const open = houseRules.trim() || prompts.length > 0 ? 'open' : '';
   return `
-    <details class="planner-prefs" aria-label="${escapeHtml(t('Planner personalization'))}" ${open}>
-      <summary>
-        <span>${escapeHtml(t('Planner personalization'))}</span>
-        <em>${escapeHtml(houseRules ? t('House rules on') : t('Off'))} · ${escapeHtml(savedPromptCountLabel(prompts.length))}</em>
-      </summary>
-      <div class="planner-prefs-body">
-        <label class="field compact planner-house-rules-field">
-          <span>${escapeHtml(t('House rules'))}</span>
-          <textarea
-            id="plannerHouseRules-${escapeHtml(scope)}"
-            data-planner-pref="houseRules"
-            rows="3"
-            maxlength="${PLANNER_HOUSE_RULES_MAX}"
-            placeholder="${escapeHtml(t("e.g. Never propose meme coins. Prefer USDC for stables. Always memo as 'work expense'."))}"
-            ${state.busy ? 'disabled' : ''}
-          >${escapeHtml(houseRules)}</textarea>
-          <em class="planner-house-rules-counter">${escapeHtml(tf('{remaining} chars left · injected into every plan request as userNotes', { remaining }))}</em>
-        </label>
-        <div class="planner-prompts-form">
-          <label class="field compact">
-            <span>${escapeHtml(t('New prompt label'))}</span>
-            <input data-saved-prompt-field="label" value="${escapeHtml(draft.label)}" placeholder="${escapeHtml(t('Weekly rebalance'))}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
-            ${errors.label ? `<em class="error-text">${escapeHtml(t(errors.label))}</em>` : ''}
-          </label>
-          <label class="field compact planner-prompt-body-field">
-            <span>${escapeHtml(t('Prompt body'))}</span>
-            <textarea data-saved-prompt-field="prompt" rows="2" placeholder="${escapeHtml(t('Rebalance to 50% SOL / 30% USDC / 20% JUP'))}" ${state.busy ? 'disabled' : ''}>${escapeHtml(draft.prompt)}</textarea>
-            ${errors.prompt ? `<em class="error-text">${escapeHtml(t(errors.prompt))}</em>` : ''}
-          </label>
-          <div class="planner-prompts-actions">
-            <button type="button" class="primary" data-saved-prompt-action="save" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Save prompt'))}</button>
-            <button type="button" class="utility" data-saved-prompt-action="reset" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Clear'))}</button>
-          </div>
+    <section class="quick-prompts-card" aria-label="${escapeHtml(t('Quick prompts'))}">
+      <div class="quick-prompts-head">
+        <div>
+          <strong>${escapeHtml(t('Quick prompts'))}</strong>
+          <p>${escapeHtml(t('Reusable requests you can drop into a new request. Shortcuts only - they do not change how the agent behaves.'))}</p>
         </div>
-        ${prompts.length ? `<ul class="planner-prompts-list">${prompts.map(savedPromptRow).join('')}</ul>` : `<div class="planner-prompts-empty">${escapeHtml(t('No saved prompts yet.'))}</div>`}
+        <em>${escapeHtml(savedPromptCountLabel(prompts.length))}</em>
       </div>
-    </details>
+      <div class="planner-prompts-form">
+        <label class="field compact">
+          <span>${escapeHtml(t('Quick prompt name'))}</span>
+          <input data-saved-prompt-field="label" value="${escapeHtml(draft.label)}" placeholder="${escapeHtml(t('Weekly rebalance'))}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+          ${errors.label ? `<em class="error-text">${escapeHtml(t(errors.label))}</em>` : ''}
+        </label>
+        <label class="field compact planner-prompt-body-field">
+          <span>${escapeHtml(t('Prompt'))}</span>
+          <textarea data-saved-prompt-field="prompt" rows="2" placeholder="${escapeHtml(t('Rebalance to 50% SOL / 30% USDC / 20% JUP'))}" ${state.busy ? 'disabled' : ''}>${escapeHtml(draft.prompt)}</textarea>
+          ${errors.prompt ? `<em class="error-text">${escapeHtml(t(errors.prompt))}</em>` : ''}
+        </label>
+        <div class="planner-prompts-actions">
+          <button type="button" class="primary" data-saved-prompt-action="save" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Save quick prompt'))}</button>
+          <button type="button" class="utility" data-saved-prompt-action="reset" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Clear'))}</button>
+        </div>
+      </div>
+      ${prompts.length ? `<ul class="planner-prompts-list">${prompts.map(savedPromptRow).join('')}</ul>` : `<div class="planner-prompts-empty">${escapeHtml(t('No quick prompts yet.'))}</div>`}
+    </section>
   `;
 }
 
@@ -80279,9 +80629,35 @@ function savedPromptRow(prompt: SavedPrompt): string {
   `;
 }
 
+// Typing edits the draft only (explicit Save commits it). Reflect Saved/Unsaved + the counter + the
+// Save button's enabled state directly in the DOM so we don't re-render mid-keystroke and lose the caret.
 function updateHouseRules(value: string): void {
-  state.plannerPrefs.houseRules = value.slice(0, PLANNER_HOUSE_RULES_MAX);
+  state.houseRulesDraft = value.slice(0, PLANNER_HOUSE_RULES_MAX);
+  const dirty = houseRulesDirty();
+  const remaining = PLANNER_HOUSE_RULES_MAX - state.houseRulesDraft.length;
+  const status = document.querySelector('[data-house-rules-status]');
+  if (status) {
+    status.textContent = dirty ? t('Unsaved changes') : t('Saved');
+    status.classList.toggle('is-dirty', dirty);
+  }
+  const saveBtn = document.querySelector<HTMLButtonElement>('[data-house-rules-action="save"]');
+  if (saveBtn) saveBtn.disabled = !dirty || state.busy;
+  const counter = document.querySelector('[data-house-rules-counter]');
+  if (counter) {
+    counter.textContent = tf('The agent keeps these in mind for every request and every chat. {remaining} characters left.', { remaining });
+  }
+}
+
+function houseRulesDirty(): boolean {
+  return state.houseRulesDraft !== state.plannerPrefs.houseRules;
+}
+
+function saveHouseRules(): void {
+  if (!houseRulesDirty()) return;
+  state.plannerPrefs.houseRules = state.houseRulesDraft.slice(0, PLANNER_HOUSE_RULES_MAX);
   savePlannerPrefs();
+  pushToast('success', t('Rules saved'), t('The agent will use these for every request and chat.'));
+  render();
 }
 
 function updateSavedPromptDraftField(field: HTMLInputElement | HTMLTextAreaElement): void {
@@ -80919,8 +81295,10 @@ async function handleNotificationAction(op: string): Promise<void> {
   state.notificationSettings[field] = !state.notificationSettings[field];
   savePersistedState();
   render();
-  // A push-category toggle changes what this device should receive — re-sync the registration.
-  if (field !== 'browser' && field !== 'pending') void syncPushDeviceRegistration();
+  // A push-category toggle changes what this device should receive — re-sync the registration. `pending`
+  // is a web-only client timer (no device registration); `browser` is the master switch, so toggling it
+  // off/on must re-sync so the device stops/starts receiving push.
+  if (field !== 'pending') void syncPushDeviceRegistration();
 }
 
 function notificationPreferencesPanel(): string {
@@ -80944,11 +81322,25 @@ function notificationPreferencesPanel(): string {
     notificationToggleRow('toggle-confirmed', t('Transaction confirmed'), settings.confirmed),
     notificationToggleRow('toggle-failed', t('Transaction failed'), settings.failed),
     notificationToggleRow('toggle-due', t('Repeat payment due'), settings.due),
-    notificationToggleRow('toggle-limitFilled', t('Limit order filled'), settings.limitFilled),
-    notificationToggleRow('toggle-dcaFilled', t('DCA order filled'), settings.dcaFilled),
-    notificationToggleRow('toggle-borrowAtRisk', t('Borrow position at risk'), settings.borrowAtRisk),
   ];
-  if (!native) rows.unshift(notificationToggleRow('toggle-pending', t('Pending transactions (>60s)'), settings.pending));
+  // limitFilled/dcaFilled/borrowAtRisk are delivered ONLY by server push (native). The web ticker
+  // (runNotificationTick) never fires them, so on web they'd be dead toggles that just persist — show
+  // them on native only, mirroring how `pending` (a web-only client timer) is hidden on native.
+  if (native) {
+    rows.push(
+      notificationToggleRow('toggle-limitFilled', t('Limit order filled'), settings.limitFilled),
+      notificationToggleRow('toggle-dcaFilled', t('DCA order filled'), settings.dcaFilled),
+      notificationToggleRow('toggle-borrowAtRisk', t('Borrow position at risk'), settings.borrowAtRisk),
+    );
+  } else {
+    rows.unshift(notificationToggleRow('toggle-pending', t('Pending transactions (>60s)'), settings.pending));
+  }
+  // Master on/off. `browser` gates the web ticker (runNotificationTick returns early when false) and the
+  // native enabled-state, but nothing let the user turn it back off without revoking OS permission.
+  // Show it once notifications are active so they can mute everything without losing the grant.
+  if (!needsCta) {
+    rows.unshift(notificationToggleRow('toggle-browser', t('All notifications'), settings.browser));
+  }
 
   return `
     <section class="notification-prefs-panel" aria-label="${escapeHtml(t('Notifications'))}">
@@ -81069,9 +81461,16 @@ function setFailurePolicyMaxAttempts(kind: TransactionFailureKind, value: string
   saveFailurePolicies();
 }
 
+// Count only kinds that can actually auto-retry — a stale mode:'auto' persisted for a non-retryable
+// kind (e.g. from the old recommended defaults that flipped expired_blockhash on) must not inflate the
+// "N auto" summaries now that those kinds render as always-stops.
+function autoRetryEnabledCount(policies: ReadonlyArray<FailureRetryPolicy>): number {
+  return policies.filter((p) => p.mode === 'auto' && isAutoRetryableSignedBroadcastKind(p.kind)).length;
+}
+
 function failurePoliciesPanel(): string {
   const policies = state.failurePolicies;
-  const autoCount = policies.filter((p) => p.mode === 'auto').length;
+  const autoCount = autoRetryEnabledCount(policies);
   const mobile = isMobileAppViewport();
   const open = mobile || autoCount > 0 ? 'open' : '';
   return `
@@ -81107,7 +81506,7 @@ function failurePolicyGroupedList(policies: FailureRetryPolicy[]): string {
         const groupPolicies = group.kinds
           .map((kind) => isTransactionFailureKind(kind) ? policiesByKind.get(kind) : undefined)
           .filter((policy): policy is FailureRetryPolicy => Boolean(policy));
-        const autoCount = groupPolicies.filter((policy) => policy.mode === 'auto').length;
+        const autoCount = autoRetryEnabledCount(groupPolicies);
         return `
           <details class="failure-policy-group" ${!collapsible || autoCount > 0 ? 'open' : ''}>
             <summary>
@@ -81130,6 +81529,21 @@ function failurePolicyGroupedList(policies: FailureRetryPolicy[]): string {
 function failurePolicyRow(policy: FailureRetryPolicy): string {
   const label = FAILURE_KIND_LABEL[policy.kind] ? t(FAILURE_KIND_LABEL[policy.kind]) : policy.kind;
   const help = FAILURE_KIND_HELP[policy.kind] ? t(FAILURE_KIND_HELP[policy.kind]) : t('Choose whether this failure should retry.');
+  // Only same-bytes-rebroadcastable kinds get the Auto/Ask/Off + cap controls. For every other class a
+  // replay of the identical signed bytes can't help (needs a re-sign, a fix, or a real stop), so
+  // offering an Auto toggle would be the dishonest "dead knob" this panel used to have. Show an
+  // informational chip instead — it also matches the intro's "most failures should stop and ask".
+  if (!isAutoRetryableSignedBroadcastKind(policy.kind)) {
+    return `
+      <article class="failure-policy-row is-always-stop" data-failure-policy-kind="${escapeHtml(policy.kind)}">
+        <div>
+          <strong>${escapeHtml(label)}</strong>
+          <em>${escapeHtml(help)}</em>
+        </div>
+        <span class="failure-policy-always-stop" title="${escapeHtml(t('This failure is never safe to auto-replay with the same signed transaction. The app always stops and hands it back to you.'))}">${escapeHtml(t('Always stops · asks you'))}</span>
+      </article>
+    `;
+  }
   const showAttempts = !isMobileAppViewport() || policy.mode === 'auto';
   return `
     <article class="failure-policy-row mode-${escapeHtml(policy.mode)}" data-failure-policy-kind="${escapeHtml(policy.kind)}">

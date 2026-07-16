@@ -523,6 +523,56 @@ export function shouldRetrySignedBroadcast(err: unknown): boolean {
 }
 
 /**
+ * The only failure kinds whose SAME signed-transaction bytes can be safely rebroadcast (idempotent by
+ * signature, guarded by an on-chain status check before each attempt). Every other kind needs a
+ * re-sign (fresh blockhash/quote), a config fix, or a hard stop, so the retry loop must never
+ * auto-replay it — and the failure-policy UI shows those kinds as "always stops" rather than offering
+ * an Auto toggle that can't fire. Kept in lockstep with the classifier's `retryableSignedBroadcast`
+ * flag by a drift-guard test.
+ */
+export const AUTO_RETRYABLE_SIGNED_BROADCAST_KINDS: ReadonlySet<TransactionFailureKind> = new Set([
+  'rpc_timeout',
+  'network_unreachable',
+  'rate_limited',
+  'unknown_maybe_submitted',
+]);
+
+/** Whether a failure kind can ever be auto/ask-retried by rebroadcasting the same signed bytes. */
+export function isAutoRetryableSignedBroadcastKind(kind: TransactionFailureKind): boolean {
+  return AUTO_RETRYABLE_SIGNED_BROADCAST_KINDS.has(kind);
+}
+
+export type SignedBroadcastRetryDecision = 'auto' | 'ask' | 'stop';
+
+export interface SignedBroadcastRetryPolicyInput {
+  mode: 'auto' | 'ask' | 'disabled';
+  maxAttempts: number;
+}
+
+/**
+ * The single place that reconciles the classifier's retryability with the wallet owner's per-kind
+ * failure policy and the attempt count. Returns:
+ *   - 'stop'  — not safe to rebroadcast, policy disabled, or the per-kind cap is reached.
+ *   - 'ask'   — retryable and allowed, but the owner wants a confirm before each replay.
+ *   - 'auto'  — retryable and allowed to replay silently.
+ *
+ * Pure and framework-free so it is unit-testable; the UI wraps it with the live policy lookup and a
+ * confirm dialog for 'ask'. `attemptCount` is the 1-based number of the attempt that just failed, and
+ * `maxAttempts` is the max total sends of the same signed bytes, so `attemptCount >= maxAttempts`
+ * stops further retries.
+ */
+export function signedBroadcastRetryDecision(
+  classification: Pick<ClassifiedTransactionFailure, 'retryableSignedBroadcast'>,
+  policy: SignedBroadcastRetryPolicyInput,
+  attemptCount: number,
+): SignedBroadcastRetryDecision {
+  if (!classification.retryableSignedBroadcast) return 'stop';
+  if (policy.mode === 'disabled') return 'stop';
+  if (attemptCount >= policy.maxAttempts) return 'stop';
+  return policy.mode === 'ask' ? 'ask' : 'auto';
+}
+
+/**
  * True when the RPC endpoint refused the request with HTTP 401/403/451
  * (bad API key, plan tier, IP block, etc.). Sender code should fall back to
  * a public RPC once before propagating, since the same signed bytes will

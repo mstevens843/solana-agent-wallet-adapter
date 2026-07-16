@@ -7170,6 +7170,99 @@ code {
   width: 100%;
 }
 
+/* Attention pill for a credential connector with no saved key (the middle state
+   between Off and Enabled). */
+.connected-dapp-state-pill.needs-credential {
+  background: rgba(214, 168, 79, 0.14);
+  border: 1px solid rgba(214, 168, 79, 0.34);
+  color: #f0d9a8;
+}
+
+/* Inline credential entry that occupies the card's action slot: labelled input
+   with the shared paste button, a full-width Confirm button, and a where-to-get
+   link. Reuses .ai-key-input-wrap / .ai-key-paste-btn. */
+.connector-card-credential {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.connector-card-credential-label {
+  color: var(--dim);
+  font-size: 0.64rem;
+  font-weight: 900;
+  letter-spacing: 0.07em;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.connector-card-credential .connector-card-confirm {
+  width: 100%;
+}
+
+/* The row-actions rule stretches every button to 100%; keep the paste button
+   compact beside its input. */
+.connected-dapp-row-actions .connector-card-credential .ai-key-paste-btn {
+  min-height: 38px;
+  width: auto;
+}
+
+.connector-card-credential-link {
+  color: var(--accent-2);
+  font-size: 0.74rem;
+  font-weight: 780;
+  justify-self: start;
+  text-decoration: none;
+}
+
+.connector-card-credential-link:hover {
+  text-decoration: underline;
+}
+
+.connector-card-credential-status {
+  color: rgba(196, 205, 202, 0.7);
+  font-size: 0.78rem;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.connector-card-credential-status.blocked {
+  color: var(--warn);
+}
+
+/* Agent Access desktop layout: connector cards fill the main column, the bridge
+   + agent admin cards stack in a narrower right rail (was auto-flowed with the
+   agent card top-left; the connector cards are the primary content now). */
+.preferences-page .access-agent-grid {
+  align-items: start;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1.55fr) minmax(300px, 0.85fr);
+  min-width: 0;
+}
+
+.access-agent-main,
+.access-agent-side {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.access-agent-side {
+  align-content: start;
+}
+
+@media (max-width: 1180px) {
+  .preferences-page .access-agent-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.route-app.android-shell .access-agent-grid,
+.route-app.ios-native-shell .access-agent-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .rail-bridge-head {
   align-items: center;
   display: flex;
@@ -28387,7 +28480,29 @@ button.danger:hover:not(:disabled) {
 }
 
 .preferences-drawer .planner-house-rules-field textarea {
-  min-height: 98px;
+  min-height: 118px;
+}
+
+/* Quick prompts read as a secondary block under the primary Instructions field: a hairline divider
+   and a small labelled head separate the two so Instructions is clearly the hero. */
+.planner-quick-prompts {
+  border-top: 1px solid rgba(196, 205, 202, 0.14);
+  margin-top: 14px;
+  padding-top: 14px;
+}
+.planner-quick-prompts-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 10px;
+}
+.planner-quick-prompts-head strong {
+  font-size: 0.86rem;
+}
+.planner-quick-prompts-head em {
+  color: rgba(196, 205, 202, 0.62);
+  font-size: 0.74rem;
+  font-style: normal;
 }
 
 .preferences-drawer .planner-house-rules-counter {
@@ -28741,6 +28856,12 @@ button.danger:hover:not(:disabled) {
   color: rgba(218, 245, 229, 0.82);
 }
 
+/* The eyebrow label is var(--dim) (dark grey), which is unreadable on the green active
+   fill; brighten it on the active tab (matching the active `em` treatment). */
+.preferences-subtabs button.active .preferences-subtab-eyebrow {
+  color: rgba(223, 249, 235, 0.85);
+}
+
 .preferences-view {
   display: grid;
   gap: 12px;
@@ -28817,6 +28938,226 @@ button.danger:hover:not(:disabled) {
 .preferences-page .ai-review-preferences-head p {
   color: rgba(218, 229, 224, 0.82);
   line-height: 1.32;
+}
+
+/* ===== AI Connector — Agent rules & memory + Quick prompts (redesign) =====
+   Two distinct cards inside the AI Connector panel. Rules is the prominent, always-open half with an
+   explicit Save + Saved/Unsaved pill; Quick prompts is a separate card so its Save only saves a prompt.
+   Unprefixed so both the desktop (.preferences-page) and mobile (.preferences-drawer) surfaces get it. */
+/* Flattened to match New Request: no nested box (bg/border) and no green accent edge -
+   the sections sit directly on the outer AI Connector card, fields do the framing. */
+.agent-rules-card,
+.quick-prompts-card {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  min-width: 0;
+  padding: 0;
+}
+.agent-rules-card {
+  box-shadow: none;
+}
+
+.agent-rules-head,
+.quick-prompts-head {
+  align-items: start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.agent-rules-head > div,
+.quick-prompts-head > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.agent-rules-head strong,
+.quick-prompts-head strong {
+  color: #fff;
+  font-size: 0.96rem;
+  font-weight: 820;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+}
+
+.agent-rules-head p,
+.quick-prompts-head p {
+  color: rgba(206, 216, 211, 0.72);
+  font-size: 0.74rem;
+  line-height: 1.36;
+  margin: 0;
+}
+
+/* Saved / Unsaved pill */
+.agent-rules-status {
+  align-self: center;
+  background: rgba(125, 231, 176, 0.12);
+  border: 1px solid rgba(125, 231, 176, 0.3);
+  border-radius: 999px;
+  color: #c7f4dd;
+  flex: none;
+  font-size: 0.6rem;
+  font-weight: 860;
+  letter-spacing: 0.05em;
+  padding: 4px 10px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.agent-rules-status.is-dirty {
+  background: rgba(240, 194, 104, 0.15);
+  border-color: rgba(240, 194, 104, 0.42);
+  color: #f7dba4;
+}
+
+.quick-prompts-head em {
+  align-self: center;
+  color: var(--dim);
+  flex: none;
+  font-size: 0.72rem;
+  font-style: normal;
+  font-weight: 780;
+  white-space: nowrap;
+}
+
+/* The whole AI Connector card uses the main-app (New Request) dark input fill — the same
+   `.route-app textarea` style the New Request notes box uses — instead of the lighter preferences
+   `.field.compact` fill, so the card matches the builder the owner referenced. The rules textarea
+   already inherits `.route-app textarea`; here we (a) give it a taller default and (b) pull the
+   quick-prompt inputs onto the same dark fill. Selectors scoped high enough to beat the preferences
+   `.field.compact` rule on desktop and mobile. */
+.route-app .preferences-page .agent-rules-textarea,
+.preferences-drawer .agent-rules-textarea {
+  min-height: 108px;
+}
+
+.route-app .preferences-page .agent-rules-textarea,
+.preferences-drawer .agent-rules-textarea,
+.route-app .preferences-page .quick-prompts-card .field.compact input:not([type="checkbox"]):not([type="radio"]),
+.route-app .preferences-page .quick-prompts-card .field.compact textarea,
+.preferences-drawer .quick-prompts-card .field.compact input:not([type="checkbox"]):not([type="radio"]),
+.preferences-drawer .quick-prompts-card .field.compact textarea {
+  background: var(--fk-input-fill);
+  border: 1px solid rgba(224, 230, 226, 0.26);
+  border-radius: 10px;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.16);
+}
+
+.route-app .preferences-page .quick-prompts-card .field.compact input:focus,
+.route-app .preferences-page .quick-prompts-card .field.compact textarea:focus,
+.preferences-drawer .quick-prompts-card .field.compact input:focus,
+.preferences-drawer .quick-prompts-card .field.compact textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(63, 189, 131, 0.22);
+  outline: none;
+}
+
+.agent-rules-foot {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+}
+
+.agent-rules-counter {
+  color: rgba(176, 188, 182, 0.64);
+  font-size: 0.68rem;
+  font-style: normal;
+  line-height: 1.3;
+  min-width: 0;
+}
+
+.agent-rules-save {
+  flex: none;
+  min-height: 38px;
+  padding: 0 20px;
+  white-space: nowrap;
+}
+
+.agent-rules-save:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+/* Automation toggles: de-emphasized, moved below the two cards. */
+.ai-automation-toggles {
+  border-top: 1px solid rgba(224, 230, 226, 0.08);
+  margin-top: 14px;
+  padding-top: 14px;
+}
+
+.ai-automation-eyebrow {
+  color: var(--dim);
+  display: block;
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.09em;
+  margin-bottom: 10px;
+  text-transform: uppercase;
+}
+
+/* Saved quick-prompt list — base styles so it renders on desktop too (mobile adds its own tweaks). */
+.planner-prompts-list {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.planner-prompt-row {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.026);
+  border: 1px solid rgba(224, 230, 226, 0.1);
+  border-radius: 8px;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 9px 11px;
+}
+
+/* Only the text column is a grid — must NOT match .planner-prompt-actions (the other direct child),
+   or it stacks the Use/Delete buttons and balloons the row height. */
+.planner-prompt-row > div:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.planner-prompt-row strong {
+  color: #eef6f1;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.planner-prompt-row p {
+  color: rgba(196, 205, 202, 0.66);
+  font-size: 0.74rem;
+  line-height: 1.3;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.planner-prompt-actions {
+  align-items: center;
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+
+/* Compact row buttons so the row wraps tightly around the small name/prompt instead of the 44px
+   touch-target default forcing it tall. */
+.planner-prompt-row .planner-prompt-actions button {
+  font-size: 0.74rem;
+  min-height: 30px;
+  padding: 0 12px;
 }
 
 .preferences-page .workspace-backup-stats {
@@ -29337,6 +29678,28 @@ button.danger:hover:not(:disabled) {
   font-style: normal;
   font-weight: 780;
   line-height: 1.1;
+}
+
+/* Non-retryable failure kinds: no Auto toggle to offer, so the controls column becomes an
+   informational "always stops" chip. Muted, not alarming — it states policy, not an error.
+   Grid override is desktop-only; the mobile drawer keeps its single-column stack. Chip styling is
+   unprefixed so it renders in both the .preferences-page and .preferences-drawer surfaces. */
+.preferences-page .failure-policy-row.is-always-stop {
+  grid-template-columns: minmax(150px, 1fr) auto;
+}
+
+.failure-policy-always-stop {
+  align-self: center;
+  justify-self: end;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(224, 230, 226, 0.14);
+  border-radius: 999px;
+  color: rgba(196, 205, 202, 0.74);
+  font-size: 0.64rem;
+  font-weight: 820;
+  letter-spacing: 0.02em;
+  padding: 4px 10px;
+  white-space: nowrap;
 }
 
 .preferences-page .failure-policy-mode-controls {
@@ -31079,6 +31442,30 @@ button.danger:hover:not(:disabled) {
 .policy-warning.block {
   background: var(--danger-soft);
   border: 1px solid rgba(239, 111, 120, 0.45);
+}
+
+/* The Approve button when a hard-block rail is violated: still clickable (the confirm is the gate),
+   but recoloured to a warning tone so overriding reads as deliberate rather than routine. */
+button.primary.approve-override {
+  background: var(--danger-soft, rgba(239, 111, 120, 0.16));
+  border: 1px solid rgba(239, 111, 120, 0.55);
+  color: #f0726b;
+}
+
+/* "→ Your wallet" reassurance chip on a self-transfer's approval card. */
+.self-wallet-chip {
+  align-items: center;
+  background: rgba(61, 220, 151, 0.12);
+  border: 1px solid rgba(61, 220, 151, 0.3);
+  border-radius: 999px;
+  color: var(--accent, #3ddc97);
+  display: inline-flex;
+  font-size: 0.78rem;
+  font-weight: 600;
+  gap: 5px;
+  margin-bottom: 8px;
+  padding: 4px 11px;
+  width: fit-content;
 }
 
 .policy-warning strong {
@@ -40925,4 +41312,513 @@ button.danger:hover:not(:disabled) {
 }
 .cascading-vault-logos .chat-action-logo + .chat-action-logo {
   margin-left: -6px;
+}
+
+/* ============================================================================
+   New Request form kit — marketing-grade form surface (scoped to `.form-kit`).
+   Ports the /docs + /builders hierarchy (eyebrow → display heading, elevated
+   card, top-accent hairline, filled inputs with a green focus ring) into the
+   app form so it stops reading as stock dark inputs. Every rule carries the
+   `.form-kit` scope + enough depth to win over the `.route-app`/native rules,
+   so ONLY the New Request panel changes; other tabs adopt `.form-kit` at rollout.
+   ========================================================================== */
+
+/* Elevated NEUTRAL-slate panel + a soft white top-highlight (green is reserved for
+   interactive accents only, so the surface stops reading as green-on-green). */
+.route-app .approval-object.signature-stage.form-kit,
+.route-demo .approval-object.signature-stage.form-kit {
+  background: linear-gradient(180deg, rgba(20, 23, 24, 0.96), rgba(13, 15, 16, 0.95));
+  border: 1px solid rgba(224, 230, 226, 0.14);
+  border-radius: 12px;
+  /* Lighter elevation so the card sits IN the workspace rather than floating above
+     it as a detached hero page. */
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 6px 20px rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+  /* Slightly tighter top than sides/bottom so the hero doesn't leave dead space above
+     the first controls. */
+  padding: clamp(10px, 1.1vw, 14px) clamp(14px, 1.6vw, 20px) clamp(14px, 1.6vw, 20px);
+  position: relative;
+}
+.route-app .approval-object.signature-stage.form-kit::before,
+.route-demo .approval-object.signature-stage.form-kit::before {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.16) 30%, rgba(255, 255, 255, 0.16) 70%, transparent);
+  content: "";
+  height: 1px;
+  left: 0;
+  opacity: 0.8;
+  position: absolute;
+  right: 0;
+  top: 0;
+}
+
+/* Hero: eyebrow kicker → large near-white title → sub-line, gradient icon tile */
+.form-kit .fk-hero {
+  align-items: flex-start;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  margin-bottom: clamp(9px, 1.1vw, 12px);
+}
+.form-kit .fk-hero-main { min-width: 0; }
+.form-kit .fk-eyebrow {
+  color: var(--accent-2);
+  font-size: 0.68rem;
+  font-weight: 860;
+  letter-spacing: 0.13em;
+  margin: 0 0 5px;
+  text-transform: uppercase;
+}
+/* Kept large enough to anchor the review flow, but dialed back from a "hero page"
+   size so it reads as operational inside the full app shell. */
+.form-kit .fk-title {
+  color: var(--text);
+  font-size: clamp(1.2rem, 1.6vw, 1.5rem);
+  font-weight: 760;
+  letter-spacing: -0.01em;
+  line-height: 1.05;
+  margin: 0;
+}
+.form-kit .fk-sub {
+  color: rgba(196, 205, 202, 0.76);
+  font-size: 0.9rem;
+  line-height: 1.45;
+  margin: 6px 0 0;
+  /* No ch cap: it forced a wrap even when the hero had room. The sub takes its
+     natural one-line width, constrained only by the hero column. */
+  max-width: none;
+}
+.form-kit .fk-hero-aside {
+  align-items: center;
+  display: inline-flex;
+  flex: none;
+  gap: 12px;
+}
+.form-kit .fk-hero-icon {
+  align-items: center;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.02));
+  border: 1px solid rgba(224, 230, 226, 0.16);
+  border-radius: 11px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  color: var(--accent-2);
+  display: inline-flex;
+  height: 40px;
+  justify-content: center;
+  width: 40px;
+}
+.form-kit .fk-hero-icon svg {
+  fill: none;
+  height: 21px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+  width: 21px;
+}
+
+/* Flatten the nested inner card so fields sit directly on the elevated panel.
+   Both form surfaces (New Request + Repeat) carry `.fk-surface`; targeted by their
+   full multi-class so this wins over the route-app padding/border rules. */
+.form-kit .intent-capsule.planner-card,
+.form-kit .recurring-panel.recurring-contract,
+.form-kit .lab-panel.lab-workbench {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+}
+
+/* Near-white field headers. The token labels are `.token-choice-title > span`, and
+   the base `.field span` rule (var(--dim)) targets that inner span DIRECTLY, so the
+   wrapper-level color lost - we have to hit the inner span with enough specificity. */
+.form-kit .fk-surface .field.compact > span,
+.form-kit .fk-surface .intent-document > span,
+.form-kit .fk-surface .token-choice-head > span:first-child,
+.form-kit .fk-surface .token-choice-head .token-choice-title span,
+.form-kit .fk-surface .field-label-text,
+.form-kit .fk-surface .recurring-create-section > div > span {
+  color: rgba(244, 248, 246, 0.96);
+  font-weight: 840;
+}
+/* The "SWAP TOKENS - ..." sub-header: brighten the label, lift the detail */
+.form-kit .plan-method-title > span {
+  color: var(--text);
+}
+.form-kit .plan-method-title small {
+  color: rgba(200, 210, 206, 0.82);
+}
+
+/* Uniform fields: a lightly-raised neutral fill + a clearly-visible neutral border,
+   applied identically to text inputs AND the token / template select TRIGGERS (the
+   actual bordered elements, not the wrapper) so every field reads the same and none
+   look "too dark". Green appears only on focus - the one interactive accent. */
+.form-kit .fk-surface input,
+.form-kit .fk-surface textarea,
+.form-kit .fk-surface select,
+.form-kit .fk-surface .select-picker-trigger,
+.form-kit .fk-surface .template-picker-trigger {
+  /* SOLID fill (var --fk-input-fill) - opaque so it renders identically on every
+     panel/backdrop. A translucent fill composited differently in chat/proofs. */
+  background: var(--fk-input-fill);
+  border: 1px solid rgba(224, 230, 226, 0.26);
+  border-radius: 10px;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.16);
+  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+.form-kit .fk-surface input:hover:not(:disabled),
+.form-kit .fk-surface textarea:hover:not(:disabled),
+.form-kit .fk-surface select:hover:not(:disabled),
+.form-kit .fk-surface .select-picker-trigger:hover:not(:disabled),
+.form-kit .fk-surface .template-picker-trigger:hover:not(:disabled) {
+  background: var(--fk-input-fill-hover);
+  border-color: rgba(224, 230, 226, 0.42);
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.16);
+  transform: none;
+}
+.form-kit .fk-surface input:focus,
+.form-kit .fk-surface textarea:focus,
+.form-kit .fk-surface select:focus-visible,
+.form-kit .fk-surface .select-picker-trigger:focus-visible,
+.form-kit .fk-surface .template-picker-trigger:focus-visible {
+  background: var(--fk-input-fill-hover);
+  border-color: var(--accent);
+  box-shadow:
+    inset 0 1px 1px rgba(0, 0, 0, 0.16),
+    0 0 0 3px rgba(63, 189, 131, 0.22);
+  outline: none;
+}
+.form-kit .fk-surface input::placeholder,
+.form-kit .fk-surface textarea::placeholder {
+  color: rgba(174, 184, 180, 0.78);
+}
+
+/* Connect-AI / Ask-Agent: a neutral raised callout (the green lives on the icon
+   badge only), so it reads as a distinct control without adding more green fill. */
+.form-kit .fk-surface .agent-connect-prompt,
+.form-kit .fk-surface .ask-agent-after-draft {
+  background: rgba(255, 255, 255, 0.028);
+  border-color: rgba(224, 230, 226, 0.16);
+  border-style: solid;
+}
+
+/* Footer: subtle neutral strip; drop the green "Plan flow" text to calm the green.
+   New Request uses `.draft-flow-hint`; Repeat uses `.recurring-next-preview`. */
+.form-kit .one-time-create-panel .draft-flow-hint,
+.form-kit .recurring-next-preview {
+  background: rgba(255, 255, 255, 0.022);
+  border: 1px solid rgba(224, 230, 226, 0.1);
+  border-radius: 10px;
+  padding: 11px 14px;
+}
+.form-kit .one-time-create-panel .draft-flow-hint .accent-note {
+  color: rgba(206, 220, 214, 0.8);
+}
+.form-kit .one-time-create-panel .draft-flow-hint span.accent-note {
+  color: var(--text);
+}
+/* Repeat's "Saved on this device / Sign in to Cloud..." helper caption is green;
+   calm it to neutral to match. */
+.form-kit .recurring-actions-row .contract-helper.accent-note {
+  color: rgba(206, 220, 214, 0.8);
+}
+
+/* Active sub-tabs (Start/Check, Swap/Send/...) use the SAME solid-green fill as the
+   active Lend dropdown, so the selected tab reads clearly instead of a faint tint. */
+.form-kit .one-time-plan-control-row .one-time-plan-tabs button.active,
+.form-kit .one-time-plan-control-row .create-action-filter button.active,
+.form-kit .recurring-control-row .recurring-view-tabs button.active,
+.form-kit .recurring-control-row .create-action-filter button.active,
+.form-kit .artifact-view-tabs button.active,
+.form-kit .artifact-proof-group-tabs button.active {
+  background: linear-gradient(180deg, rgba(70, 196, 136, 0.42), rgba(36, 119, 80, 0.34));
+  border-color: transparent;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 8px 18px rgba(13, 71, 44, 0.18);
+  color: #f4fff8;
+}
+
+/* Token select trigger: put the balance inline (to the LEFT of the symbol), both
+   vertically centered, with a larger balance number - so the INPUT TOKEN box keeps
+   the same single-row height/alignment as the other fields instead of stacking. */
+.form-kit .fk-surface .select-picker-trigger .template-picker-current {
+  align-items: center;
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+}
+.form-kit .fk-surface .select-picker-trigger .template-picker-current .template-picker-category {
+  color: rgba(206, 220, 214, 0.86);
+  font-size: 0.92rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  order: -1;
+  text-transform: none;
+}
+
+/* Repeat composer sub-header: brighten to match New Request's "SWAP TOKENS" line
+   (the hero carries the main title; this stays as the section's working header). */
+.form-kit .recurring-composer-head h3 {
+  color: var(--text);
+}
+.form-kit .recurring-composer-head .recurring-help {
+  color: rgba(200, 210, 206, 0.82);
+}
+
+/* ---- Chat tab: match the elevated slate panel of the form tabs -------------
+   Applied directly to `.chat-surface` (border-box keeps its viewport height calc
+   intact - no wrapper, no overshoot). overflow stays visible so the sticky
+   composer + scroll pill aren't clipped. No hero: chat keeps its own header. */
+.chat-surface.form-kit {
+  background: linear-gradient(180deg, rgba(20, 23, 24, 0.96), rgba(13, 15, 16, 0.95));
+  border: 1px solid rgba(224, 230, 226, 0.14);
+  border-radius: 12px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 6px 20px rgba(0, 0, 0, 0.22);
+  overflow: visible;
+  padding: 6px 14px 0;
+}
+.chat-surface.form-kit::before {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.16) 30%, rgba(255, 255, 255, 0.16) 70%, transparent);
+  content: "";
+  height: 1px;
+  left: 14px;
+  opacity: 0.8;
+  position: absolute;
+  right: 14px;
+  top: 0;
+}
+/* Composer: tune the pill (not the transparent textarea) to the form-kit input
+   fill + green focus ring, so the one bordered element carries the treatment. */
+/* Outer pill: a subtle fill - a touch lighter than the panel, still darker than the
+   input textarea, so the composer bar reads as its own surface. */
+.chat-surface.form-kit .chat-composer {
+  background: #1d2023;
+  border: 1px solid rgba(224, 230, 226, 0.14);
+  box-shadow: none;
+}
+/* The INSIDE - the textarea - is the actual input, so it gets the solid form-kit fill
+   (matching every other tab's input). The broad `.route-app textarea` rule was forcing
+   it dark; this wins on specificity. */
+.chat-surface.form-kit .chat-input {
+  background: var(--fk-input-fill);
+  border: 1px solid rgba(224, 230, 226, 0.26);
+  border-radius: 10px;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.16);
+  padding: 9px 12px;
+}
+.chat-surface.form-kit .chat-composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(63, 189, 131, 0.22);
+}
+
+/* Hero icon: hide it on narrow/native widths where the panel is tight - it otherwise
+   leaves an awkward gap on the right and crowds the title. Kept on wide desktop. */
+@media (max-width: 720px) {
+  .form-kit .fk-hero-icon { display: none; }
+}
+.route-app.android-shell .form-kit .fk-hero-icon,
+.route-app.ios-native-shell .form-kit .fk-hero-icon {
+  display: none;
+}
+
+/* Chat text: brighten the dim bits to match the form tabs. The composer placeholder
+   was 0.52 (much dimmer than the form inputs' 0.78); the thread title was var(--muted);
+   user bubble text pinned to the same near-white the form headers use. */
+.chat-surface.form-kit .chat-input::placeholder {
+  color: rgba(174, 184, 180, 0.78);
+}
+.chat-surface.form-kit .chat-header .chat-title {
+  color: rgba(214, 224, 220, 0.9);
+}
+.chat-surface.form-kit .chat-msg.user {
+  background: rgba(255, 255, 255, 0.055);
+  border-color: rgba(224, 230, 226, 0.14);
+  color: rgba(244, 248, 246, 0.96);
+}
+
+/* ---- Uniform active-tab fill across the remaining tabs' segmented controls ------
+   Same solid-green Lend-style fill used on New Request, so the selected tab reads the
+   same everywhere: Home sub-tabs, Done filter, Preferences sub-tabs, Agent Payments
+   sub-tabs + entry mode, Skills sub-tabs, Sessions filters. */
+.route-app .command-subtab-row button.active,
+.route-demo .command-subtab-row button.active,
+.route-app .completed-filter-row button.active,
+.route-app .preferences-subtabs button.active,
+.route-app .agent-protocols-tab-list button.active,
+.route-app .pay-out-entry-tabs button.active,
+.route-app .skills-subtab-row button.active,
+.route-app .sessions-filter-button.active,
+.route-app .positions-tab.active {
+  background: linear-gradient(180deg, rgba(70, 196, 136, 0.42), rgba(36, 119, 80, 0.34));
+  border-color: transparent;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 8px 18px rgba(13, 71, 44, 0.18);
+  color: #f4fff8;
+}
+
+/* Skills sub-panels carry their own backgrounds; align the two list panels to the
+   shared slate so Skills matches the rest. */
+.route-app .skills-browse-root,
+.route-app .skills-installed-root {
+  background: linear-gradient(180deg, rgba(20, 23, 24, 0.96), rgba(13, 15, 16, 0.95));
+  border: 1px solid rgba(224, 230, 226, 0.14);
+  border-radius: 12px;
+}
+
+/* Input-fill parity for the form-heavy non-form-kit tabs (Agent Payments Profile /
+   Pay Merchant, Sessions create modal, Preferences fields) so their inputs read the
+   same as the form-kit inputs. Visual props only; checkboxes/radios excluded. */
+/* Uniform SOLID input fill for the devTab forms AND every Preferences input (all
+   sub-views), so they match New Request / Chat regardless of backdrop. The broad
+   Preferences selectors also catch raw inputs outside `.field.compact` (rules, tokens). */
+.route-app .dev-agent-card-form-input,
+.route-app .pay-out-input,
+.route-app .pay-out-form .select-picker-trigger,
+.route-app .sessions-modal input:not([type="checkbox"]):not([type="radio"]),
+.route-app .sessions-modal textarea,
+.route-app .preferences-page input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+.route-app .preferences-page textarea,
+.route-app .preferences-page select,
+.route-app .preferences-page .select-picker-trigger,
+.route-app .preferences-page .template-picker-trigger {
+  background: var(--fk-input-fill);
+  border: 1px solid rgba(224, 230, 226, 0.26);
+  border-radius: 10px;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.16);
+}
+.route-app .dev-agent-card-form-input:focus,
+.route-app .pay-out-input:focus,
+.route-app .sessions-modal input:focus,
+.route-app .sessions-modal textarea:focus,
+.route-app .preferences-page input:focus,
+.route-app .preferences-page textarea:focus,
+.route-app .preferences-page select:focus-visible,
+.route-app .preferences-page .select-picker-trigger:focus-visible {
+  background: var(--fk-input-fill-hover);
+  border-color: var(--accent);
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.16), 0 0 0 3px rgba(63, 189, 131, 0.22);
+  outline: none;
+}
+/* Preferences field labels: brighten to match the uniform form headers. */
+.route-app .preferences-page .field.compact > span,
+.route-app .preferences-page .field > span {
+  color: rgba(240, 245, 243, 0.9);
+}
+
+/* Chat action-card status pills: darken only the already-colored parts - the label
+   text and the border - to a deeper green/amber/red. No fill added (keeps the base
+   pill background), so it stays the same pill, just a darker outline + word. */
+.chat-action-card .status-pill.tx-confirmed {
+  border-color: rgba(61, 220, 151, 0.4);
+  color: var(--accent);
+}
+.chat-action-card .status-pill.tx-pending {
+  border-color: rgba(214, 168, 79, 0.44);
+  color: #d6a84f;
+}
+.chat-action-card .status-pill.tx-failed {
+  border-color: rgba(239, 111, 120, 0.46);
+  color: #e0727b;
+}
+
+/* ---- Top workspace nav (desktop): grey surrounding container + uniform active tab -
+   Wrap the tabs in a subtle grey container and give the active tab (and the More
+   trigger when a More-menu tab is active) the SAME solid-green no-border fill as the
+   in-app segmented controls, so it reads a bit darker and matches everything else. */
+.route-app .workspace-tabs[data-layout="app-tabs"] {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(224, 230, 226, 0.1);
+  border-radius: 12px;
+  gap: 4px;
+  padding: 5px;
+}
+.route-app .workspace-tabs[data-layout="app-tabs"] button.active,
+.route-app .workspace-tabs[data-layout="app-tabs"] .workspace-more-trigger.active {
+  background: linear-gradient(180deg, rgba(70, 196, 136, 0.42), rgba(36, 119, 80, 0.34));
+  border-color: transparent;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 8px 18px rgba(13, 71, 44, 0.18);
+  color: #f4fff8;
+}
+
+/* Chat card detail: the shared summary grid uses fixed min-width columns (up to
+   ~900px for swaps) sized for the full-width Sign Approval card, so it overflows the
+   narrower chat card when expanded. Make it wrap responsively so the card stretches to
+   fit its expanded detail instead of overflowing. */
+.chat-action-card .inbox-approval-summary-grid,
+.chat-action-card .inbox-approval-summary-grid.rows-4,
+.chat-action-card .inbox-approval-summary-grid.rows-3,
+.chat-action-card .inbox-approval-summary-grid.swap-summary.rows-4 {
+  grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+}
+/* The lifecycle stepper can also be wide; let it scroll within the card rather than
+   push the card wider. */
+.chat-action-card .chat-action-details-body .tx-timeline {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* ---- Proofs: strip the stacked container chrome (box-in-box-in-box) --------------
+   The elevated panel is the only outer container; the workbench grid box, the left
+   brief fill, and the explainer/field wrappers all go flat, leaving the inputs (which
+   have their own fill) as the only framed elements. */
+.form-kit .common-proof-workbench .lab-workbench-grid,
+.form-kit .advanced-proof-workbench .lab-workbench-grid {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+}
+.form-kit .common-proof-workbench .research-brief,
+.form-kit .advanced-proof-workbench .research-brief {
+  background: transparent;
+}
+.form-kit .receipt-explainer-stack div {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+}
+.form-kit .common-proof-workbench .receipt-fields {
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+/* Proof-type dropdown trigger: center the eyebrow + value and tighten the gap so they
+   don't sit cramped against the edges. */
+.form-kit .lab-select-field .template-picker-trigger {
+  align-items: center;
+}
+.form-kit .lab-select-field .template-picker-current {
+  gap: 1px;
+}
+
+/* ---- Uniform SOLID input fill (opaque, backdrop-independent) --------------------
+   A single solid color for every form input across the app, so chat / proofs / New
+   Request render pixel-identical regardless of the panel behind them. Overrides the
+   proof-specific dark-fill rule with higher specificity. */
+:root {
+  --fk-input-fill: #25282c;
+  --fk-input-fill-hover: #2c3035;
+}
+.route-app .form-kit .common-proof-workbench .receipt-field textarea,
+.route-app .form-kit .common-proof-workbench .receipt-field input,
+.route-app .form-kit .common-proof-workbench .receipt-field .select-picker-trigger,
+.route-app .form-kit .advanced-proof-workbench .lab-intent-document textarea,
+.route-app .form-kit .advanced-proof-workbench .receipt-field textarea {
+  background: var(--fk-input-fill);
+  border-color: rgba(224, 230, 226, 0.26);
+}
+.route-app .form-kit .common-proof-workbench .receipt-field textarea:focus,
+.route-app .form-kit .common-proof-workbench .receipt-field input:focus,
+.route-app .form-kit .advanced-proof-workbench .lab-intent-document textarea:focus {
+  background: var(--fk-input-fill-hover);
+  border-color: var(--accent);
+}
+
+/* AI Connector field labels (QUICK PROMPT NAME / PROMPT): brighten to match the uniform
+   form headers instead of the dim default. */
+.route-app .preferences-page .quick-prompts-card .field.compact > span,
+.preferences-drawer .quick-prompts-card .field.compact > span {
+  color: rgba(244, 248, 246, 0.9);
+  font-weight: 820;
 }

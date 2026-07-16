@@ -3,10 +3,13 @@ import { describe, expect, it } from 'vitest';
 import {
   type ClassifiedTransactionFailure,
   type TransactionFailureKind,
+  AUTO_RETRYABLE_SIGNED_BROADCAST_KINDS,
   classifyTransactionFailure,
+  isAutoRetryableSignedBroadcastKind,
   normalizeErrorMessage,
   shouldCheckChainBeforeFailing,
   shouldRetrySignedBroadcast,
+  signedBroadcastRetryDecision,
   transactionFailureToastCopy,
 } from '../transactionFailure.js';
 
@@ -787,5 +790,104 @@ describe('classifyTransactionFailure — invariants', () => {
   it('config_missing wins over generic timeout', () => {
     const result = classify('Missing RPC URL (request timed out)');
     expectKind(result, 'config_missing');
+  });
+});
+
+// The retry LOOP consumes AUTO_RETRYABLE_SIGNED_BROADCAST_KINDS + signedBroadcastRetryDecision to
+// decide whether a failed same-bytes send may replay. This wiring had zero coverage before, and its
+// two easy-to-break invariants are (a) the retryable set never drifts from the classifier, and
+// (b) the decision honors mode + per-kind cap. A representative error per kind, classified in the
+// exact context the loop uses (`hasSignedBytes: true`), pins both.
+const RETRY_REPRESENTATIVE_ERRORS: Record<TransactionFailureKind, string> = {
+  wallet_rejected: 'user rejected the request',
+  wallet_unavailable: 'wallet not connected',
+  config_missing: 'missing rpc url',
+  rpc_timeout: 'connection timed out',
+  rpc_rejected: 'http 403 forbidden',
+  network_unreachable: 'failed to fetch',
+  onchain_failed: 'transaction failed on-chain',
+  expired_blockhash: 'blockhash not found',
+  slippage_or_quote_failed: 'slippage tolerance exceeded',
+  simulation_failed: 'transaction simulation failed',
+  insufficient_funds: 'insufficient funds for transaction',
+  invalid_transaction: 'invalid transaction',
+  rate_limited: 'rate limit exceeded (429)',
+  unknown_maybe_submitted: 'the network tubes are clogged in an unrecognized way',
+};
+
+describe('signed-broadcast retry: retryable-kind set stays in lockstep with the classifier', () => {
+  it('the flag agrees with set membership for every representative error (drift guard)', () => {
+    for (const [, message] of Object.entries(RETRY_REPRESENTATIVE_ERRORS)) {
+      // Classify in the loop's real context: bytes are signed, so a same-bytes replay is on the table.
+      const classified = classify(message, { hasSignedBytes: true });
+      expect(isAutoRetryableSignedBroadcastKind(classified.kind)).toBe(classified.retryableSignedBroadcast);
+    }
+  });
+
+  it('only the four network/ambiguous kinds are ever auto-retryable', () => {
+    expect([...AUTO_RETRYABLE_SIGNED_BROADCAST_KINDS].sort()).toEqual(
+      ['network_unreachable', 'rate_limited', 'rpc_timeout', 'unknown_maybe_submitted'].sort(),
+    );
+  });
+
+  it('the four retryable kinds classify retryable with signed bytes', () => {
+    for (const kind of ['rpc_timeout', 'network_unreachable', 'rate_limited', 'unknown_maybe_submitted'] as const) {
+      const classified = classify(RETRY_REPRESENTATIVE_ERRORS[kind], { hasSignedBytes: true });
+      expect(classified.retryableSignedBroadcast).toBe(true);
+    }
+  });
+
+  it('the ten non-retryable kinds never classify retryable, even with signed bytes', () => {
+    const nonRetryable = (Object.keys(RETRY_REPRESENTATIVE_ERRORS) as TransactionFailureKind[]).filter(
+      (kind) => !AUTO_RETRYABLE_SIGNED_BROADCAST_KINDS.has(kind),
+    );
+    expect(nonRetryable).toHaveLength(10);
+    for (const kind of nonRetryable) {
+      const classified = classify(RETRY_REPRESENTATIVE_ERRORS[kind], { hasSignedBytes: true });
+      // Guard against the string reclassifying under signed bytes: assert on the actual kind.
+      expect(AUTO_RETRYABLE_SIGNED_BROADCAST_KINDS.has(classified.kind)).toBe(classified.retryableSignedBroadcast);
+      if (!AUTO_RETRYABLE_SIGNED_BROADCAST_KINDS.has(classified.kind)) {
+        expect(classified.retryableSignedBroadcast).toBe(false);
+      }
+    }
+  });
+
+  it('expired_blockhash is NOT retryable — the same signed bytes carry the dead blockhash', () => {
+    const classified = classify('blockhash not found', { hasSignedBytes: true });
+    expectKind(classified, 'expired_blockhash');
+    expect(classified.retryableSignedBroadcast).toBe(false);
+    expect(isAutoRetryableSignedBroadcastKind('expired_blockhash')).toBe(false);
+  });
+});
+
+describe('signedBroadcastRetryDecision', () => {
+  const retryable = { retryableSignedBroadcast: true };
+  const notRetryable = { retryableSignedBroadcast: false };
+
+  it('stops when the classifier says the bytes are not safe to rebroadcast, regardless of mode', () => {
+    expect(signedBroadcastRetryDecision(notRetryable, { mode: 'auto', maxAttempts: 5 }, 1)).toBe('stop');
+    expect(signedBroadcastRetryDecision(notRetryable, { mode: 'ask', maxAttempts: 5 }, 1)).toBe('stop');
+  });
+
+  it('stops when the policy mode is disabled', () => {
+    expect(signedBroadcastRetryDecision(retryable, { mode: 'disabled', maxAttempts: 5 }, 1)).toBe('stop');
+  });
+
+  it('returns auto / ask by policy mode while under the cap', () => {
+    expect(signedBroadcastRetryDecision(retryable, { mode: 'auto', maxAttempts: 2 }, 1)).toBe('auto');
+    expect(signedBroadcastRetryDecision(retryable, { mode: 'ask', maxAttempts: 2 }, 1)).toBe('ask');
+  });
+
+  it('respects the per-kind cap: it stops once the attempt count reaches maxAttempts', () => {
+    // maxAttempts of 2 = at most two total sends of the same bytes.
+    expect(signedBroadcastRetryDecision(retryable, { mode: 'auto', maxAttempts: 2 }, 1)).toBe('auto');
+    expect(signedBroadcastRetryDecision(retryable, { mode: 'auto', maxAttempts: 2 }, 2)).toBe('stop');
+    expect(signedBroadcastRetryDecision(retryable, { mode: 'auto', maxAttempts: 3 }, 2)).toBe('auto');
+    expect(signedBroadcastRetryDecision(retryable, { mode: 'auto', maxAttempts: 3 }, 3)).toBe('stop');
+  });
+
+  it('maxAttempts of 0 behaves like Off — never retries', () => {
+    expect(signedBroadcastRetryDecision(retryable, { mode: 'auto', maxAttempts: 0 }, 1)).toBe('stop');
+    expect(signedBroadcastRetryDecision(retryable, { mode: 'ask', maxAttempts: 0 }, 1)).toBe('stop');
   });
 });
