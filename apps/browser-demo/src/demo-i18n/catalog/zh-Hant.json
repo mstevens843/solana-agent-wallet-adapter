@@ -1769,7 +1769,6 @@
     "Previous": "上一頁",
     "Price needed": "需要價格",
     "Private local archive.": "私人本機封存。",
-    "Profile aggregator API unavailable": "設定檔彙整 API 無法使用",
     "Profile link": "設定檔連結",
     "Profile not available": "設定檔無法使用",
     "Profile published. Your per-wallet URL is now live.": "設定檔已發佈。你的每個錢包專屬 URL 現已上線。",
@@ -1916,7 +1915,6 @@
     "Signed receipt request": "已簽署的收據請求",
     "Signed request": "已簽署的請求",
     "Signing boundary": "簽署邊界",
-    "Skill registry API unavailable": "技能登錄 API 無法使用",
     "Skill was uninstalled, but the linked creator payment schedule could not be verified.": "技能已解除安裝，但無法驗證所連結的創作者付款排程。",
     "Skill was uninstalled, but the linked creator payment schedule is {status}.": "技能已解除安裝，但所連結的創作者付款排程為 {status}。",
     "Skill was uninstalled, but the linked creator payment schedule was not returned by /api/recurring.": "技能已解除安裝，但 /api/recurring 未傳回所連結的創作者付款排程。",
@@ -1956,7 +1954,6 @@
     "Take profile down": "下架設定檔",
     "Taking down…": "下架中…",
     "Technical details": "技術詳細資料",
-    "The <code>/api/skills</code> endpoint returned 404 in this environment. The CLI snippet above still scaffolds and validates a manifest locally; publishing needs a render-web server with Skills routes enabled.": "在此環境中 <code>/api/skills</code> 端點傳回 404。上方的 CLI 程式碼片段仍可在本機建立並驗證資訊清單；發佈需要已啟用 Skills 路由的 render-web 伺服器。",
     "The Skills container loaded, but no sections registered in this build. Rebuild the browser app with the Skills sub-tab modules included.": "Skills 容器已載入，但此組建中未註冊任何區塊。請重新建置瀏覽器應用程式並包含 Skills 子分頁模組。",
     "The agent fetches your URL, gets address + tokens + protocols in one round-trip, builds the right mandate, drops it in your inbox.": "代理人擷取你的 URL，在一次往返中取得位址 + 代幣 + 協定，建立正確的授權，並將其放入你的收件匣。",
     "The cloud ACP route is unavailable, so the approval will be saved in this browser under Needs Approval.": "雲端 ACP 路徑無法使用，因此核准將儲存於此瀏覽器的「待核准」中。",
@@ -1964,7 +1961,6 @@
     "The profile is an opt-in layer on top of your wallet. Toggle \"Discoverable\" off any time to take it down.": "設定檔是位於你錢包之上的選擇加入層。隨時關閉「可被探索」即可下架。",
     "The scheduler creates a Needs Approval item when due; your wallet signs each action.": "排程器在到期時會建立一個「待核准」項目；你的錢包會簽署每一個操作。",
     "The snippet above scaffolds your first manifest. Once <code>agentic-skill publish</code> succeeds, the new skill appears here with install counts and earnings.": "上方的程式碼片段會為你建立第一份資訊清單。一旦 <code>agentic-skill publish</code> 成功，新技能就會連同安裝次數與收益出現於此。",
-    "The {endpoint} endpoint returned 404 in this environment. The public URL pattern below is still the canonical place for your page when this UI is pointed at a render-web server with aggregator routes enabled.": "在此環境中 {endpoint} 端點傳回 404。當此 UI 指向已啟用彙整路由的 render-web 伺服器時，下方的公開 URL 模式仍是你頁面的標準位置。",
     "These items stay on this device until storage is available.": "這些項目會保留在此裝置上，直到有可用的儲存空間為止。",
     "This schedule is settled.": "此排程已結算。",
     "This wallet cannot install skills on this deployment.": "此錢包無法在此部署中安裝技能。",
@@ -5698,6 +5694,12 @@
     "Get notified on this device — even when the app is closed — for the events you turn on below.": "即使應用程式已關閉，也可在此裝置上接收你在下方開啟的事件通知。",
     "Sign in to receive notifications when the app is closed. While signed out, alerts show only while the app is open.": "登入後即可在應用程式關閉時接收通知。未登入時，提醒僅在應用程式開啟時顯示。",
     "Update the app to receive notifications when it is closed. Alerts still show while the app is open.": "請更新應用程式以在其關閉時接收通知。應用程式開啟時仍會顯示提醒。",
-    "Notifications show while the app is open.": "通知會在應用程式開啟時顯示。"
+    "Notifications show while the app is open.": "通知會在應用程式開啟時顯示。",
+    "Read more": "展開",
+    "Show less": "收合",
+    "Your public profile isn't live yet": "你的公開檔案尚未上線",
+    "Your receipt-backed track record will appear at the link below once this wallet is served by an Agentic aggregator. The address is already reserved for you.": "當此錢包由 Agentic 聚合器提供服務後，你的收據支撐記錄將顯示在下方連結處。該位址已為你保留。",
+    "Publishing isn't available here yet": "此處暫不支援發佈",
+    "The CLI snippet above still scaffolds and validates a manifest locally. Publishing to the registry goes live once this app is connected to a server with Skills routes enabled.": "上方的 CLI 片段仍可在本機建立並驗證資訊清單。當此應用連線到啟用 Skills 路由的伺服器後，即可發佈到登錄檔。"
   }
 }

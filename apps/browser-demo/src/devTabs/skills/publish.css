@@ -13,6 +13,12 @@
   border-radius: var(--radius);
   display: grid;
   gap: 14px;
+  /* minmax(0,1fr) (not just min-width:0) is what forces the implicit grid track
+     to shrink below the widest child. Without it, the long unwrappable npm line
+     sizes the auto track to max-content and the <pre> overflows the card instead
+     of scrolling inside it. */
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   padding: 20px;
 }
 
@@ -65,6 +71,9 @@
   font-size: 0.85rem;
   line-height: 1.58;
   margin: 0;
+  /* min-width:0 lets overflow-x:auto actually engage on this grid child, so the
+     long npm line scrolls inside the box instead of overflowing the card. */
+  min-width: 0;
   overflow-x: auto;
   padding: 14px;
   white-space: pre;
@@ -373,6 +382,9 @@
     border: 1px solid rgba(224, 230, 226, 0.08);
     border-radius: 8px;
     display: grid;
+    /* Constrain the implicit track so the code <pre> scrolls instead of sizing
+       the track to its longest line and overflowing. */
+    grid-template-columns: minmax(0, 1fr);
     min-width: 0;
   }
 
@@ -407,6 +419,9 @@
     font-size: 0.72rem;
     line-height: 1.5;
     margin: 0;
+    /* Same reason as .skills-publish-pre: a grid child needs min-width:0 for
+       overflow-x to engage instead of the long line pushing the box wide. */
+    min-width: 0;
     overflow-x: auto;
     padding: 10px;
     white-space: pre;

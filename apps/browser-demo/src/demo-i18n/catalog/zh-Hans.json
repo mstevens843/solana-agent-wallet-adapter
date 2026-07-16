@@ -1769,7 +1769,6 @@
     "Previous": "上一页",
     "Price needed": "需要价格",
     "Private local archive.": "私有本地归档。",
-    "Profile aggregator API unavailable": "资料聚合器 API 不可用",
     "Profile link": "资料链接",
     "Profile not available": "资料不可用",
     "Profile published. Your per-wallet URL is now live.": "资料已发布。您的钱包专属 URL 现已生效。",
@@ -1916,7 +1915,6 @@
     "Signed receipt request": "已签名的回执请求",
     "Signed request": "已签名的请求",
     "Signing boundary": "签名边界",
-    "Skill registry API unavailable": "技能注册表 API 不可用",
     "Skill was uninstalled, but the linked creator payment schedule could not be verified.": "技能已卸载，但无法验证关联的创作者付款排期。",
     "Skill was uninstalled, but the linked creator payment schedule is {status}.": "技能已卸载，但关联的创作者付款排期为 {status}。",
     "Skill was uninstalled, but the linked creator payment schedule was not returned by /api/recurring.": "技能已卸载，但 /api/recurring 未返回关联的创作者付款排期。",
@@ -1956,7 +1954,6 @@
     "Take profile down": "下线资料",
     "Taking down…": "下线中…",
     "Technical details": "技术详情",
-    "The <code>/api/skills</code> endpoint returned 404 in this environment. The CLI snippet above still scaffolds and validates a manifest locally; publishing needs a render-web server with Skills routes enabled.": "此环境中 <code>/api/skills</code> 端点返回 404。上方的 CLI 代码片段仍可在本地搭建并验证清单；发布需要已启用 Skills 路由的 render-web 服务器。",
     "The Skills container loaded, but no sections registered in this build. Rebuild the browser app with the Skills sub-tab modules included.": "Skills 容器已加载，但此构建中未注册任何板块。请重新构建浏览器应用并包含 Skills 子标签模块。",
     "The agent fetches your URL, gets address + tokens + protocols in one round-trip, builds the right mandate, drops it in your inbox.": "代理会获取您的 URL，在一次往返中获得地址 + 代币 + 协议，构建出正确的授权，并将其放入您的收件箱。",
     "The cloud ACP route is unavailable, so the approval will be saved in this browser under Needs Approval.": "云端 ACP 路由不可用，因此该审批将保存在此浏览器的“待审批”下。",
@@ -1964,7 +1961,6 @@
     "The profile is an opt-in layer on top of your wallet. Toggle \"Discoverable\" off any time to take it down.": "该资料是叠加在您钱包之上的可选层。随时关闭“可被发现”即可将其下线。",
     "The scheduler creates a Needs Approval item when due; your wallet signs each action.": "排期程序在到期时会创建一个“待审批”项；您的钱包对每个操作签名。",
     "The snippet above scaffolds your first manifest. Once <code>agentic-skill publish</code> succeeds, the new skill appears here with install counts and earnings.": "上方的代码片段会搭建您的第一个清单。一旦 <code>agentic-skill publish</code> 成功，新技能就会连同安装次数和收益显示在此处。",
-    "The {endpoint} endpoint returned 404 in this environment. The public URL pattern below is still the canonical place for your page when this UI is pointed at a render-web server with aggregator routes enabled.": "此环境中 {endpoint} 端点返回 404。当此界面指向已启用聚合器路由的 render-web 服务器时，下方的公开 URL 模式仍是您页面的标准位置。",
     "These items stay on this device until storage is available.": "在存储可用之前，这些项目会保留在此设备上。",
     "This schedule is settled.": "此排期已结算。",
     "This wallet cannot install skills on this deployment.": "此钱包无法在本次部署中安装技能。",
@@ -5698,6 +5694,12 @@
     "Get notified on this device — even when the app is closed — for the events you turn on below.": "即使应用已关闭，也可在此设备上接收你在下方开启的事件通知。",
     "Sign in to receive notifications when the app is closed. While signed out, alerts show only while the app is open.": "登录后即可在应用关闭时接收通知。未登录时，提醒仅在应用打开时显示。",
     "Update the app to receive notifications when it is closed. Alerts still show while the app is open.": "请更新应用以在其关闭时接收通知。应用打开时仍会显示提醒。",
-    "Notifications show while the app is open.": "通知会在应用打开时显示。"
+    "Notifications show while the app is open.": "通知会在应用打开时显示。",
+    "Read more": "展开",
+    "Show less": "收起",
+    "Your public profile isn't live yet": "你的公开资料尚未上线",
+    "Your receipt-backed track record will appear at the link below once this wallet is served by an Agentic aggregator. The address is already reserved for you.": "当此钱包由 Agentic 聚合器提供服务后，你的收据支撑的记录将显示在下方链接处。该地址已为你保留。",
+    "Publishing isn't available here yet": "此处暂不支持发布",
+    "The CLI snippet above still scaffolds and validates a manifest locally. Publishing to the registry goes live once this app is connected to a server with Skills routes enabled.": "上方的 CLI 片段仍可在本地脚手架并验证清单。当此应用连接到启用了 Skills 路由的服务器后，即可发布到注册表。"
   }
 }

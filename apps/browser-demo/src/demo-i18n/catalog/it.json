@@ -1769,7 +1769,6 @@
     "Previous": "Precedente",
     "Price needed": "Prezzo necessario",
     "Private local archive.": "Archivio locale privato.",
-    "Profile aggregator API unavailable": "API dell'aggregatore di profili non disponibile",
     "Profile link": "Link del profilo",
     "Profile not available": "Profilo non disponibile",
     "Profile published. Your per-wallet URL is now live.": "Profilo pubblicato. Il tuo URL per-wallet è ora attivo.",
@@ -1916,7 +1915,6 @@
     "Signed receipt request": "Richiesta di ricevuta firmata",
     "Signed request": "Richiesta firmata",
     "Signing boundary": "Confine di firma",
-    "Skill registry API unavailable": "API del registro delle skill non disponibile",
     "Skill was uninstalled, but the linked creator payment schedule could not be verified.": "La skill è stata disinstallata, ma la pianificazione di pagamento del creatore collegata non è stata verificabile.",
     "Skill was uninstalled, but the linked creator payment schedule is {status}.": "La skill è stata disinstallata, ma la pianificazione di pagamento del creatore collegata è {status}.",
     "Skill was uninstalled, but the linked creator payment schedule was not returned by /api/recurring.": "La skill è stata disinstallata, ma la pianificazione di pagamento del creatore collegata non è stata restituita da /api/recurring.",
@@ -1956,7 +1954,6 @@
     "Take profile down": "Rimuovi il profilo",
     "Taking down…": "Rimozione in corso…",
     "Technical details": "Dettagli tecnici",
-    "The <code>/api/skills</code> endpoint returned 404 in this environment. The CLI snippet above still scaffolds and validates a manifest locally; publishing needs a render-web server with Skills routes enabled.": "L'endpoint <code>/api/skills</code> ha restituito 404 in questo ambiente. Lo snippet CLI qui sopra crea e convalida comunque un manifest in locale; la pubblicazione richiede un server render-web con le route Skills abilitate.",
     "The Skills container loaded, but no sections registered in this build. Rebuild the browser app with the Skills sub-tab modules included.": "Il contenitore Skills si è caricato, ma nessuna sezione è registrata in questa build. Ricompila l'app del browser includendo i moduli delle sotto-schede Skills.",
     "The agent fetches your URL, gets address + tokens + protocols in one round-trip, builds the right mandate, drops it in your inbox.": "L'agente recupera il tuo URL, ottiene indirizzo + token + protocolli in un solo viaggio, costruisce il mandato giusto e lo deposita nella tua posta in arrivo.",
     "The cloud ACP route is unavailable, so the approval will be saved in this browser under Needs Approval.": "La route ACP cloud non è disponibile, quindi l'approvazione verrà salvata in questo browser sotto In attesa di approvazione.",
@@ -1964,7 +1961,6 @@
     "The profile is an opt-in layer on top of your wallet. Toggle \"Discoverable\" off any time to take it down.": "Il profilo è un livello opzionale sopra il tuo wallet. Disattiva \"Rilevabile\" in qualsiasi momento per rimuoverlo.",
     "The scheduler creates a Needs Approval item when due; your wallet signs each action.": "Lo scheduler crea un elemento In attesa di approvazione alla scadenza; il tuo wallet firma ogni azione.",
     "The snippet above scaffolds your first manifest. Once <code>agentic-skill publish</code> succeeds, the new skill appears here with install counts and earnings.": "Lo snippet qui sopra crea il tuo primo manifest. Una volta che <code>agentic-skill publish</code> riesce, la nuova skill compare qui con i conteggi delle installazioni e i guadagni.",
-    "The {endpoint} endpoint returned 404 in this environment. The public URL pattern below is still the canonical place for your page when this UI is pointed at a render-web server with aggregator routes enabled.": "L'endpoint {endpoint} ha restituito 404 in questo ambiente. Lo schema dell'URL pubblico qui sotto resta il luogo canonico per la tua pagina quando questa UI punta a un server render-web con le route dell'aggregatore abilitate.",
     "These items stay on this device until storage is available.": "Questi elementi restano su questo dispositivo finché l'archiviazione non è disponibile.",
     "This schedule is settled.": "Questa pianificazione è regolata.",
     "This wallet cannot install skills on this deployment.": "Questo wallet non può installare skill su questo deployment.",
@@ -5698,6 +5694,12 @@
     "Get notified on this device — even when the app is closed — for the events you turn on below.": "Ricevi notifiche su questo dispositivo, anche ad app chiusa, per gli eventi che attivi qui sotto.",
     "Sign in to receive notifications when the app is closed. While signed out, alerts show only while the app is open.": "Accedi per ricevere notifiche ad app chiusa. Senza accesso, gli avvisi appaiono solo ad app aperta.",
     "Update the app to receive notifications when it is closed. Alerts still show while the app is open.": "Aggiorna l’app per ricevere notifiche ad app chiusa. Gli avvisi continuano ad apparire ad app aperta.",
-    "Notifications show while the app is open.": "Le notifiche appaiono mentre l’app è aperta."
+    "Notifications show while the app is open.": "Le notifiche appaiono mentre l’app è aperta.",
+    "Read more": "Leggi di più",
+    "Show less": "Mostra meno",
+    "Your public profile isn't live yet": "Il tuo profilo pubblico non è ancora attivo",
+    "Your receipt-backed track record will appear at the link below once this wallet is served by an Agentic aggregator. The address is already reserved for you.": "Il tuo track record basato su ricevute apparirà al link qui sotto quando questo wallet sarà servito da un aggregatore Agentic. L'indirizzo è già riservato per te.",
+    "Publishing isn't available here yet": "La pubblicazione non è ancora disponibile qui",
+    "The CLI snippet above still scaffolds and validates a manifest locally. Publishing to the registry goes live once this app is connected to a server with Skills routes enabled.": "Lo snippet CLI sopra crea e convalida ancora un manifest in locale. La pubblicazione nel registro va in produzione quando questa app è connessa a un server con le rotte Skills abilitate."
   }
 }

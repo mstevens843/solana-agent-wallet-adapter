@@ -520,7 +520,6 @@ export function renderSessionsPanel(): string {
       });
     });
   }
-  const activeCount = snapshot.sessions.filter((session) => session.status === 'active' || session.status === 'pending').length;
   const spent = snapshot.sessions
     .filter((session) => session.status === 'active' || session.status === 'settled')
     .reduce((total, session) => total + (Number(session.spentAmount) || 0), 0);
@@ -563,7 +562,6 @@ export function renderSessionsPanel(): string {
       ${snapshot.notice ? `<p class="sessions-notice sessions-notice--${escapeHtml(snapshot.notice.tone)}">${escapeHtml(t(snapshot.notice.message))}</p>` : ''}
 
       <div class="sessions-overview" aria-label="${escapeHtml(t('Streaming sessions summary'))}">
-        <div class="dev-tab-stat"><span>${t('Active')}</span><strong>${activeCount}</strong></div>
         <div class="dev-tab-stat"><span>${t('Live spend')}</span><strong>${escapeHtml(formatAmount(String(spent)))}</strong></div>
         <div class="dev-tab-stat"><span>${t('v1 token')}</span><strong>SPL / USDC</strong></div>
       </div>

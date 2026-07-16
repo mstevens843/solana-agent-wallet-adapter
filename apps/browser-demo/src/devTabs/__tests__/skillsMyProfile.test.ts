@@ -138,7 +138,7 @@ describe('renderMyProfilePanel', () => {
   it('notDeployed phase still renders the Copy URL row so the URL pattern is visible', () => {
     __resetPanelStateForTests({ phase: 'notDeployed', wallet: DEV_WALLET });
     const html = renderMyProfilePanel();
-    expect(html).toContain('Profile aggregator API unavailable');
+    expect(html).toContain("Your public profile isn't live yet");
     expect(html).toContain('data-skills-profile-action="copy-url"');
     expect(html).toContain(buildPublicProfileUrl(DEV_WALLET));
   });

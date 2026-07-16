@@ -1769,7 +1769,6 @@
     "Previous": "Назад",
     "Price needed": "Требуется цена",
     "Private local archive.": "Приватный локальный архив.",
-    "Profile aggregator API unavailable": "API агрегатора профилей недоступен",
     "Profile link": "Ссылка на профиль",
     "Profile not available": "Профиль недоступен",
     "Profile published. Your per-wallet URL is now live.": "Профиль опубликован. Ваш URL для кошелька теперь активен.",
@@ -1916,7 +1915,6 @@
     "Signed receipt request": "Запрос подписанного чека",
     "Signed request": "Подписанный запрос",
     "Signing boundary": "Граница подписания",
-    "Skill registry API unavailable": "API реестра навыков недоступен",
     "Skill was uninstalled, but the linked creator payment schedule could not be verified.": "Навык удалён, но связанное расписание выплат создателю не удалось проверить.",
     "Skill was uninstalled, but the linked creator payment schedule is {status}.": "Навык удалён, но связанное расписание выплат создателю имеет статус {status}.",
     "Skill was uninstalled, but the linked creator payment schedule was not returned by /api/recurring.": "Навык удалён, но связанное расписание выплат создателю не было возвращено /api/recurring.",
@@ -1956,7 +1954,6 @@
     "Take profile down": "Снять профиль",
     "Taking down…": "Снятие…",
     "Technical details": "Технические детали",
-    "The <code>/api/skills</code> endpoint returned 404 in this environment. The CLI snippet above still scaffolds and validates a manifest locally; publishing needs a render-web server with Skills routes enabled.": "Эндпоинт <code>/api/skills</code> вернул 404 в этой среде. Фрагмент CLI выше по-прежнему создаёт и проверяет манифест локально; для публикации нужен сервер render-web с включёнными маршрутами Skills.",
     "The Skills container loaded, but no sections registered in this build. Rebuild the browser app with the Skills sub-tab modules included.": "Контейнер Skills загружен, но в этой сборке не зарегистрировано ни одного раздела. Пересоберите браузерное приложение, включив модули подвкладок Skills.",
     "The agent fetches your URL, gets address + tokens + protocols in one round-trip, builds the right mandate, drops it in your inbox.": "Агент получает ваш URL, узнаёт адрес + токены + протоколы за один запрос, формирует нужный мандат и помещает его в ваши входящие.",
     "The cloud ACP route is unavailable, so the approval will be saved in this browser under Needs Approval.": "Облачный маршрут ACP недоступен, поэтому подтверждение будет сохранено в этом браузере в «Требует подтверждения».",
@@ -1964,7 +1961,6 @@
     "The profile is an opt-in layer on top of your wallet. Toggle \"Discoverable\" off any time to take it down.": "Профиль — это добровольный слой поверх вашего кошелька. Отключите «Доступно для обнаружения» в любой момент, чтобы снять его.",
     "The scheduler creates a Needs Approval item when due; your wallet signs each action.": "Планировщик создаёт элемент «Требует подтверждения» при наступлении срока; ваш кошелёк подписывает каждое действие.",
     "The snippet above scaffolds your first manifest. Once <code>agentic-skill publish</code> succeeds, the new skill appears here with install counts and earnings.": "Фрагмент выше создаёт ваш первый манифест. После успешного выполнения <code>agentic-skill publish</code> новый навык появится здесь с числом установок и заработком.",
-    "The {endpoint} endpoint returned 404 in this environment. The public URL pattern below is still the canonical place for your page when this UI is pointed at a render-web server with aggregator routes enabled.": "Эндпоинт {endpoint} вернул 404 в этой среде. Шаблон публичного URL ниже по-прежнему остаётся каноническим местом для вашей страницы, когда этот интерфейс указывает на сервер render-web с включёнными маршрутами агрегатора.",
     "These items stay on this device until storage is available.": "Эти элементы остаются на этом устройстве, пока хранилище не станет доступным.",
     "This schedule is settled.": "Это расписание рассчитано.",
     "This wallet cannot install skills on this deployment.": "Этот кошелёк не может устанавливать навыки в этом развёртывании.",
@@ -5698,6 +5694,12 @@
     "Get notified on this device — even when the app is closed — for the events you turn on below.": "Получайте уведомления на этом устройстве — даже когда приложение закрыто — о событиях, которые вы включите ниже.",
     "Sign in to receive notifications when the app is closed. While signed out, alerts show only while the app is open.": "Войдите, чтобы получать уведомления при закрытом приложении. Без входа оповещения показываются только при открытом приложении.",
     "Update the app to receive notifications when it is closed. Alerts still show while the app is open.": "Обновите приложение, чтобы получать уведомления при его закрытии. Оповещения по-прежнему показываются при открытом приложении.",
-    "Notifications show while the app is open.": "Уведомления показываются, пока приложение открыто."
+    "Notifications show while the app is open.": "Уведомления показываются, пока приложение открыто.",
+    "Read more": "Показать больше",
+    "Show less": "Свернуть",
+    "Your public profile isn't live yet": "Ваш публичный профиль ещё не активен",
+    "Your receipt-backed track record will appear at the link below once this wallet is served by an Agentic aggregator. The address is already reserved for you.": "Ваш подтверждённый чеками послужной список появится по ссылке ниже, как только этот кошелёк будет обслуживаться агрегатором Agentic. Адрес уже зарезервирован за вами.",
+    "Publishing isn't available here yet": "Публикация здесь пока недоступна",
+    "The CLI snippet above still scaffolds and validates a manifest locally. Publishing to the registry goes live once this app is connected to a server with Skills routes enabled.": "Приведённый выше CLI-фрагмент по-прежнему создаёт и проверяет манифест локально. Публикация в реестр станет доступной, когда приложение подключится к серверу с включёнными маршрутами Skills."
   }
 }

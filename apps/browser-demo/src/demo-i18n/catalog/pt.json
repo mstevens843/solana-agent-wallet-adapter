@@ -1769,7 +1769,6 @@
     "Previous": "Anterior",
     "Price needed": "Preço necessário",
     "Private local archive.": "Arquivo local privado.",
-    "Profile aggregator API unavailable": "API agregadora de perfis indisponível",
     "Profile link": "Link do perfil",
     "Profile not available": "Perfil não disponível",
     "Profile published. Your per-wallet URL is now live.": "Perfil publicado. Sua URL por carteira agora está ativa.",
@@ -1916,7 +1915,6 @@
     "Signed receipt request": "Solicitação de recibo assinado",
     "Signed request": "Solicitação assinada",
     "Signing boundary": "Limite de assinatura",
-    "Skill registry API unavailable": "API do registro de skills indisponível",
     "Skill was uninstalled, but the linked creator payment schedule could not be verified.": "A skill foi desinstalada, mas não foi possível verificar o agendamento de pagamento do criador vinculado.",
     "Skill was uninstalled, but the linked creator payment schedule is {status}.": "A skill foi desinstalada, mas o agendamento de pagamento do criador vinculado está {status}.",
     "Skill was uninstalled, but the linked creator payment schedule was not returned by /api/recurring.": "A skill foi desinstalada, mas o agendamento de pagamento do criador vinculado não foi retornado por /api/recurring.",
@@ -1956,7 +1954,6 @@
     "Take profile down": "Retirar perfil",
     "Taking down…": "Retirando…",
     "Technical details": "Detalhes técnicos",
-    "The <code>/api/skills</code> endpoint returned 404 in this environment. The CLI snippet above still scaffolds and validates a manifest locally; publishing needs a render-web server with Skills routes enabled.": "O endpoint <code>/api/skills</code> retornou 404 neste ambiente. O trecho do CLI acima ainda cria e valida um manifesto localmente; a publicação precisa de um servidor render-web com as rotas de Skills habilitadas.",
     "The Skills container loaded, but no sections registered in this build. Rebuild the browser app with the Skills sub-tab modules included.": "O contêiner de Skills foi carregado, mas nenhuma seção foi registrada neste build. Refaça o build do aplicativo do navegador incluindo os módulos da subaba de Skills.",
     "The agent fetches your URL, gets address + tokens + protocols in one round-trip, builds the right mandate, drops it in your inbox.": "O agente busca sua URL, obtém endereço + tokens + protocolos em uma única ida e volta, monta o mandato correto e o deixa na sua caixa de entrada.",
     "The cloud ACP route is unavailable, so the approval will be saved in this browser under Needs Approval.": "A rota ACP na nuvem está indisponível, então a aprovação será salva neste navegador em Precisa de Aprovação.",
@@ -1964,7 +1961,6 @@
     "The profile is an opt-in layer on top of your wallet. Toggle \"Discoverable\" off any time to take it down.": "O perfil é uma camada opcional por cima da sua carteira. Desative \"Descobrível\" a qualquer momento para retirá-lo.",
     "The scheduler creates a Needs Approval item when due; your wallet signs each action.": "O agendador cria um item em Precisa de Aprovação quando devido; sua carteira assina cada ação.",
     "The snippet above scaffolds your first manifest. Once <code>agentic-skill publish</code> succeeds, the new skill appears here with install counts and earnings.": "O trecho acima cria seu primeiro manifesto. Assim que <code>agentic-skill publish</code> for bem-sucedido, a nova skill aparece aqui com contagens de instalações e ganhos.",
-    "The {endpoint} endpoint returned 404 in this environment. The public URL pattern below is still the canonical place for your page when this UI is pointed at a render-web server with aggregator routes enabled.": "O endpoint {endpoint} retornou 404 neste ambiente. O padrão de URL pública abaixo continua sendo o local canônico da sua página quando esta interface aponta para um servidor render-web com as rotas do agregador habilitadas.",
     "These items stay on this device until storage is available.": "Estes itens permanecem neste dispositivo até que o armazenamento esteja disponível.",
     "This schedule is settled.": "Este agendamento está liquidado.",
     "This wallet cannot install skills on this deployment.": "Esta carteira não pode instalar skills neste deployment.",
@@ -5698,6 +5694,12 @@
     "Get notified on this device — even when the app is closed — for the events you turn on below.": "Receba notificações neste dispositivo — mesmo com o app fechado — para os eventos que você ativar abaixo.",
     "Sign in to receive notifications when the app is closed. While signed out, alerts show only while the app is open.": "Entre para receber notificações com o app fechado. Sem estar conectado, os alertas aparecem apenas com o app aberto.",
     "Update the app to receive notifications when it is closed. Alerts still show while the app is open.": "Atualize o app para receber notificações quando ele estiver fechado. Os alertas continuam aparecendo com o app aberto.",
-    "Notifications show while the app is open.": "As notificações aparecem enquanto o app está aberto."
+    "Notifications show while the app is open.": "As notificações aparecem enquanto o app está aberto.",
+    "Read more": "Ler mais",
+    "Show less": "Mostrar menos",
+    "Your public profile isn't live yet": "Seu perfil público ainda não está no ar",
+    "Your receipt-backed track record will appear at the link below once this wallet is served by an Agentic aggregator. The address is already reserved for you.": "Seu histórico lastreado em recibos aparecerá no link abaixo quando esta carteira for atendida por um agregador da Agentic. O endereço já está reservado para você.",
+    "Publishing isn't available here yet": "A publicação ainda não está disponível aqui",
+    "The CLI snippet above still scaffolds and validates a manifest locally. Publishing to the registry goes live once this app is connected to a server with Skills routes enabled.": "O trecho de CLI acima ainda cria e valida um manifesto localmente. A publicação no registro entra no ar quando este app se conecta a um servidor com rotas de Skills habilitadas."
   }
 }

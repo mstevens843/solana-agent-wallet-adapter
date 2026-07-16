@@ -1769,7 +1769,6 @@
     "Previous": "이전",
     "Price needed": "가격 필요",
     "Private local archive.": "비공개 로컬 아카이브.",
-    "Profile aggregator API unavailable": "프로필 집계 API를 사용할 수 없음",
     "Profile link": "프로필 링크",
     "Profile not available": "프로필을 사용할 수 없음",
     "Profile published. Your per-wallet URL is now live.": "프로필이 게시되었습니다. 지갑별 URL이 이제 활성화되었습니다.",
@@ -1916,7 +1915,6 @@
     "Signed receipt request": "서명된 영수증 요청",
     "Signed request": "서명된 요청",
     "Signing boundary": "서명 경계",
-    "Skill registry API unavailable": "스킬 레지스트리 API를 사용할 수 없음",
     "Skill was uninstalled, but the linked creator payment schedule could not be verified.": "스킬이 제거되었으나 연결된 제작자 결제 일정을 확인할 수 없습니다.",
     "Skill was uninstalled, but the linked creator payment schedule is {status}.": "스킬이 제거되었으나 연결된 제작자 결제 일정이 {status}입니다.",
     "Skill was uninstalled, but the linked creator payment schedule was not returned by /api/recurring.": "스킬이 제거되었으나 연결된 제작자 결제 일정이 /api/recurring에서 반환되지 않았습니다.",
@@ -1956,7 +1954,6 @@
     "Take profile down": "프로필 내리기",
     "Taking down…": "내리는 중…",
     "Technical details": "기술 세부 정보",
-    "The <code>/api/skills</code> endpoint returned 404 in this environment. The CLI snippet above still scaffolds and validates a manifest locally; publishing needs a render-web server with Skills routes enabled.": "이 환경에서 <code>/api/skills</code> 엔드포인트가 404를 반환했습니다. 위의 CLI 스니펫은 여전히 로컬에서 매니페스트를 스캐폴딩하고 검증합니다. 게시하려면 Skills 라우트가 활성화된 render-web 서버가 필요합니다.",
     "The Skills container loaded, but no sections registered in this build. Rebuild the browser app with the Skills sub-tab modules included.": "Skills 컨테이너가 로드되었지만 이 빌드에 등록된 섹션이 없습니다. Skills 하위 탭 모듈을 포함하여 브라우저 앱을 다시 빌드하세요.",
     "The agent fetches your URL, gets address + tokens + protocols in one round-trip, builds the right mandate, drops it in your inbox.": "에이전트가 URL을 가져와 한 번의 왕복으로 주소 + 토큰 + 프로토콜을 얻고, 올바른 권한 위임을 구성하여 받은편지함에 넣습니다.",
     "The cloud ACP route is unavailable, so the approval will be saved in this browser under Needs Approval.": "클라우드 ACP 경로를 사용할 수 없어 승인이 승인 필요 아래 이 브라우저에 저장됩니다.",
@@ -1964,7 +1961,6 @@
     "The profile is an opt-in layer on top of your wallet. Toggle \"Discoverable\" off any time to take it down.": "프로필은 지갑 위에 선택적으로 추가되는 레이어입니다. 언제든지 \"검색 가능\"을 꺼서 내릴 수 있습니다.",
     "The scheduler creates a Needs Approval item when due; your wallet signs each action.": "스케줄러는 예정 시 승인 필요 항목을 만들고, 지갑이 각 작업에 서명합니다.",
     "The snippet above scaffolds your first manifest. Once <code>agentic-skill publish</code> succeeds, the new skill appears here with install counts and earnings.": "위의 스니펫은 첫 번째 매니페스트를 스캐폴딩합니다. <code>agentic-skill publish</code>가 성공하면 새 스킬이 설치 수 및 수익과 함께 여기에 표시됩니다.",
-    "The {endpoint} endpoint returned 404 in this environment. The public URL pattern below is still the canonical place for your page when this UI is pointed at a render-web server with aggregator routes enabled.": "이 환경에서 {endpoint} 엔드포인트가 404를 반환했습니다. 아래 공개 URL 패턴은 이 UI가 집계 라우트가 활성화된 render-web 서버를 가리킬 때 여전히 페이지의 표준 위치입니다.",
     "These items stay on this device until storage is available.": "이 항목은 저장소를 사용할 수 있을 때까지 이 기기에 남아 있습니다.",
     "This schedule is settled.": "이 일정은 정산되었습니다.",
     "This wallet cannot install skills on this deployment.": "이 지갑은 이 배포에서 스킬을 설치할 수 없습니다.",
@@ -5698,6 +5694,12 @@
     "Get notified on this device — even when the app is closed — for the events you turn on below.": "아래에서 켠 이벤트에 대해 앱이 닫혀 있어도 이 기기에서 알림을 받습니다.",
     "Sign in to receive notifications when the app is closed. While signed out, alerts show only while the app is open.": "앱이 닫혀 있을 때 알림을 받으려면 로그인하세요. 로그아웃 상태에서는 앱이 열려 있을 때만 알림이 표시됩니다.",
     "Update the app to receive notifications when it is closed. Alerts still show while the app is open.": "앱이 닫혀 있을 때 알림을 받으려면 앱을 업데이트하세요. 앱이 열려 있을 때는 계속 알림이 표시됩니다.",
-    "Notifications show while the app is open.": "알림은 앱이 열려 있을 때 표시됩니다."
+    "Notifications show while the app is open.": "알림은 앱이 열려 있을 때 표시됩니다.",
+    "Read more": "더 보기",
+    "Show less": "접기",
+    "Your public profile isn't live yet": "공개 프로필이 아직 활성화되지 않았습니다",
+    "Your receipt-backed track record will appear at the link below once this wallet is served by an Agentic aggregator. The address is already reserved for you.": "이 지갑이 Agentic 애그리게이터에서 제공되면 영수증 기반 실적이 아래 링크에 표시됩니다. 주소는 이미 예약되어 있습니다.",
+    "Publishing isn't available here yet": "여기서는 아직 게시할 수 없습니다",
+    "The CLI snippet above still scaffolds and validates a manifest locally. Publishing to the registry goes live once this app is connected to a server with Skills routes enabled.": "위의 CLI 스니펫은 로컬에서 매니페스트를 스캐폴딩하고 검증합니다. 이 앱이 Skills 라우트가 활성화된 서버에 연결되면 레지스트리에 게시할 수 있습니다."
   }
 }

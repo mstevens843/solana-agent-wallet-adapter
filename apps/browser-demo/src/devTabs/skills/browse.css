@@ -153,6 +153,11 @@
   white-space: nowrap;
 }
 
+.skills-browse-card-desc-wrap {
+  display: grid;
+  gap: 4px;
+}
+
 .skills-browse-card-description {
   color: rgba(196, 205, 202, 0.84);
   display: -webkit-box;
@@ -162,6 +167,39 @@
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 4;
+}
+
+/* Expanded: drop the clamp so the full description shows. */
+.skills-browse-card-desc-wrap.is-desc-expanded .skills-browse-card-description {
+  display: block;
+  overflow: visible;
+  -webkit-line-clamp: none;
+}
+
+/* Read more / Show less. Hidden by default; revealed only when the text is
+   measured as overflowing (data-desc-truncated="true") or already expanded. The
+   desktop 4-line clamp usually fits, so it mostly appears on mobile. */
+.skills-browse-readmore {
+  appearance: none;
+  align-self: start;
+  background: none;
+  border: 0;
+  color: var(--accent-2);
+  cursor: pointer;
+  display: none;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 820;
+  padding: 0;
+  text-align: left;
+}
+
+.skills-browse-readmore:hover {
+  text-decoration: underline;
+}
+
+.skills-browse-card-desc-wrap[data-desc-truncated="true"] .skills-browse-readmore {
+  display: inline-flex;
 }
 
 .skills-browse-stats {

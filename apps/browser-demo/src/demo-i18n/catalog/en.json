@@ -3303,7 +3303,6 @@
     "Problems": "Problems",
     "Processing wallet approval.": "Processing wallet approval.",
     "Profile": "Profile",
-    "Profile aggregator API unavailable": "Profile aggregator API unavailable",
     "Profile link": "Profile link",
     "Profile not available": "Profile not available",
     "Profile published. Your per-wallet URL is now live.": "Profile published. Your per-wallet URL is now live.",
@@ -4163,7 +4162,6 @@
     "Single-wallet flows do not scale.": "Single-wallet flows do not scale.",
     "Skill {id}": "Skill {id}",
     "Skill payment": "Skill payment",
-    "Skill registry API unavailable": "Skill registry API unavailable",
     "Skill was uninstalled, but the linked creator payment schedule could not be verified.": "Skill was uninstalled, but the linked creator payment schedule could not be verified.",
     "Skill was uninstalled, but the linked creator payment schedule is {status}.": "Skill was uninstalled, but the linked creator payment schedule is {status}.",
     "Skill was uninstalled, but the linked creator payment schedule was not returned by /api/recurring.": "Skill was uninstalled, but the linked creator payment schedule was not returned by /api/recurring.",
@@ -4407,8 +4405,6 @@
     "That code is not valid. Copy the whole pairing code from the computer connector page.": "That code is not valid. Copy the whole pairing code from the computer connector page.",
     "That code isn’t valid. Copy the whole pairing code from the computer.": "That code isn’t valid. Copy the whole pairing code from the computer.",
     "That code points at an untrusted server - scan the QR from your own computer.": "That code points at an untrusted server - scan the QR from your own computer.",
-    "The {endpoint} endpoint returned 404 in this environment. The public URL pattern below is still the canonical place for your page when this UI is pointed at a render-web server with aggregator routes enabled.": "The {endpoint} endpoint returned 404 in this environment. The public URL pattern below is still the canonical place for your page when this UI is pointed at a render-web server with aggregator routes enabled.",
-    "The <code>/api/skills</code> endpoint returned 404 in this environment. The CLI snippet above still scaffolds and validates a manifest locally; publishing needs a render-web server with Skills routes enabled.": "The <code>/api/skills</code> endpoint returned 404 in this environment. The CLI snippet above still scaffolds and validates a manifest locally; publishing needs a render-web server with Skills routes enabled.",
     "The acceptable outcome was signed before route selection or execution.": "The acceptable outcome was signed before route selection or execution.",
     "The action, limits, and review context existed before any transaction approval.": "The action, limits, and review context existed before any transaction approval.",
     "The agent already returned APPROVE, so the next step records a local demo signature.": "The agent already returned APPROVE, so the next step records a local demo signature.",
@@ -5698,6 +5694,12 @@
     "Get notified on this device — even when the app is closed — for the events you turn on below.": "Get notified on this device — even when the app is closed — for the events you turn on below.",
     "Sign in to receive notifications when the app is closed. While signed out, alerts show only while the app is open.": "Sign in to receive notifications when the app is closed. While signed out, alerts show only while the app is open.",
     "Update the app to receive notifications when it is closed. Alerts still show while the app is open.": "Update the app to receive notifications when it is closed. Alerts still show while the app is open.",
-    "Notifications show while the app is open.": "Notifications show while the app is open."
+    "Notifications show while the app is open.": "Notifications show while the app is open.",
+    "Read more": "Read more",
+    "Show less": "Show less",
+    "Your public profile isn't live yet": "Your public profile isn't live yet",
+    "Your receipt-backed track record will appear at the link below once this wallet is served by an Agentic aggregator. The address is already reserved for you.": "Your receipt-backed track record will appear at the link below once this wallet is served by an Agentic aggregator. The address is already reserved for you.",
+    "Publishing isn't available here yet": "Publishing isn't available here yet",
+    "The CLI snippet above still scaffolds and validates a manifest locally. Publishing to the registry goes live once this app is connected to a server with Skills routes enabled.": "The CLI snippet above still scaffolds and validates a manifest locally. Publishing to the registry goes live once this app is connected to a server with Skills routes enabled."
   }
 }

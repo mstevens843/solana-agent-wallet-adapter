@@ -1769,7 +1769,6 @@
     "Previous": "Précédent",
     "Price needed": "Prix requis",
     "Private local archive.": "Archive locale privée.",
-    "Profile aggregator API unavailable": "API d'agrégation de profils indisponible",
     "Profile link": "Lien du profil",
     "Profile not available": "Profil non disponible",
     "Profile published. Your per-wallet URL is now live.": "Profil publié. Votre URL par portefeuille est désormais active.",
@@ -1916,7 +1915,6 @@
     "Signed receipt request": "Demande de reçu signé",
     "Signed request": "Demande signée",
     "Signing boundary": "Limite de signature",
-    "Skill registry API unavailable": "API du registre de compétences indisponible",
     "Skill was uninstalled, but the linked creator payment schedule could not be verified.": "La compétence a été désinstallée, mais la planification de paiement du créateur associée n'a pas pu être vérifiée.",
     "Skill was uninstalled, but the linked creator payment schedule is {status}.": "La compétence a été désinstallée, mais la planification de paiement du créateur associée est {status}.",
     "Skill was uninstalled, but the linked creator payment schedule was not returned by /api/recurring.": "La compétence a été désinstallée, mais la planification de paiement du créateur associée n'a pas été renvoyée par /api/recurring.",
@@ -1956,7 +1954,6 @@
     "Take profile down": "Retirer le profil",
     "Taking down…": "Retrait…",
     "Technical details": "Détails techniques",
-    "The <code>/api/skills</code> endpoint returned 404 in this environment. The CLI snippet above still scaffolds and validates a manifest locally; publishing needs a render-web server with Skills routes enabled.": "Le point de terminaison <code>/api/skills</code> a renvoyé 404 dans cet environnement. L'extrait CLI ci-dessus génère et valide tout de même un manifeste localement ; la publication nécessite un serveur render-web avec les routes Skills activées.",
     "The Skills container loaded, but no sections registered in this build. Rebuild the browser app with the Skills sub-tab modules included.": "Le conteneur Skills s'est chargé, mais aucune section n'est enregistrée dans cette version. Reconstruisez l'application navigateur en incluant les modules de sous-onglets Skills.",
     "The agent fetches your URL, gets address + tokens + protocols in one round-trip, builds the right mandate, drops it in your inbox.": "L'agent récupère votre URL, obtient l'adresse + les jetons + les protocoles en un seul aller-retour, construit le bon mandat et le dépose dans votre boîte de réception.",
     "The cloud ACP route is unavailable, so the approval will be saved in this browser under Needs Approval.": "La route ACP cloud est indisponible, l'approbation sera donc enregistrée dans ce navigateur sous En attente d'approbation.",
@@ -1964,7 +1961,6 @@
     "The profile is an opt-in layer on top of your wallet. Toggle \"Discoverable\" off any time to take it down.": "Le profil est une couche optionnelle au-dessus de votre portefeuille. Désactivez « Découvrable » à tout moment pour le retirer.",
     "The scheduler creates a Needs Approval item when due; your wallet signs each action.": "Le planificateur crée un élément En attente d'approbation à l'échéance ; votre portefeuille signe chaque action.",
     "The snippet above scaffolds your first manifest. Once <code>agentic-skill publish</code> succeeds, the new skill appears here with install counts and earnings.": "L'extrait ci-dessus génère votre premier manifeste. Une fois que <code>agentic-skill publish</code> réussit, la nouvelle compétence apparaît ici avec le nombre d'installations et les gains.",
-    "The {endpoint} endpoint returned 404 in this environment. The public URL pattern below is still the canonical place for your page when this UI is pointed at a render-web server with aggregator routes enabled.": "Le point de terminaison {endpoint} a renvoyé 404 dans cet environnement. Le modèle d'URL publique ci-dessous reste l'emplacement canonique de votre page lorsque cette interface pointe vers un serveur render-web avec les routes d'agrégation activées.",
     "These items stay on this device until storage is available.": "Ces éléments restent sur cet appareil jusqu'à ce que le stockage soit disponible.",
     "This schedule is settled.": "Cette planification est réglée.",
     "This wallet cannot install skills on this deployment.": "Ce portefeuille ne peut pas installer de compétences sur ce déploiement.",
@@ -5698,6 +5694,12 @@
     "Get notified on this device — even when the app is closed — for the events you turn on below.": "Recevez des notifications sur cet appareil, même lorsque l’application est fermée, pour les événements que vous activez ci-dessous.",
     "Sign in to receive notifications when the app is closed. While signed out, alerts show only while the app is open.": "Connectez-vous pour recevoir des notifications lorsque l’application est fermée. Déconnecté, les alertes n’apparaissent que lorsque l’application est ouverte.",
     "Update the app to receive notifications when it is closed. Alerts still show while the app is open.": "Mettez à jour l’application pour recevoir des notifications lorsqu’elle est fermée. Les alertes s’affichent toujours lorsque l’application est ouverte.",
-    "Notifications show while the app is open.": "Les notifications s’affichent lorsque l’application est ouverte."
+    "Notifications show while the app is open.": "Les notifications s’affichent lorsque l’application est ouverte.",
+    "Read more": "Lire la suite",
+    "Show less": "Réduire",
+    "Your public profile isn't live yet": "Votre profil public n'est pas encore en ligne",
+    "Your receipt-backed track record will appear at the link below once this wallet is served by an Agentic aggregator. The address is already reserved for you.": "Votre historique adossé aux reçus apparaîtra au lien ci-dessous une fois que ce portefeuille sera servi par un agrégateur Agentic. L'adresse vous est déjà réservée.",
+    "Publishing isn't available here yet": "La publication n'est pas encore disponible ici",
+    "The CLI snippet above still scaffolds and validates a manifest locally. Publishing to the registry goes live once this app is connected to a server with Skills routes enabled.": "L'extrait CLI ci-dessus génère et valide toujours un manifeste en local. La publication dans le registre sera active une fois cette app connectée à un serveur avec les routes Skills activées."
   }
 }

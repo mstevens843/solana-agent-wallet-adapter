@@ -407,10 +407,8 @@ function renderListSection(): string {
       return `
         <section class="skills-publish-list-card">
           <div class="skills-publish-notice">
-            <strong>${t('Skill registry API unavailable')}</strong>
-            <p>
-              ${t('The <code>/api/skills</code> endpoint returned 404 in this environment. The CLI snippet above still scaffolds and validates a manifest locally; publishing needs a render-web server with Skills routes enabled.')}
-            </p>
+            <strong>${t('Publishing isn\'t available here yet')}</strong>
+            <p>${t('The CLI snippet above still scaffolds and validates a manifest locally. Publishing to the registry goes live once this app is connected to a server with Skills routes enabled.')}</p>
           </div>
         </section>
       `;

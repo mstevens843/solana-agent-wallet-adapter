@@ -36,6 +36,7 @@ export interface BrowseState {
   installParamErrors: Record<string, string>;
   installErrors: Record<string, string>;
   monetizationAccepted: Record<string, boolean>;
+  expandedDescriptions: Record<string, boolean>;
   treasuryActive: boolean;
   platformFeeBps: number;
 }
@@ -50,6 +51,7 @@ const state: BrowseState = {
   installParamErrors: {},
   installErrors: {},
   monetizationAccepted: {},
+  expandedDescriptions: {},
   treasuryActive: false,
   platformFeeBps: 0,
 };
@@ -66,6 +68,7 @@ export function __resetStateForTests(next: Partial<BrowseState> = {}): void {
   state.installParamErrors = next.installParamErrors ?? {};
   state.installErrors = next.installErrors ?? {};
   state.monetizationAccepted = next.monetizationAccepted ?? {};
+  state.expandedDescriptions = next.expandedDescriptions ?? {};
   state.treasuryActive = next.treasuryActive ?? false;
   state.platformFeeBps = next.platformFeeBps ?? 0;
   catalogLoadSeq = 0;
@@ -400,6 +403,27 @@ function renderInstallError(row: CardRow): string {
   return error ? `<p class="skills-browse-param-error" role="alert">${escapeHtml(error)}</p>` : '';
 }
 
+// The description is line-clamped (2 lines on mobile) so users could not read
+// what a skill does before installing it. The `title` gives desktop a hover
+// tooltip; the Read more / Show less toggle expands it on touch. The toggle is
+// CSS-hidden unless the text actually overflows (measured post-render) so short
+// descriptions don't grow a dead control.
+function renderCardDescription(skillId: string, description: string): string {
+  const expanded = state.expandedDescriptions[skillId] === true;
+  return `
+    <div class="skills-browse-card-desc-wrap${expanded ? ' is-desc-expanded' : ''}">
+      <p class="skills-browse-card-description" title="${escapeHtml(description)}">${escapeHtml(description)}</p>
+      <button
+        type="button"
+        class="skills-browse-readmore"
+        data-skills-browse-action="toggle-description"
+        data-skill-id="${escapeHtml(skillId)}"
+        aria-expanded="${expanded ? 'true' : 'false'}"
+      >${expanded ? t('Show less') : t('Read more')}</button>
+    </div>
+  `;
+}
+
 export function renderCard(row: CardRow, busyInstallId: string | null): string {
   const busy = busyInstallId === row.manifest.id;
   const manifestName = t(row.manifest.name);
@@ -414,7 +438,7 @@ export function renderCard(row: CardRow, busyInstallId: string | null): string {
         <h3>${escapeHtml(manifestName)}</h3>
         <span class="skills-browse-category">${escapeHtml(categoryLabel(row.manifest.category))}</span>
       </div>
-      <p class="skills-browse-card-description">${escapeHtml(manifestDescription)}</p>
+      ${renderCardDescription(row.manifest.id, manifestDescription)}
       <dl class="skills-browse-stats">
         <div class="skills-browse-stat">
           <dt>${escapeHtml(t('Installs'))}</dt>
@@ -480,6 +504,7 @@ function rerenderPanelOnly(): void {
   const next = template.content.firstElementChild;
   if (!next) return;
   root.replaceWith(next);
+  measureDescriptionTruncation();
 }
 
 let toastEl: HTMLElement | null = null;
@@ -730,6 +755,33 @@ function handleAction(action: string, target: HTMLElement): void {
     rerenderPanelOnly();
     return;
   }
+  if (action === 'toggle-description') {
+    const id = target.dataset.skillId;
+    if (!id) return;
+    state.expandedDescriptions[id] = !state.expandedDescriptions[id];
+    rerenderPanelOnly();
+    return;
+  }
+}
+
+// After each render, flag which cards actually overflow their clamp so the CSS
+// can show Read more only where it's needed. Runs against the collapsed state
+// (expanded cards keep their toggle, which now reads Show less).
+function measureDescriptionTruncation(): void {
+  if (typeof document === 'undefined') return;
+  const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (cb: () => void) => cb();
+  raf(() => {
+    for (const card of document.querySelectorAll<HTMLElement>('.skills-browse-card')) {
+      const wrap = card.querySelector<HTMLElement>('.skills-browse-card-desc-wrap');
+      const desc = card.querySelector<HTMLElement>('.skills-browse-card-description');
+      if (!wrap || !desc) continue;
+      if (wrap.classList.contains('is-desc-expanded')) {
+        wrap.dataset.descTruncated = 'true';
+        continue;
+      }
+      wrap.dataset.descTruncated = desc.scrollHeight > desc.clientHeight + 1 ? 'true' : 'false';
+    }
+  });
 }
 
 if (typeof document !== 'undefined') {
@@ -772,6 +824,7 @@ registerSkillsSubTab({
   mobileLabel: 'Browse',
   description: 'Installable strategy recipes',
   onMount: () => {
+    measureDescriptionTruncation();
     if (state.phase === 'loading') return;
     void loadCatalog();
   },

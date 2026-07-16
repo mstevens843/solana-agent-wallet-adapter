@@ -299,10 +299,8 @@ function renderNotDeployedBody(wallet: string): string {
   return `
     <div class="skills-profile-card">
       <div class="skills-profile-notice">
-        <strong>${t('Profile aggregator API unavailable')}</strong>
-        <p>
-          ${tf('The {endpoint} endpoint returned 404 in this environment. The public URL pattern below is still the canonical place for your page when this UI is pointed at a render-web server with aggregator routes enabled.', { endpoint: '<code>/api/aggregator/wallets/&lt;wallet&gt;</code>' })}
-        </p>
+        <strong>${t('Your public profile isn\'t live yet')}</strong>
+        <p>${t('Your receipt-backed track record will appear at the link below once this wallet is served by an Agentic aggregator. The address is already reserved for you.')}</p>
       </div>
     </div>
     ${renderCopyUrlRow(wallet)}

@@ -466,3 +466,23 @@
     padding: 18px 8px;
   }
 }
+
+/* Native shells can report a CSS width >= 850px, where the media query above
+   never fires — leaving the 5-column row on a phone. These panels render under
+   .route-app, so force the stacked layout for native regardless of width. */
+.route-app.android-shell .skills-installed-row,
+.route-app.ios-native-shell .skills-installed-row {
+  grid-template-columns: 1fr;
+  gap: 9px;
+}
+
+.route-app.android-shell .skills-installed-row-runs,
+.route-app.ios-native-shell .skills-installed-row-runs {
+  text-align: left;
+}
+
+.route-app.android-shell .skills-installed-row-actions,
+.route-app.ios-native-shell .skills-installed-row-actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}

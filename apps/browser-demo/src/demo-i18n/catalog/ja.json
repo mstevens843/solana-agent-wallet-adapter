@@ -1769,7 +1769,6 @@
     "Previous": "前へ",
     "Price needed": "価格が必要です",
     "Private local archive.": "プライベートなローカルアーカイブ。",
-    "Profile aggregator API unavailable": "プロフィール集約 API を利用できません",
     "Profile link": "プロフィールリンク",
     "Profile not available": "プロフィールを利用できません",
     "Profile published. Your per-wallet URL is now live.": "プロフィールを公開しました。ウォレットごとの URL が有効になりました。",
@@ -1916,7 +1915,6 @@
     "Signed receipt request": "署名済みレシートリクエスト",
     "Signed request": "署名済みリクエスト",
     "Signing boundary": "署名の境界",
-    "Skill registry API unavailable": "スキルレジストリ API を利用できません",
     "Skill was uninstalled, but the linked creator payment schedule could not be verified.": "スキルはアンインストールされましたが、リンクされた作成者への支払いスケジュールを確認できませんでした。",
     "Skill was uninstalled, but the linked creator payment schedule is {status}.": "スキルはアンインストールされましたが、リンクされた作成者への支払いスケジュールは {status} です。",
     "Skill was uninstalled, but the linked creator payment schedule was not returned by /api/recurring.": "スキルはアンインストールされましたが、リンクされた作成者への支払いスケジュールは /api/recurring から返されませんでした。",
@@ -1956,7 +1954,6 @@
     "Take profile down": "プロフィールを取り下げる",
     "Taking down…": "取り下げています…",
     "Technical details": "技術的な詳細",
-    "The <code>/api/skills</code> endpoint returned 404 in this environment. The CLI snippet above still scaffolds and validates a manifest locally; publishing needs a render-web server with Skills routes enabled.": "この環境では <code>/api/skills</code> エンドポイントが 404 を返しました。上記の CLI スニペットはローカルでマニフェストのひな形作成と検証を引き続き行えますが、公開には Skills ルートを有効にした render-web サーバーが必要です。",
     "The Skills container loaded, but no sections registered in this build. Rebuild the browser app with the Skills sub-tab modules included.": "スキルコンテナは読み込まれましたが、このビルドではセクションが登録されていません。Skills のサブタブモジュールを含めてブラウザアプリを再ビルドしてください。",
     "The agent fetches your URL, gets address + tokens + protocols in one round-trip, builds the right mandate, drops it in your inbox.": "エージェントはあなたの URL を取得し、1往復でアドレス + トークン + プロトコルを得て、適切なマンデートを作成し、受信トレイに届けます。",
     "The cloud ACP route is unavailable, so the approval will be saved in this browser under Needs Approval.": "クラウドの ACP ルートを利用できないため、承認はこのブラウザの「承認が必要」に保存されます。",
@@ -1964,7 +1961,6 @@
     "The profile is an opt-in layer on top of your wallet. Toggle \"Discoverable\" off any time to take it down.": "プロフィールは、ウォレットの上に重ねるオプトインのレイヤーです。取り下げるには、いつでも「検出可能」をオフに切り替えてください。",
     "The scheduler creates a Needs Approval item when due; your wallet signs each action.": "スケジューラーは、期限が来ると「承認が必要」の項目を作成します。各アクションにはウォレットが署名します。",
     "The snippet above scaffolds your first manifest. Once <code>agentic-skill publish</code> succeeds, the new skill appears here with install counts and earnings.": "上記のスニペットは、最初のマニフェストのひな形を作成します。<code>agentic-skill publish</code> が成功すると、新しいスキルがインストール数と収益とともにここに表示されます。",
-    "The {endpoint} endpoint returned 404 in this environment. The public URL pattern below is still the canonical place for your page when this UI is pointed at a render-web server with aggregator routes enabled.": "この環境では {endpoint} エンドポイントが 404 を返しました。この UI が集約ルートを有効にした render-web サーバーを指している場合、以下の公開 URL パターンは引き続きあなたのページの正規の場所です。",
     "These items stay on this device until storage is available.": "これらの項目は、ストレージが利用可能になるまでこのデバイスにとどまります。",
     "This schedule is settled.": "このスケジュールは決済済みです。",
     "This wallet cannot install skills on this deployment.": "このウォレットは、このデプロイではスキルをインストールできません。",
@@ -5698,6 +5694,12 @@
     "Get notified on this device — even when the app is closed — for the events you turn on below.": "下でオンにしたイベントについて、アプリが閉じていてもこのデバイスで通知を受け取れます。",
     "Sign in to receive notifications when the app is closed. While signed out, alerts show only while the app is open.": "アプリが閉じているときに通知を受け取るにはサインインしてください。サインアウト中は、アプリが開いているときのみアラートが表示されます。",
     "Update the app to receive notifications when it is closed. Alerts still show while the app is open.": "閉じているときに通知を受け取るにはアプリを更新してください。アプリが開いているときは引き続きアラートが表示されます。",
-    "Notifications show while the app is open.": "通知はアプリが開いているときに表示されます。"
+    "Notifications show while the app is open.": "通知はアプリが開いているときに表示されます。",
+    "Read more": "続きを読む",
+    "Show less": "閉じる",
+    "Your public profile isn't live yet": "公開プロフィールはまだ公開されていません",
+    "Your receipt-backed track record will appear at the link below once this wallet is served by an Agentic aggregator. The address is already reserved for you.": "このウォレットが Agentic アグリゲーターで提供されると、レシートに裏付けられた実績が下のリンクに表示されます。アドレスはすでに予約済みです。",
+    "Publishing isn't available here yet": "ここではまだ公開できません",
+    "The CLI snippet above still scaffolds and validates a manifest locally. Publishing to the registry goes live once this app is connected to a server with Skills routes enabled.": "上記の CLI スニペットはローカルでマニフェストを生成・検証できます。レジストリへの公開は、このアプリが Skills ルートを有効にしたサーバーに接続されると利用可能になります。"
   }
 }

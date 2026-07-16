@@ -192,8 +192,8 @@ describe('renderPublishPanel — phase bodies', () => {
   it('notDeployed explains the registry status', () => {
     __resetPanelStateForTests({ phase: 'notDeployed' });
     const html = renderPublishPanel();
-    expect(html).toContain('Skill registry API unavailable');
-    expect(html).toContain('/api/skills');
+    expect(html).toContain("Publishing isn't available here yet");
+    expect(html).toContain('scaffolds and validates a manifest locally');
   });
 
   it('error surfaces the message + retry trigger', () => {

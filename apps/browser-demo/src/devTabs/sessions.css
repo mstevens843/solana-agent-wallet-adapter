@@ -82,10 +82,13 @@
   color: #fecaca;
 }
 
+/* Two stats (Live spend, v1 token). Active was dropped from here — it lives in
+   the interactive filter row below, so this no longer duplicates it. Kept as a
+   compact 2-up strip at every width rather than three stacked full-width cards. */
 .sessions-overview {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .sessions-filter-row {
@@ -561,9 +564,9 @@
   justify-content: flex-end;
 }
 
-@media (max-width: 860px) {
+@media (max-width: 899px) {
+  /* .sessions-overview stays 2-up here (compact strip) instead of collapsing. */
   .sessions-layout,
-  .sessions-overview,
   .sessions-detail-grid,
   .sessions-facts {
     grid-template-columns: 1fr;
@@ -572,6 +575,34 @@
   .sessions-filter-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  /* The empty list box is oversized (248px) for a phone. The detail empty box
+     already shrinks via the shared rule; match it here so two empty states don't
+     stack into ~half a screen of dashed placeholder. */
+  .sessions-list-state {
+    min-height: 132px;
+  }
+}
+
+/* Native shells can report a CSS width >= 899px, where the query above never
+   fires. These panels render under .route-app, so force the same collapse. */
+.route-app.android-shell .sessions-layout,
+.route-app.ios-native-shell .sessions-layout,
+.route-app.android-shell .sessions-detail-grid,
+.route-app.ios-native-shell .sessions-detail-grid,
+.route-app.android-shell .sessions-facts,
+.route-app.ios-native-shell .sessions-facts {
+  grid-template-columns: 1fr;
+}
+
+.route-app.android-shell .sessions-filter-row,
+.route-app.ios-native-shell .sessions-filter-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.route-app.android-shell .sessions-list-state,
+.route-app.ios-native-shell .sessions-list-state {
+  min-height: 132px;
 }
 
 @media (max-width: 640px) {
