@@ -14,6 +14,14 @@ import type {
   RecurringNotificationStore,
 } from './notificationService.js';
 import type {
+  PushCategoryMap,
+  PushDeliveryRecord,
+  PushDeviceRecord,
+  PushEventType,
+  PushPlatform,
+  PushStore,
+} from './pushTypes.js';
+import type {
   RecurringAuditEvent,
   RecurringOccurrenceClaim,
   RecurringOccurrenceRecord,
@@ -124,6 +132,22 @@ interface PreferenceRow extends QueryResultRow {
   version: number | string;
 }
 
+// push_devices is stored as real columns rather than a JSONB `record` blob (unlike the delivery
+// tables) because the token needs a UNIQUE index and the wallet needs a partial index — both
+// impossible through a JSON payload.
+interface PushDeviceRow extends QueryResultRow {
+  id: string;
+  wallet_address: string;
+  platform: string;
+  token: string;
+  categories: unknown | string;
+  created_at: Date | string;
+  updated_at: Date | string;
+  last_seen_at: Date | string;
+  disabled_at: Date | string | null;
+  disabled_reason: string | null;
+}
+
 interface ChatSessionMetaRow extends QueryResultRow {
   session_id: string;
   title: string;
@@ -173,6 +197,7 @@ export class PostgresWorkflowStore implements
   ChatHistoryStore,
   SkillsStore,
   SignalsStore,
+  PushStore,
   AggregatorStore {
   private readonly client: PgClient;
   private readonly ownsClient: boolean;
@@ -1366,6 +1391,174 @@ export class PostgresWorkflowStore implements
     return result.rows.map((row) => jsonRecord(row.record));
   }
 
+  // ---- Push notifications (migration 020) ----
+
+  async savePushDevice(record: PushDeviceRecord): Promise<void> {
+    await this.ensureUser(record.walletAddress, record.createdAt);
+    await this.query({
+      name: 'push.device.upsert',
+      text: `
+        INSERT INTO push_devices (
+          id, wallet_address, platform, token, categories,
+          created_at, updated_at, last_seen_at, disabled_at, disabled_reason
+        ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
+        ON CONFLICT (platform, token) DO UPDATE SET
+          wallet_address = EXCLUDED.wallet_address,
+          categories = EXCLUDED.categories,
+          updated_at = EXCLUDED.updated_at,
+          last_seen_at = EXCLUDED.last_seen_at,
+          disabled_at = EXCLUDED.disabled_at,
+          disabled_reason = EXCLUDED.disabled_reason
+      `,
+      // Conflict targets (platform, token), NOT id: the same phone re-registering after a reinstall or
+      // a wallet switch must re-point the existing row (including at a new wallet) rather than create a
+      // second row that would double-buzz. Re-registering also clears disabled_at, so a token that came
+      // back to life recovers on its own.
+      values: [
+        record.id,
+        record.walletAddress,
+        record.platform,
+        record.token,
+        JSON.stringify(record.categories ?? {}),
+        record.createdAt,
+        record.updatedAt,
+        record.lastSeenAt,
+        record.disabledAt ?? null,
+        record.disabledReason ?? null,
+      ],
+    });
+  }
+
+  async findPushDeviceByToken(platform: PushPlatform, token: string): Promise<PushDeviceRecord | undefined> {
+    const result = await this.query<PushDeviceRow>({
+      name: 'push.device.findByToken',
+      text: `
+        SELECT id, wallet_address, platform, token, categories,
+               created_at, updated_at, last_seen_at, disabled_at, disabled_reason
+        FROM push_devices
+        WHERE platform = $1 AND token = $2
+        LIMIT 1
+      `,
+      values: [platform, token],
+    });
+    return result.rows[0] ? pushDeviceFromRow(result.rows[0]) : undefined;
+  }
+
+  async listPushDevices(walletAddress: string): Promise<PushDeviceRecord[]> {
+    const result = await this.query<PushDeviceRow>({
+      name: 'push.device.listByWallet',
+      text: `
+        SELECT id, wallet_address, platform, token, categories,
+               created_at, updated_at, last_seen_at, disabled_at, disabled_reason
+        FROM push_devices
+        WHERE wallet_address = $1 AND disabled_at IS NULL
+        ORDER BY created_at ASC
+      `,
+      values: [walletAddress],
+    });
+    return result.rows.map(pushDeviceFromRow);
+  }
+
+  async listPushWallets(): Promise<string[]> {
+    // The enumeration set for the health poll and the Helius webhook address list. Deliberately NOT
+    // `users`: polling every account that ever signed in would burn the Jupiter quota on wallets that
+    // never asked for a single notification.
+    const result = await this.query<{ wallet_address: string }>({
+      name: 'push.device.listWallets',
+      text: `
+        SELECT DISTINCT wallet_address
+        FROM push_devices
+        WHERE disabled_at IS NULL
+      `,
+    });
+    return result.rows.map((row) => row.wallet_address);
+  }
+
+  async disablePushDevice(id: string, reason: string, disabledAt: string): Promise<void> {
+    await this.query({
+      name: 'push.device.disable',
+      text: `
+        UPDATE push_devices
+        SET disabled_at = $2, disabled_reason = $3, updated_at = $2
+        WHERE id = $1
+      `,
+      values: [id, disabledAt, reason.slice(0, 500)],
+    });
+  }
+
+  async deletePushDevice(walletAddress: string, id: string): Promise<void> {
+    await this.query({
+      name: 'push.device.delete',
+      text: `DELETE FROM push_devices WHERE wallet_address = $1 AND id = $2`,
+      values: [walletAddress, id],
+    });
+  }
+
+  async savePushDelivery(record: PushDeliveryRecord): Promise<void> {
+    await this.ensureUser(record.walletAddress, record.createdAt);
+    await this.query({
+      name: 'push.delivery.upsert',
+      text: `
+        INSERT INTO push_deliveries (
+          id, wallet_address, type, dedupe_key, status,
+          attempts, next_attempt_at, created_at, updated_at, record
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+        ON CONFLICT (wallet_address, type, dedupe_key) DO UPDATE SET
+          status = EXCLUDED.status,
+          attempts = EXCLUDED.attempts,
+          next_attempt_at = EXCLUDED.next_attempt_at,
+          updated_at = EXCLUDED.updated_at,
+          record = EXCLUDED.record
+      `,
+      values: [
+        record.id,
+        record.walletAddress,
+        record.type,
+        record.dedupeKey,
+        record.status,
+        record.attempts,
+        record.nextAttemptAt,
+        record.createdAt,
+        record.updatedAt,
+        JSON.stringify(record),
+      ],
+    });
+  }
+
+  async findPushDelivery(
+    walletAddress: string,
+    type: PushEventType,
+    dedupeKey: string,
+  ): Promise<PushDeliveryRecord | undefined> {
+    const result = await this.query<JsonRecordRow<PushDeliveryRecord>>({
+      name: 'push.delivery.find',
+      text: `
+        SELECT record
+        FROM push_deliveries
+        WHERE wallet_address = $1 AND type = $2 AND dedupe_key = $3
+        LIMIT 1
+      `,
+      values: [walletAddress, type, dedupeKey],
+    });
+    return result.rows[0] ? jsonRecord(result.rows[0].record) : undefined;
+  }
+
+  async listDuePushDeliveries(nowIso: string, limit: number): Promise<PushDeliveryRecord[]> {
+    const result = await this.query<JsonRecordRow<PushDeliveryRecord>>({
+      name: 'push.delivery.listDue',
+      text: `
+        SELECT record
+        FROM push_deliveries
+        WHERE status IN ('pending', 'failed')
+          AND next_attempt_at <= $1
+        ORDER BY next_attempt_at ASC, created_at ASC
+        LIMIT $2
+      `,
+      values: [nowIso, limit],
+    });
+    return result.rows.map((row) => jsonRecord(row.record));
+  }
+
   async listPreferences(
     walletAddress: string,
     namespaces?: CloudPreferenceNamespace[],
@@ -2031,6 +2224,26 @@ function iso(value: Date | string): string {
   if (value instanceof Date) return value.toISOString();
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toISOString();
+}
+
+function pushDeviceFromRow(row: PushDeviceRow): PushDeviceRecord {
+  const categories = typeof row.categories === 'string'
+    ? (JSON.parse(row.categories) as PushCategoryMap)
+    : ((row.categories ?? {}) as PushCategoryMap);
+  return {
+    id: row.id,
+    walletAddress: row.wallet_address,
+    // Anything that isn't 'ios' is treated as Android — the column is free text, and a garbage value
+    // must not crash the fan-out for every other device on the wallet.
+    platform: (row.platform === 'ios' ? 'ios' : 'android') as PushPlatform,
+    token: row.token,
+    categories,
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+    lastSeenAt: iso(row.last_seen_at),
+    ...(row.disabled_at ? { disabledAt: iso(row.disabled_at) } : {}),
+    ...(row.disabled_reason ? { disabledReason: row.disabled_reason } : {}),
+  };
 }
 
 function clone<T>(value: T): T {

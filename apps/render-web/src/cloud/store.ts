@@ -112,6 +112,10 @@ export const CLOUD_PREFERENCE_NAMESPACES = [
   'agent-payment-profile',
   'mpp-config',
   'recipient-rules',
+  // Server-side push bookkeeping, never read by the client: the last borrow-health bucket we notified
+  // per position, so a loan sitting at_risk doesn't re-buzz on every 5-minute poll. Reserved by
+  // migration 020 (schema-neutral — wallet_preferences already takes arbitrary namespaces).
+  'push-state',
 ] as const;
 
 export type CloudPreferenceNamespace = (typeof CLOUD_PREFERENCE_NAMESPACES)[number];

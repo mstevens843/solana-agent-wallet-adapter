@@ -1,10 +1,11 @@
 import { Connection } from '@solana/web3.js';
 import {
   AgentWalletActionService,
-  DEFAULT_CONFIG,
+  normalizeConfig,
   type ConnectorFactReadInput,
   type ConnectorSecretsLoader,
   type DAppAdapterContext,
+  type PreparedActionStore,
 } from '@solana-agent-wallet-adapter/mcp-server';
 import type { WorkflowCluster } from '@solana-agent-wallet-adapter/workflow';
 
@@ -35,12 +36,19 @@ export function createStatelessConnectorFactsReader(
     const rpcUrl = solanaRpcUrl(cluster);
     const service = new AgentWalletActionService({
       backend: readOnlyWalletBackend(walletAddress, cluster),
-      config: {
-        ...DEFAULT_CONFIG,
-        cluster,
-        rpcUrl,
-      },
+      // normalizeConfig, NOT a `{ ...DEFAULT_CONFIG }` spread: the CONNECTORS_JUPITER_*_ENABLED env
+      // overrides are applied inside normalizeConfig only. Spreading the defaults directly pinned
+      // jupiter.trigger/recurring to `enabled: false` forever, so read-facts threw `unsupported_method`
+      // for limit orders and DCA no matter what was set on the service — which is why the Orders
+      // positions section could never load live rows through the cloud path.
+      config: normalizeConfig({ cluster, rpcUrl }),
       connection: new Connection(rpcUrl, 'confirmed'),
+      // AgentWalletActionService.adapterContext() builds `store: this.store()` unconditionally — even
+      // for pure reads that never touch it — and store() throws when no prepared-action store is
+      // configured. Without this, every adapter-backed read through the cloud (Jupiter borrow
+      // `positions`, and so the Positions → Borrowing card) died with "Prepared action store is not
+      // configured." Reads never write, so this satisfies the context and refuses writes loudly.
+      preparedActions: readOnlyPreparedActionStore(),
       ...(options.secretsLoader ? { connectorSecretsLoader: options.secretsLoader } : {}),
     });
     return service.connectorReadFacts({
@@ -64,6 +72,32 @@ export function solanaRpcUrl(cluster: WorkflowCluster): string {
     default:
       return 'https://api.devnet.solana.com';
   }
+}
+
+/**
+ * A prepared-action store for a path that must never prepare an action. Reads return empty; every
+ * write throws, mirroring `readOnlyWalletBackend`'s refusal to sign. If a read path ever starts
+ * writing here, it fails loudly instead of silently persisting into a per-request store that vanishes.
+ */
+function readOnlyPreparedActionStore(): PreparedActionStore {
+  const refuse = (): never => {
+    throw new Error('Cloud connector reads cannot create or mutate prepared actions.');
+  };
+  return {
+    addAction: refuse,
+    async listActions() { return []; },
+    async getAction() { return null; },
+    updateAction: refuse,
+    deleteAction: refuse,
+    archiveAction: refuse,
+    addRecurringPayment: refuse,
+    async listRecurringPayments() { return []; },
+    async listRecurringPaymentViews() { return []; },
+    updateRecurringPayment: refuse,
+    deleteRecurringPayment: refuse,
+    async materializeDueRecurring() { return []; },
+    async listReceipts() { return []; },
+  };
 }
 
 function readOnlyWalletBackend(walletAddress: string, cluster: WorkflowCluster): WalletBackend {

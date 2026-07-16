@@ -5,6 +5,7 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Looper
 import android.webkit.ConsoleMessage
@@ -29,6 +30,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.webkit.WebViewAssetLoader
 import androidx.lifecycle.lifecycleScope
 import com.agentic.wallet.agent.AgentRuntimeController
+import com.agentic.wallet.push.AgenticPushMessagingService
 import com.agentic.wallet.agent.StreamingVoucherWorker
 import com.agentic.wallet.agent.provider.DeviceAgentProviderExecutor
 import com.agentic.wallet.agent.bridge.BridgeAiClient
@@ -317,6 +319,8 @@ class MainActivity : FragmentActivity() {
         if (!restoredLocalState) {
             webView.loadUrl(startUrl)
         }
+        // Buffer a cold-launch notification tap (the SPA drains it via consumePushRoute once loaded).
+        deliverPushRouteFromIntent(intent)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -745,8 +749,98 @@ class MainActivity : FragmentActivity() {
         super.onDestroy()
     }
 
+    // ── Push notifications (POST_NOTIFICATIONS runtime request + FCM token) ──────────────────────
+    // The one piece that genuinely requires a new APK: nothing here ever requested POST_NOTIFICATIONS,
+    // and with targetSdk 35, declaring it in the manifest is not enough — Android 13+ suppresses every
+    // notification until it's granted at runtime, so SystemBridge.showNotification returned
+    // permission_not_granted on every modern device.
+
+    private var pendingPushRequestId: String? = null
+    // A tap route that arrived before the SPA installed its push bridge (cold launch). Held until the
+    // JS layer calls consumePushRoute() on init — the Android analogue of the iOS tap buffer.
+    private var pendingPushRoute: String? = null
+
+    /**
+     * A notification tap launched (or re-focused) us with a route extra. Deliver it to JS via the push
+     * bridge if it's listening (warm re-focus); otherwise buffer for consumePushRoute() (cold launch).
+     */
+    private fun deliverPushRouteFromIntent(intent: Intent?) {
+        val route = intent?.getStringExtra(AgenticPushMessagingService.EXTRA_PUSH_ROUTE) ?: return
+        // Clear it so a config-change relaunch (rotation) can't replay the same tap.
+        intent.removeExtra(AgenticPushMessagingService.EXTRA_PUSH_ROUTE)
+        pendingPushRoute = route
+        webView.post {
+            val js =
+                "(function(){var b=window.__agenticAndroidPushBridge;if(b&&b.onTap){b.onTap($route);}})();"
+            webView.evaluateJavascript(js, null)
+        }
+    }
+
+    /** Drained by the SPA on init to pick up a cold-launch tap. Returns "{}" when there's none. */
+    fun consumePushRouteJson(): String {
+        val route = pendingPushRoute ?: return "{}"
+        pendingPushRoute = null
+        return route
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        deliverPushRouteFromIntent(intent)
+    }
+
+    fun requestPushPermissionAndToken(requestId: String) {
+        val alreadyGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        if (alreadyGranted) {
+            resolvePushWithToken(requestId, "granted")
+            return
+        }
+        pendingPushRequestId = requestId
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+            NOTIFICATION_PERMISSION_REQUEST_CODE,
+        )
+    }
+
+    /** Fetch the FCM token, then resolve the JS bridge with { ok, status, token }. */
+    private fun resolvePushWithToken(requestId: String, status: String) {
+        AgenticPushMessagingService.fetchToken { token ->
+            runOnUiThread {
+                val envelope = JSONObject()
+                    .put("ok", token != null)
+                    .put("status", status)
+                    .put("platform", "android")
+                if (token != null) envelope.put("token", token) else envelope.put("message", "fcm_token_unavailable")
+                dispatchPushResult(requestId, envelope)
+            }
+        }
+    }
+
+    private fun dispatchPushResult(requestId: String, envelope: JSONObject) {
+        if (isDestroyed) return
+        val js =
+            "(function(){var b=window.__agenticAndroidPushBridge;if(b&&b.resolve){b.resolve(${JSONObject.quote(requestId)},$envelope);}})();"
+        webView.evaluateJavascript(js, null)
+    }
+
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == NOTIFICATION_PERMISSION_REQUEST_CODE) {
+            val requestId = pendingPushRequestId
+            pendingPushRequestId = null
+            val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+            if (requestId != null) {
+                if (granted) {
+                    resolvePushWithToken(requestId, "granted")
+                } else {
+                    dispatchPushResult(requestId, JSONObject().put("ok", false).put("status", "denied"))
+                }
+            }
+            return
+        }
         if (requestCode != CAMERA_PERMISSION_REQUEST_CODE) return
         val pending = pendingCameraPermissionRequest
         pendingCameraPermissionRequest = null
@@ -1328,6 +1422,11 @@ class MainActivity : FragmentActivity() {
                 .put("remoteWebUrl", BuildConfig.AGENTIC_ANDROID_REMOTE_WEB_URL)
                 .put("cloudApiBaseUrl", BuildConfig.AGENTIC_ANDROID_CLOUD_API_BASE_URL)
                 .put("keyboardInsetsBridge", true)
+                // Advertises that this binary has the runtime POST_NOTIFICATIONS request + FCM token
+                // bridge. Live JS gates the notification card's push path on this AND a server flag
+                // (the "two flags must agree" shape), so a new web bundle stays silent on an old APK
+                // that lacks these methods rather than showing a permanently-failing button.
+                .put("notificationsBridge", true)
                 .put("webFallbackEnabled", BuildConfig.AGENTIC_ANDROID_ENABLE_WEB_FALLBACK)
                 .put("deviceAgentEnabled", BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT)
                 .toString()
@@ -1647,6 +1746,32 @@ class MainActivity : FragmentActivity() {
         fun showNotification(payloadJson: String): String = safeBridge("showNotification", "{}") {
             if (!checkTrustedOrigin("showNotification")) return@safeBridge "{}"
             activity.systemBridge.showNotification(payloadJson).toString()
+        }
+
+        /**
+         * Request the POST_NOTIFICATIONS runtime permission (Android 13+) and resolve the FCM token.
+         * Async via __agenticAndroidPushBridge because the OS permission dialog is async. On <33 the
+         * permission is implicit, so this goes straight to the token. THIS is the method whose absence
+         * meant the notification card's toggles could never actually deliver on a modern device.
+         */
+        @JavascriptInterface
+        fun requestNotificationPermission(requestId: String) = safeBridge("requestNotificationPermission", Unit) {
+            if (!checkTrustedOrigin("requestNotificationPermission")) return@safeBridge Unit
+            activity.runOnUiThread { activity.requestPushPermissionAndToken(requestId) }
+        }
+
+        /** Cold-launch notification tap route, drained by the SPA on init. "{}" when there is none. */
+        @JavascriptInterface
+        fun consumePushRoute(): String = safeBridge("consumePushRoute", "{}") {
+            if (!checkTrustedOrigin("consumePushRoute")) return@safeBridge "{}"
+            activity.consumePushRouteJson()
+        }
+
+        /** A token FCM rotated to while the app was closed and couldn't register (no session). "" if none. */
+        @JavascriptInterface
+        fun consumePendingPushToken(): String = safeBridge("consumePendingPushToken", "") {
+            if (!checkTrustedOrigin("consumePendingPushToken")) return@safeBridge ""
+            AgenticPushMessagingService.consumePendingToken(activity).orEmpty()
         }
 
         /**
@@ -2687,6 +2812,7 @@ class MainActivity : FragmentActivity() {
 
     private companion object {
         private const val CAMERA_PERMISSION_REQUEST_CODE = 0x0CA3
+        private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 0x0107
         private const val LOCAL_APP_HOST = "agentic.local"
         private const val LOCAL_APP_START_URL = "https://agentic.local/"
         // Minimum gap before a foregrounded app retries the live URL after a

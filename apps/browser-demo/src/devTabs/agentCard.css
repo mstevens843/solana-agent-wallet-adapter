@@ -699,8 +699,111 @@
   resize: vertical;
 }
 
+/* The MPP policy is a disclosure (collapsed by default) so it no longer forms
+   the ~1100px wall of empty textareas. Self-contained disclosure chrome (not the
+   shared .dev-agent-card-advanced, whose `summary span` rule would uppercase this
+   richer summary's title and dim its status chip). Amber accent = session-rail. */
 .dev-agent-card-mpp-policy {
-  border-color: rgba(236, 201, 75, 0.18);
+  background: rgba(255, 255, 255, 0.018);
+  border: 1px solid rgba(236, 201, 75, 0.2);
+  border-radius: var(--app-card-radius, var(--radius));
+  overflow: hidden;
+}
+
+.dev-agent-card-mpp-summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  list-style: none;
+  min-height: 54px;
+  padding: 12px 14px;
+}
+
+.dev-agent-card-mpp-summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Show / Hide affordance, mirroring the app's other disclosures. */
+.dev-agent-card-mpp-summary::after {
+  color: rgba(196, 205, 202, 0.68);
+  content: "Show";
+  flex: 0 0 auto;
+  font-size: 0.78rem;
+  font-weight: 820;
+}
+
+.dev-agent-card-mpp-policy[open] > .dev-agent-card-mpp-summary {
+  border-bottom: 1px solid rgba(224, 230, 226, 0.08);
+}
+
+.dev-agent-card-mpp-policy[open] > .dev-agent-card-mpp-summary::after {
+  content: "Hide";
+}
+
+.dev-agent-card-mpp-summary-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dev-agent-card-mpp-summary-eyebrow {
+  color: rgba(236, 201, 75, 0.82);
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.07em;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.dev-agent-card-mpp-summary-copy strong {
+  color: rgba(242, 245, 243, 0.92);
+  font-size: 0.94rem;
+  line-height: 1.22;
+}
+
+/* Collapsed-state count/defaults chip, sits before the Show/Hide marker. */
+.dev-agent-card-mpp-summary-status {
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  border-radius: 999px;
+  color: rgba(213, 223, 219, 0.82);
+  flex: 0 0 auto;
+  font-size: 0.66rem;
+  font-weight: 820;
+  line-height: 1;
+  padding: 5px 9px;
+  white-space: nowrap;
+}
+
+.dev-agent-card-mpp-body {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.dev-agent-card-mpp-intro {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  margin: 0;
+}
+
+/* Allowlists grouped by kind so eight identical boxes read as three labelled
+   clusters instead of a flat list. */
+.dev-agent-card-mpp-allowlist-group {
+  display: grid;
+  gap: 8px;
+}
+
+.dev-agent-card-mpp-allowlist-heading {
+  color: rgba(196, 205, 202, 0.7);
+  font-size: 0.64rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .dev-agent-card-mpp-grid {
@@ -1002,7 +1105,10 @@
   }
 }
 
-@media (max-width: 780px) {
+/* 899px, not 780: the form grid collapses at 900 (below), so collapsing the
+   readable grids at 780 left a 780-900 dead-band where the form was single
+   column while these were still multi-column. Aligned to the app's 899 breakpoint. */
+@media (max-width: 899px) {
   .dev-agent-card-profile,
   .dev-agent-card-capability-grid {
     grid-template-columns: 1fr;
@@ -1016,4 +1122,32 @@
   .dev-agent-card-actions .button-link {
     justify-content: center;
   }
+}
+
+/* Native shells (Android/iOS) can report a CSS width >= 900px, where the width
+   media queries above never fire — so the Profile subtab would keep its desktop
+   multi-column grids on a phone. These panels render under .route-app, so force
+   the phone layout for native shells regardless of reported width. */
+.route-app.android-shell .dev-agent-card-head,
+.route-app.ios-native-shell .dev-agent-card-head,
+.route-app.android-shell .dev-agent-card-form-grid,
+.route-app.ios-native-shell .dev-agent-card-form-grid,
+.route-app.android-shell .dev-agent-card-profile,
+.route-app.ios-native-shell .dev-agent-card-profile,
+.route-app.android-shell .dev-agent-card-capability-grid,
+.route-app.ios-native-shell .dev-agent-card-capability-grid,
+.route-app.android-shell .dev-agent-card-summary,
+.route-app.ios-native-shell .dev-agent-card-summary {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.route-app.android-shell .dev-agent-card-route-card,
+.route-app.ios-native-shell .dev-agent-card-route-card {
+  min-width: 0;
+  width: 100%;
+}
+
+.route-app.android-shell .dev-agent-card-form-actions .button,
+.route-app.ios-native-shell .dev-agent-card-form-actions .button {
+  width: 100%;
 }

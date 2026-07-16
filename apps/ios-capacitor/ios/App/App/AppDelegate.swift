@@ -3,6 +3,7 @@ import WebKit
 import Capacitor
 import CapApp_SPM
 import SystemConfiguration
+import UserNotifications
 import SolanaAgentWalletAdapterIosCapacitorBridge
 
 @UIApplicationMain
@@ -20,7 +21,24 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Bootstrap the native bridge: hydrates remote config from Keychain cache,
         // kicks a non-blocking refresh, prepares background-task plumbing.
         AgenticBridge.initialize()
+        // Deliver notifications while the app is foregrounded, and route taps — set before any push
+        // can arrive. The web layer requests authorization + registration on demand (registerForPush).
+        UNUserNotificationCenter.current().delegate = self
+        // A tap that cold-launched the app: forward its payload so the web layer can route once ready.
+        if let launchNotification = launchOptions?[.remoteNotification] as? [AnyHashable: Any] {
+            AgenticPushTokenStore.shared.handleTap(userInfo: launchNotification)
+        }
         return true
+    }
+
+    // ---- APNs registration (drives AgenticSystem.registerForPush on the JS side) ----
+
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        AgenticPushTokenStore.shared.didRegister(deviceToken: deviceToken)
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        AgenticPushTokenStore.shared.didFailToRegister(error: error.localizedDescription)
     }
 
     func applicationWillResignActive(_ application: UIApplication) {
@@ -269,5 +287,29 @@ final class AgenticBridgeViewController: CAPBridgeViewController {
             return false
         }
         return flags.contains(.reachable) && !flags.contains(.connectionRequired)
+    }
+}
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    /// Show the banner even when the app is in the FOREGROUND. Without this iOS suppresses it (it
+    /// assumes an open app has already surfaced the info), but our push covers events the open web
+    /// layer may not be showing — a confirm that landed while the user was on a different tab.
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound, .badge])
+    }
+
+    /// A tapped notification routes its payload to the web layer (tab + section), via the same store
+    /// that buffers a cold-launch tap until JS attaches its listener.
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        AgenticPushTokenStore.shared.handleTap(userInfo: response.notification.request.content.userInfo)
+        completionHandler()
     }
 }

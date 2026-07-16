@@ -467,6 +467,10 @@ dependencies {
     implementation("com.google.firebase:firebase-analytics") {
         exclude(group = "com.google.android.gms", module = "play-services-ads-identifier")
     }
+    // Cloud Messaging: server-sent push for limit/DCA fills, tx confirms, borrow-health and repeat
+    // dues that must reach the app while it's closed. The Firebase project (google-services.json,
+    // sender 989557563524) was already provisioned for Analytics; this adds the messaging SDK.
+    implementation("com.google.firebase:firebase-messaging")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
     androidTestImplementation("androidx.test:core-ktx:1.6.1")

@@ -107,6 +107,12 @@ import { createEvidenceApiHandler, evidenceStoreAdapterForCloudStore } from './e
 import type { EvidenceStore } from './evidenceService.js';
 import { MemoryWorkflowStore } from './memoryStore.js';
 import { isRecurringNotificationStore, RecurringNotificationService } from './notificationService.js';
+import { createHeliusWebhookHandler } from './heliusWebhookHandler.js';
+import { heliusPushWebhookConfig, syncHeliusPushWebhook } from './heliusWebhooks.js';
+import { PushNotificationService } from './pushNotificationService.js';
+import { parseCategories, parsePlatform, parseToken, registerPushDevice, unregisterPushDevice } from './pushRoutes.js';
+import { isPushStore, type PushStore } from './pushTypes.js';
+import { effectiveScheduleTotalAmount } from './treasuryConfig.js';
 import {
   createRecurringApprovalSink,
   createRecurringApprovalStatusReader,
@@ -588,15 +594,42 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
   const notificationService = notificationStore
     ? new RecurringNotificationService(notificationStore)
     : undefined;
+  // Push runs ALONGSIDE the webhook path, not through it: RecurringNotificationService only enqueues
+  // when a schedule configured a webhookUrl+secret, so a normal user (who has no webhook at all) would
+  // otherwise never be told their repeat payment is due on the one surface they actually watch.
+  const pushStore = isPushStore(store) ? store : undefined;
+  const pushService = pushStore ? new PushNotificationService(pushStore) : undefined;
+  // Only mounted when both the store and a shared secret exist; without the secret the route reports
+  // 503 rather than accepting unauthenticated deliveries.
+  const heliusWebhookHandler = pushStore && pushService && process.env.HELIUS_WEBHOOK_SECRET?.trim()
+    ? createHeliusWebhookHandler({
+        store: pushStore,
+        pushService,
+        authHeader: process.env.HELIUS_WEBHOOK_SECRET.trim(),
+        onError: (message, err) => {
+          console.warn(`${message} err=${err instanceof Error ? err.message : String(err)}`);
+        },
+      })
+    : undefined;
   const recurringService = new RecurringService(recurringStore, {
     approvalSink: createRecurringApprovalSink(workflowService),
     approvalStatusReader: createRecurringApprovalStatusReader(workflowStore),
     occurrenceHistoryHydrator: createRecurringOccurrenceHistoryHydrator(workflowStore),
     policyEnforcer: createRecurringPolicyEnforcer(recurringPolicy),
-    notificationSink: notificationService
+    notificationSink: notificationService || pushService
       ? ({ walletAddress, schedule, occurrence }) =>
-          notificationService
-            .enqueueOccurrenceReady(walletAddress, schedule.id, occurrence.id)
+          Promise.all([
+            notificationService?.enqueueOccurrenceReady(walletAddress, schedule.id, occurrence.id),
+            // Same occurrence, second sink: the phone. Independent of the webhook gate above.
+            pushService?.enqueue({
+              walletAddress,
+              type: 'recurring.occurrence.ready',
+              dedupeKey: occurrence.id,
+              title: 'Repeat payment due',
+              body: `${effectiveScheduleTotalAmount(schedule)} ${schedule.token} to ${deviceAgentWalletShort(schedule.recipient)}`,
+              data: { tab: 'inbox', scheduleId: schedule.id, occurrenceId: occurrence.id },
+            }),
+          ])
             .then(() => undefined)
             // Intentionally fire-and-forget (notification is best-effort, never
             // blocks the scheduler), but a silent unhandled rejection would hide
@@ -718,6 +751,8 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
           statelessConnectorReader,
           publicConnectorReader,
           connectorSecretsService,
+          pushStore,
+          heliusWebhookHandler,
         );
       } catch (err) {
         const status = err instanceof ApiError ? err.status : err instanceof AuthValidationError ? 400 : 500;
@@ -1048,6 +1083,8 @@ async function routeApiRequest(
   statelessConnectorReader: StatelessConnectorFactsReader,
   publicConnectorReader: StatelessConnectorFactsReader,
   connectorSecretsService: ConnectorSecretsService | undefined,
+  pushStore: PushStore | undefined,
+  heliusWebhookHandler: ((req: IncomingMessage, res: ServerResponse) => Promise<boolean>) | undefined,
 ): Promise<void> {
   if (url.pathname === '/api/ai/status') {
     requireMethod(req, 'GET');
@@ -1490,6 +1527,36 @@ async function routeApiRequest(
   if (url.pathname === '/api/connector/read-facts') {
     requireMethod(req, 'POST');
     await handleConnectorReadFacts(req, res, store, clock, statelessConnectorReader, publicConnectorReader);
+    return;
+  }
+
+  // Inbound Helius deliveries. Sessionless (Helius has no wallet session) — auth is the echoed
+  // authHeader, checked inside the handler. Registered before the session-bearing routes so it never
+  // trips the session/CORS machinery.
+  if (url.pathname === '/api/webhooks/helius') {
+    if (heliusWebhookHandler) {
+      await heliusWebhookHandler(req, res);
+    } else {
+      writeJson(res, 503, { error: 'webhook_not_configured' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/push/register-device') {
+    requireMethod(req, 'POST');
+    await handlePushRegisterDevice(req, res, store, clock, pushStore);
+    return;
+  }
+
+  if (url.pathname === '/api/push/unregister-device') {
+    requireMethod(req, 'POST');
+    await handlePushUnregisterDevice(req, res, store, clock, pushStore);
+    return;
+  }
+
+  if (url.pathname === '/api/push/devices') {
+    requireMethod(req, 'GET');
+    await handlePushListDevices(req, res, store, clock, pushStore);
     return;
   }
 
@@ -3912,6 +3979,100 @@ function assertCustomOpenAiCompatibleDeviceAgentUrl(provider: string | undefined
 function deviceAgentWalletShort(walletAddress: string): string {
   if (walletAddress.length <= 8) return walletAddress;
   return `${walletAddress.slice(0, 4)}…${walletAddress.slice(-4)}`;
+}
+
+// ---- Push device registration ----
+//
+// The wallet is ALWAYS session-derived. Never read walletAddress from the body here: the session is
+// already a signature-proven binding, and trusting the body would let any caller aim push at an
+// address they don't own (same rule as /api/helius/das, whose body address is ignored).
+
+async function requirePushSession(
+  req: IncomingMessage,
+  store: WorkflowStore,
+  clock: Clock,
+  pushStore: PushStore | undefined,
+): Promise<{ session: { walletAddress: string }; pushStore: PushStore }> {
+  if (!pushStore) throw new ApiError(503, 'Push notifications are not available on this deployment.');
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) throw new ApiError(401, 'Sign in to manage push notifications for this device.');
+  return { session, pushStore };
+}
+
+async function handlePushRegisterDevice(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+  maybePushStore: PushStore | undefined,
+): Promise<void> {
+  const { session, pushStore } = await requirePushSession(req, store, clock, maybePushStore);
+  const body = asJsonRecord(await readJsonBody(req), 'push register body');
+  const platform = parsePlatform(body.platform);
+  if (!platform) throw new ApiError(400, "platform must be 'ios' or 'android'.");
+  const token = parseToken(body.token);
+  if (!token) throw new ApiError(400, 'token is required.');
+  const device = await registerPushDevice({
+    store: pushStore,
+    walletAddress: session.walletAddress,
+    platform,
+    token,
+    categories: parseCategories(body.categories),
+    now: clock.now().toISOString(),
+  });
+  // Add this wallet to the Helius webhook now, so the first fill after opting in is already covered.
+  // Fire-and-forget: registration must not fail because Helius is slow, and the hourly
+  // push-webhook-sync cron reconciles anything this misses.
+  void syncHeliusWebhookForPush(pushStore).catch((err: unknown) => {
+    console.warn(`push_webhook_sync_failed err=${err instanceof Error ? err.message : String(err)}`);
+  });
+  // Never echo the token back — it's a device secret and this response may be logged client-side.
+  writeJson(res, 200, {
+    device: { id: device.id, platform: device.platform, categories: device.categories },
+  });
+}
+
+/** Best-effort webhook address sync. No-ops when Helius isn't configured. */
+async function syncHeliusWebhookForPush(pushStore: PushStore): Promise<void> {
+  const config = heliusPushWebhookConfig();
+  if (!config) return;
+  await syncHeliusPushWebhook(await pushStore.listPushWallets(), config);
+}
+
+async function handlePushUnregisterDevice(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+  maybePushStore: PushStore | undefined,
+): Promise<void> {
+  const { session, pushStore } = await requirePushSession(req, store, clock, maybePushStore);
+  const body = asJsonRecord(await readJsonBody(req), 'push unregister body');
+  const platform = parsePlatform(body.platform);
+  if (!platform) throw new ApiError(400, "platform must be 'ios' or 'android'.");
+  const token = parseToken(body.token);
+  if (!token) throw new ApiError(400, 'token is required.');
+  const removed = await unregisterPushDevice(pushStore, session.walletAddress, platform, token);
+  writeJson(res, 200, { removed });
+}
+
+async function handlePushListDevices(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+  maybePushStore: PushStore | undefined,
+): Promise<void> {
+  const { session, pushStore } = await requirePushSession(req, store, clock, maybePushStore);
+  const devices = await pushStore.listPushDevices(session.walletAddress);
+  writeJson(res, 200, {
+    devices: devices.map((device) => ({
+      id: device.id,
+      platform: device.platform,
+      categories: device.categories,
+      lastSeenAt: device.lastSeenAt,
+    })),
+  });
 }
 
 type DeviceAgentAuditType =

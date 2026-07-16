@@ -130,6 +130,45 @@ services:
         sync: false
       - key: COINGECKO_API_KEY
         sync: false
+      # Jupiter Trigger (limit) + Recurring (DCA) reads through /api/connector/read-facts.
+      # Both policies default to enabled:false in the mcp-server config, so WITHOUT these the
+      # Orders positions section gets `unsupported_method` and falls back to seeded cards, and
+      # the DCA-fill push poller has nothing to read. (These only take effect now that
+      # connectorFactsReader routes through normalizeConfig — a `{...DEFAULT_CONFIG}` spread
+      # ignored them entirely.) Trigger reads additionally need a per-wallet JWT the cloud can
+      # never hold, so limit-order state stays browser-only; the flag is here for parity.
+      - key: CONNECTORS_JUPITER_RECURRING_ENABLED
+        value: "true"
+      - key: CONNECTORS_JUPITER_TRIGGER_ENABLED
+        value: "true"
+      # Helius: enhanced-tx reads AND the push webhook that watches opted-in wallets for
+      # limit/DCA fills. Absent today, which is why /api/helius/* returns 501 in production.
+      # HELIUS_WEBHOOK_SECRET is echoed back by Helius in the Authorization header of every
+      # webhook POST — the receiver rejects anything that doesn't match.
+      - key: HELIUS_API_KEY
+        sync: false
+      - key: HELIUS_WEBHOOK_SECRET
+        sync: false
+      # Jupiter is `requiresClientKey: true`. Reads work on the lite tier, but a per-minute
+      # poll across every opted-in wallet will rate-limit without a real key.
+      - key: JUPITER_API_KEY
+        sync: false
+      # Push delivery credentials. Set in the Render dashboard, never committed.
+      # FCM_SERVICE_ACCOUNT_JSON: the whole service-account JSON for FCM HTTP v1.
+      # APNS_KEY_P8: the raw .p8 contents of an APNs Auth Key. APNS_ENV: production|sandbox.
+      # With any of these unset the sender no-ops cleanly and push simply stays off.
+      - key: FCM_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: APNS_KEY_P8
+        sync: false
+      - key: APNS_KEY_ID
+        sync: false
+      - key: APNS_TEAM_ID
+        sync: false
+      - key: APNS_BUNDLE_ID
+        value: "com.agentic.wallet"
+      - key: APNS_ENV
+        value: "production"
       # Skills marketplace platform fee. TREASURY_WALLET is the Solana pubkey
       # that receives the platform cut of monthly/one-time skill author
       # payments. PLATFORM_FEE_BPS is basis points out of 10000 (1500 = 15%).
@@ -201,6 +240,80 @@ services:
         fromDatabase:
           name: agentic-postgres
           property: connectionString
+
+  # Push notification crons. All three are safe no-ops before credentials exist: with no FCM/APNs keys
+  # push:deliver reports skipped (the queue survives, it does not burn its retry budget), and
+  # push:webhook-sync exits early without HELIUS_API_KEY.
+  - type: cron
+    name: agentic-push-deliver
+    runtime: node
+    schedule: "* * * * *"
+    buildCommand: pnpm install --frozen-lockfile --ignore-scripts && pnpm -F @solana-agent-wallet-adapter/render-web build
+    startCommand: pnpm -F @solana-agent-wallet-adapter/render-web push:deliver
+    envVars:
+      - key: SKIP_INSTALL_DEPS
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: agentic-postgres
+          property: connectionString
+      - key: FCM_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: APNS_KEY_P8
+        sync: false
+      - key: APNS_KEY_ID
+        sync: false
+      - key: APNS_TEAM_ID
+        sync: false
+      - key: APNS_BUNDLE_ID
+        value: "com.agentic.wallet"
+      - key: APNS_ENV
+        value: "production"
+
+  # Borrow health is the ONE event no webhook can ever deliver: it's caused by a price move, not by a
+  # transaction on the wallet. 5-minute cadence, and only wallets with a registered device are read.
+  - type: cron
+    name: agentic-push-health
+    runtime: node
+    schedule: "*/5 * * * *"
+    buildCommand: pnpm install --frozen-lockfile --ignore-scripts && pnpm -F @solana-agent-wallet-adapter/render-web build
+    startCommand: pnpm -F @solana-agent-wallet-adapter/render-web push:health
+    envVars:
+      - key: SKIP_INSTALL_DEPS
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: agentic-postgres
+          property: connectionString
+      - key: SOLANA_RPC_URL
+        sync: false
+      - key: HELIUS_RPC_URL
+        sync: false
+      - key: JUPITER_API_KEY
+        sync: false
+
+  # Reconciles the Helius webhook's accountAddresses against push_devices, so drift self-heals (a
+  # webhook deleted in the dashboard, a half-failed create, an address a failed unregister left behind).
+  # Hourly: registration already syncs inline, this is only the safety net.
+  - type: cron
+    name: agentic-push-webhook-sync
+    runtime: node
+    schedule: "17 * * * *"
+    buildCommand: pnpm install --frozen-lockfile --ignore-scripts && pnpm -F @solana-agent-wallet-adapter/render-web build
+    startCommand: pnpm -F @solana-agent-wallet-adapter/render-web push:webhook-sync
+    envVars:
+      - key: SKIP_INSTALL_DEPS
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: agentic-postgres
+          property: connectionString
+      - key: HELIUS_API_KEY
+        sync: false
+      - key: HELIUS_WEBHOOK_SECRET
+        sync: false
+      - key: PUBLIC_WEB_ORIGIN
+        value: "https://agentic-signer.com"
 
   # Layer 2 Skills Hub crons. Dev-gated by allowlist inside the executor; safe
   # to run on production with no allowlisted wallets (no-op).

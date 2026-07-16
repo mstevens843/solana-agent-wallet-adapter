@@ -13,6 +13,12 @@
   --accent: #3fbd83;
   --accent-2: #8bcdaa;
   --accent-soft: rgba(63, 189, 131, 0.105);
+  /* Selected-state scale for nav chrome, built on the mint (#7de7b0) the app
+     already uses widely. One scale so the desktop card strip and the native tab
+     strip signal "selected" with the same three values instead of ad-hoc alphas. */
+  --nav-selected-tint: rgba(125, 231, 176, 0.08);
+  --nav-selected-edge: rgba(125, 231, 176, 0.22);
+  --nav-selected-bar: rgba(125, 231, 176, 0.78);
   --launch-app-bg: #0b4028;
   --launch-app-bg-hover: #0f5635;
   --launch-app-border: #1a7650;
@@ -3364,6 +3370,12 @@ code {
   color: #f2fff7;
 }
 
+/* Desktop sidebar shows the full label; the short one is only for the mobile
+   tab grid (revealed in the @media block below). */
+.docs-sidebar-link-short {
+  display: none;
+}
+
 .docs-layout-content {
   display: grid;
   gap: 18px;
@@ -3428,15 +3440,37 @@ code {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  /* A 2-row grid of 3 so all six tabs are visible at once. The old horizontal
+     scroller hid half of them (415px of tabs in a 363px rail) with no scroll
+     affordance, so the last three sections were undiscoverable. */
   .docs-sidebar {
-    flex-direction: row;
-    overflow-x: auto;
+    display: grid;
+    gap: 6px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    overflow-x: visible;
+    padding: 6px;
     position: static;
     top: auto;
   }
 
   .docs-sidebar-link {
-    white-space: nowrap;
+    align-items: center;
+    display: flex;
+    font-size: 0.78rem;
+    justify-content: center;
+    line-height: 1.15;
+    min-height: 44px;
+    padding: 8px 6px;
+    text-align: center;
+  }
+
+  /* Swap to the short label so "Agent Payments & Skills" fits a third-width cell. */
+  .docs-sidebar-link-full {
+    display: none;
+  }
+
+  .docs-sidebar-link-short {
+    display: inline;
   }
 }
 
@@ -3850,10 +3884,37 @@ code {
   min-width: 0;
 }
 
-.protocol-connector-group-head {
+/* The group is a <details>. On desktop it is always open and static (the marker
+   hidden), so it reads exactly as the old <section>. Mobile overrides below make
+   it an actual disclosure. */
+.protocol-connector-group[open] {
+  gap: 14px;
+}
+
+.protocol-connector-group > summary.protocol-connector-group-head {
+  align-items: start;
+  cursor: default;
+  display: grid;
+  gap: 5px 12px;
+  grid-template-columns: minmax(0, 1fr);
+  list-style: none;
+  max-width: 900px;
+}
+
+.protocol-connector-group > summary.protocol-connector-group-head::-webkit-details-marker {
+  display: none;
+}
+
+.protocol-connector-group-head-copy {
   display: grid;
   gap: 5px;
-  max-width: 900px;
+  min-width: 0;
+}
+
+/* Count pill is a mobile affordance; on desktop the whole grid is visible so it
+   would be noise. Hidden here, revealed in the mobile block. */
+.protocol-connector-group-count {
+  display: none;
 }
 
 .protocol-connector-group-head h3 {
@@ -7013,6 +7074,20 @@ code {
   padding: 2px 6px;
   text-transform: uppercase;
   white-space: nowrap;
+}
+
+/* Reveals the rest of a connector's action list. Styled as a chip so it reads as
+   part of the row, but it is a real button. */
+.connected-dapp-action-chip-more {
+  background: rgba(125, 231, 176, 0.09);
+  border-color: rgba(125, 231, 176, 0.24);
+  color: #cdf1de;
+  cursor: pointer;
+}
+
+.connected-dapp-action-chip-more:hover:not(:disabled) {
+  background: rgba(125, 231, 176, 0.15);
+  border-color: rgba(125, 231, 176, 0.36);
 }
 
 .connected-dapp-capability-chip {
@@ -13652,6 +13727,41 @@ button.danger:hover:not(:disabled) {
   white-space: nowrap;
 }
 
+.artifact-visible-count-group {
+  align-items: center;
+  align-self: center;
+  display: inline-flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* Only rendered when a signature actually failed to verify, so it reads as an
+   anomaly rather than a peer of the outcome filters beside it. */
+.artifact-unverified-chip {
+  background: var(--warn-soft);
+  border: 1px solid rgba(214, 168, 79, 0.34);
+  border-radius: 999px;
+  color: var(--warn);
+  cursor: pointer;
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  line-height: 1;
+  padding: 6px 9px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.artifact-unverified-chip:hover:not(:disabled) {
+  border-color: rgba(214, 168, 79, 0.55);
+}
+
+.artifact-unverified-chip.active {
+  background: rgba(214, 168, 79, 0.22);
+  border-color: rgba(214, 168, 79, 0.62);
+  color: #f6e3bd;
+}
+
 .artifact-archive-primary-row .field {
   margin: 0;
 }
@@ -14164,12 +14274,28 @@ button.danger:hover:not(:disabled) {
   padding: 4px 7px;
 }
 
+/* The proof's own name (its lab title). Previously this class held the kind
+   label and doubled as the card's de-facto heading; the kind now lives in
+   .receipt-proof-kind-pill beside the wallet pill. */
 .receipt-proof-type-label {
-  color: #f4f7f5;
-  font-size: clamp(1.36rem, 2.1vw, 1.85rem);
+  color: var(--text);
+  font-size: 1.16rem;
   font-weight: 900;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   line-height: 1.2;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.receipt-proof-kind-pill {
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  border-radius: 999px;
+  color: rgba(196, 205, 202, 0.76);
+  font-size: 0.66rem;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  line-height: 1;
+  padding: 4px 8px;
   text-transform: uppercase;
   white-space: nowrap;
 }
@@ -14215,14 +14341,34 @@ button.danger:hover:not(:disabled) {
   text-align: right;
 }
 
+/* The verdict carries severity, so it is coloured rather than shouted. It used
+   to be flat #f4f7f5 at up to 1.85rem — the loudest thing on the card and the
+   only element whose colour said nothing. The tone comes from payload.status
+   via receiptVerdictTone, on the same palette as .artifact-evidence-list. */
 .receipt-proof-value strong {
-  color: #f4f7f5;
-  font-size: clamp(1.36rem, 2.1vw, 1.85rem);
+  color: var(--muted);
+  font-size: 1.02rem;
   font-weight: 900;
   letter-spacing: 0;
-  line-height: 1;
+  line-height: 1.1;
   text-transform: lowercase;
   white-space: nowrap;
+}
+
+.receipt-proof-value.tone-good strong {
+  color: var(--accent-2);
+}
+
+.receipt-proof-value.tone-warn strong {
+  color: var(--warn);
+}
+
+.receipt-proof-value.tone-danger strong {
+  color: var(--danger);
+}
+
+.receipt-proof-value.tone-neutral strong {
+  color: rgba(213, 223, 219, 0.82);
 }
 
 .receipt-proof-value span {
@@ -15353,6 +15499,23 @@ button.danger:hover:not(:disabled) {
     border-right: 0;
     padding-bottom: 14px;
     padding-right: 0;
+  }
+
+  /* Once the workbench stacks, the explainer would sit between the proof picker
+     and the fields, so every repeat proof scrolls past the lesson. Put the
+     fields first and let the explainer read as reference underneath — the
+     picker directly above already names the proof you are on. Only applies
+     while stacked; the side-by-side layout keeps its natural order. */
+  .lab-workbench-grid > .research-brief {
+    border-bottom: 0;
+    border-top: 1px solid rgba(224, 230, 226, 0.055);
+    order: 2;
+    padding-bottom: 0;
+    padding-top: 14px;
+  }
+
+  .lab-workbench-grid > :not(.research-brief) {
+    order: 1;
   }
 
   .ticket-status-rail {
@@ -25827,22 +25990,8 @@ button.danger:hover:not(:disabled) {
   grid-template-columns: minmax(0, 1fr) minmax(150px, auto) minmax(220px, auto);
 }
 
-.route-app .receipt-proof-type-label {
-  color: #f4f7f5;
-  font-size: 1.02rem;
-  font-weight: 900;
-  letter-spacing: 0;
-  line-height: 1.18;
-  text-transform: none;
-  white-space: normal;
-}
-
 .route-app .receipt-proof-value {
   margin-right: 0;
-}
-
-.route-app .receipt-proof-value strong {
-  font-size: clamp(1.25rem, 1.8vw, 1.55rem);
 }
 
 .route-app .receipt-proof-summary-grid > div {
@@ -26062,6 +26211,18 @@ button.danger:hover:not(:disabled) {
 .route-app .receipt-field textarea,
 .route-app .lab-intent-document textarea {
   min-height: 66px;
+}
+
+/* Native shells pick mobile content via isMobileAppViewport(), not width, and a
+   webview can report >= 900px — where the max-width:899px rule above never
+   fires. Ungate the taller proof fields for them so the signed text stays
+   readable regardless of reported width. */
+.route-app.android-shell .receipt-field textarea,
+.route-app.ios-native-shell .receipt-field textarea,
+.route-app.android-shell .lab-intent-document textarea,
+.route-app.ios-native-shell .lab-intent-document textarea {
+  font-size: 16px;
+  min-height: 112px;
 }
 
 .route-app .signature-toolbar button,
@@ -28462,16 +28623,28 @@ button.danger:hover:not(:disabled) {
   min-width: 0;
 }
 
-.preferences-mobile-picker {
+/* Both carry .android-tab-card, whose `display: flex` is declared far later in
+   this file at equal specificity. Without the doubled class these hides lose
+   the tie and the native tab strips leak onto desktop next to the card strip. */
+.preferences-mobile-tabs.preferences-mobile-tabs,
+.preferences-mobile-section-tabs.preferences-mobile-section-tabs {
   display: none;
   min-width: 0;
-  position: relative;
 }
 
-.preferences-mobile-tabs,
-.preferences-mobile-section-tabs {
-  display: none;
-  min-width: 0;
+/* Column counts stay outside any width query on purpose: native shells show
+   these strips at any reported width, and a webview reporting >= 900px would
+   otherwise fall back to .android-tab-strip's repeat(4) and orphan the 5th tab. */
+.route-app .preferences-mobile-tabs-strip {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.route-app .preferences-mobile-section-tabs-strip.columns-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.route-app .preferences-mobile-section-tabs-strip.columns-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .preferences-subtabs button {
@@ -28481,12 +28654,14 @@ button.danger:hover:not(:disabled) {
     rgba(17, 21, 20, 0.94);
   border: 1px solid rgba(224, 230, 226, 0.1);
   border-radius: 8px;
+  column-gap: 8px;
   display: grid;
-  gap: 5px;
+  grid-template-columns: auto minmax(0, 1fr);
   justify-items: start;
   min-height: 78px;
   min-width: 0;
   padding: 10px 11px;
+  row-gap: 5px;
   text-align: left;
 }
 
@@ -28494,15 +28669,48 @@ button.danger:hover:not(:disabled) {
   background:
     linear-gradient(180deg, rgba(21, 60, 43, 0.38), rgba(17, 28, 24, 0.92)),
     rgba(17, 21, 20, 0.94);
-  border-color: rgba(125, 231, 176, 0.22);
+  border-color: var(--nav-selected-edge);
   box-shadow: none;
   color: #f2fff7;
 }
 
-.preferences-subtabs span {
+/* Icon badge sits on row 1 beside the eyebrow; title and meta span both
+   columns underneath so the copy still starts at the card's left edge. */
+.preferences-subtab-icon {
+  align-items: center;
+  align-self: center;
+  background: rgba(255, 255, 255, 0.048);
+  border: 1px solid rgba(224, 230, 226, 0.1);
+  border-radius: 7px;
+  display: flex;
+  grid-column: 1;
+  grid-row: 1;
+  height: 24px;
+  justify-content: center;
+  width: 24px;
+}
+
+.preferences-subtab-icon .command-center-card-icon {
+  height: 13px;
+  width: 13px;
+}
+
+.preferences-subtabs button.active .preferences-subtab-icon {
+  background: var(--nav-selected-tint);
+  border-color: var(--nav-selected-edge);
+}
+
+.preferences-subtabs button.active .preferences-subtab-icon .command-center-card-icon {
+  color: var(--accent-2);
+}
+
+.preferences-subtabs .preferences-subtab-eyebrow {
+  align-self: center;
   color: var(--dim);
   font-size: 0.64rem;
   font-weight: 900;
+  grid-column: 2;
+  grid-row: 1;
   letter-spacing: 0.08em;
   line-height: 1.1;
   min-width: 0;
@@ -28513,6 +28721,7 @@ button.danger:hover:not(:disabled) {
   color: var(--text);
   font-size: 0.93rem;
   font-weight: 900;
+  grid-column: 1 / -1;
   line-height: 1.14;
   min-width: 0;
 }
@@ -28522,128 +28731,13 @@ button.danger:hover:not(:disabled) {
   font-size: 0.72rem;
   font-style: normal;
   font-weight: 780;
+  grid-column: 1 / -1;
   line-height: 1.18;
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
 .preferences-subtabs button.active em {
-  color: rgba(218, 245, 229, 0.82);
-}
-
-.preferences-mobile-picker-trigger {
-  align-items: center;
-  background:
-    linear-gradient(180deg, rgba(31, 36, 34, 0.88), rgba(18, 22, 21, 0.96)),
-    rgba(17, 21, 20, 0.96);
-  border: 1px solid rgba(125, 231, 176, 0.2);
-  border-radius: 8px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
-  min-height: 58px;
-  padding: 10px 12px;
-}
-
-.preferences-mobile-picker.open .preferences-mobile-picker-trigger,
-.preferences-mobile-picker-trigger:hover:not(:disabled) {
-  background:
-    linear-gradient(180deg, rgba(21, 60, 43, 0.36), rgba(17, 28, 24, 0.94)),
-    rgba(17, 21, 20, 0.96);
-  border-color: rgba(125, 231, 176, 0.32);
-  box-shadow:
-    0 0 0 1px rgba(63, 189, 131, 0.08),
-    0 12px 26px rgba(0, 0, 0, 0.24);
-}
-
-.preferences-mobile-picker-current {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-
-.preferences-mobile-picker-current strong {
-  color: #f4fff8;
-  font-size: 0.98rem;
-  font-weight: 900;
-  line-height: 1.16;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.preferences-mobile-picker-current em {
-  color: rgba(196, 205, 202, 0.76);
-  font-size: 0.78rem;
-  font-style: normal;
-  font-weight: 780;
-  line-height: 1.2;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.preferences-mobile-picker-menu {
-  background:
-    linear-gradient(180deg, rgba(17, 22, 20, 0.98), rgba(8, 12, 11, 0.99)),
-    rgba(10, 14, 13, 0.98);
-  border: 1px solid rgba(125, 231, 176, 0.2);
-  border-radius: 8px;
-  padding: 6px;
-  z-index: 160;
-}
-
-.preferences-mobile-picker-option {
-  background:
-    linear-gradient(180deg, rgba(31, 36, 34, 0.68), rgba(18, 22, 21, 0.9)),
-    rgba(17, 21, 20, 0.9);
-  border: 1px solid rgba(224, 230, 226, 0.08);
-  border-radius: 8px;
-  display: grid;
-  gap: 4px;
-  min-height: 58px;
-  padding: 10px 11px;
-}
-
-.preferences-mobile-picker-option strong {
-  color: var(--text);
-  font-size: 0.94rem;
-  font-weight: 900;
-  line-height: 1.18;
-}
-
-.preferences-mobile-picker-option em {
-  color: rgba(196, 205, 202, 0.74);
-  font-size: 0.76rem;
-  font-style: normal;
-  font-weight: 780;
-  line-height: 1.22;
-  max-width: none;
-  overflow: visible;
-  overflow-wrap: anywhere;
-  text-overflow: clip;
-  white-space: normal;
-}
-
-.preferences-mobile-picker-option:hover,
-.preferences-mobile-picker-option:focus-visible,
-.preferences-mobile-picker-option.active {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.026)),
-    rgba(17, 21, 20, 0.94);
-  border-color: rgba(224, 230, 226, 0.16);
-  box-shadow: none;
-  transform: none;
-}
-
-.preferences-mobile-picker-option.selected {
-  background:
-    linear-gradient(180deg, rgba(21, 60, 43, 0.42), rgba(17, 28, 24, 0.94)),
-    rgba(17, 21, 20, 0.94);
-  border-color: rgba(125, 231, 176, 0.34);
-}
-
-.preferences-mobile-picker-option.selected strong {
-  color: #dcffe9;
-}
-
-.preferences-mobile-picker-option.selected em {
   color: rgba(218, 245, 229, 0.82);
 }
 
@@ -28683,6 +28777,11 @@ button.danger:hover:not(:disabled) {
 
 .preferences-page .workspace-preferences-grid {
   grid-template-columns: minmax(320px, 0.85fr) minmax(360px, 1.15fr);
+}
+
+/* Cloud-storage danger zone sits full-width below the backup + alerts grid. */
+.preferences-page .workspace-cloud-delete {
+  margin-top: 12px;
 }
 
 .preferences-page .access-preferences-grid {
@@ -29018,6 +29117,7 @@ button.danger:hover:not(:disabled) {
 .preferences-page .agent-notes-field,
 .preferences-page .recipient-note-field,
 .preferences-page .recipient-tags-field,
+.preferences-page .recipient-mine-hint,
 .preferences-page .custom-token-label-field,
 .preferences-page .agent-policy-detail-field,
 .preferences-page .planner-prompt-body-field {
@@ -29122,6 +29222,82 @@ button.danger:hover:not(:disabled) {
   font-size: 0.84rem;
   line-height: 1.38;
   margin: 0;
+}
+
+/* Failure kinds are grouped (Wallet & setup / Network-RPC / Transaction-quote)
+   on every platform. Mobile collapses the all-ask groups to save vertical space;
+   desktop opens them so the groups act as section headers over the full matrix. */
+.route-app .failure-policy-group-list {
+  display: grid;
+  gap: 8px;
+}
+
+.route-app .failure-policy-group {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(224, 230, 226, 0.085);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* Three tracks: these groups nest inside .failure-policies-panel.rail-details, so
+   the descendant `.rail-details summary::after` +/- marker is a third child here
+   and needs its own column — otherwise it wraps and strands a dash under the head. */
+.route-app .failure-policy-group > summary {
+  align-items: center;
+  cursor: pointer;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  list-style: none;
+  min-height: 44px;
+  padding: 9px 11px;
+}
+
+.route-app .failure-policy-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.route-app .failure-policy-group > summary span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.route-app .failure-policy-group > summary strong {
+  color: var(--text);
+  font-size: 0.86rem;
+  line-height: 1.1;
+}
+
+.route-app .failure-policy-group > summary em {
+  color: rgba(196, 205, 202, 0.66);
+  font-size: 0.7rem;
+  font-style: normal;
+  font-weight: 760;
+  line-height: 1.18;
+}
+
+.route-app .failure-policy-group > summary b {
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(224, 230, 226, 0.1);
+  border-radius: 999px;
+  color: rgba(224, 230, 226, 0.76);
+  font-size: 0.62rem;
+  line-height: 1;
+  padding: 5px 7px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.route-app .failure-policy-group[open] > summary b {
+  background: rgba(125, 231, 176, 0.1);
+  border-color: rgba(125, 231, 176, 0.22);
+  color: #d8f9e6;
+}
+
+.route-app .failure-policy-group .failure-policy-list {
+  border-top: 1px solid rgba(224, 230, 226, 0.07);
+  padding: 10px;
 }
 
 .preferences-page .failure-policy-list {
@@ -29267,7 +29443,6 @@ button.danger:hover:not(:disabled) {
     display: none;
   }
 
-  .route-app .preferences-mobile-picker,
   .route-app .preferences-mobile-tabs,
   .route-app .preferences-mobile-section-tabs {
     display: block;
@@ -29325,9 +29500,12 @@ button.danger:hover:not(:disabled) {
     overflow-wrap: anywhere;
   }
 
+  /* Three tracks, not two: the summary has three children — the copy, the on/off
+     pill, and the ::after +/- marker. Dropping to two tracks wraps the marker to
+     a second row where its text-align:center strands it as a dash under the head. */
   .route-app .preferences-page .rail-details > summary {
     gap: 8px;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     min-height: 54px;
     padding: 10px;
   }
@@ -29371,9 +29549,11 @@ button.danger:hover:not(:disabled) {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  /* .safety-rails-section-head is deliberately absent: it holds only the two
+     compact pills on mobile (the wrapper summary carries the title), so it keeps
+     its base flex row instead of stacking them. */
   .route-app .preferences-page .notification-prefs-permission,
   .route-app .preferences-page .notification-prefs-list li,
-  .route-app .preferences-page .safety-rails-section-head,
   .route-app .preferences-page .agent-policy-row-head,
   .route-app .preferences-page .connected-dapp-row-head,
   .route-app .preferences-page .recipient-row,
@@ -29401,6 +29581,32 @@ button.danger:hover:not(:disabled) {
   .route-app .preferences-page .workspace-backup-import .utility-button {
     min-height: 44px;
     width: 100%;
+  }
+
+  /* The rail pills are a compact segmented control (sized where .safety-rails-toggle
+     is defined). The blanket touch-target rule above would stretch them into two
+     full-width stacked bars, so restore pill sizing at higher specificity while
+     keeping them comfortably tappable. */
+  .route-app .preferences-page .safety-rails-section-head .safety-rails-toggle,
+  .route-app .preferences-page .safety-rails-section-head .safety-rails-mode {
+    min-height: 34px;
+    padding: 6px 12px;
+    width: auto;
+  }
+
+  /* Same reason: this one has to stay chip-shaped inside the chip row. */
+  .route-app .preferences-page .connected-dapp-action-chip-more {
+    min-height: 26px;
+    padding: 4px 9px;
+    width: auto;
+  }
+
+  /* Paste sits in a flex row beside its input and declares flex: 0 0 auto, so the
+     blanket width:100% above makes it demand the whole row while refusing to
+     shrink — which is what actually collapsed the ADDRESS input to ~26px. */
+  .route-app .preferences-page .ai-key-input-wrap .ai-key-paste-btn {
+    min-height: 44px;
+    width: auto;
   }
 
   .route-app .preferences-page .workspace-backup-import {
@@ -29452,8 +29658,6 @@ button.danger:hover:not(:disabled) {
   display: none;
 }
 
-.route-app.android-shell .preferences-mobile-picker,
-.route-app.ios-native-shell .preferences-mobile-picker,
 .route-app.android-shell .preferences-mobile-tabs,
 .route-app.ios-native-shell .preferences-mobile-tabs,
 .route-app.android-shell .preferences-mobile-section-tabs,
@@ -29475,14 +29679,10 @@ button.danger:hover:not(:disabled) {
     z-index: 236;
   }
 
-  .route-app .preferences-mobile-tabs-strip {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-  }
-
   .route-app .preferences-mobile-tabs .android-tab {
     gap: 3px;
     min-height: 46px;
-    padding: 6px 3px;
+    padding: 6px 1px;
   }
 
   .route-app .preferences-mobile-tabs .android-tab-icon {
@@ -29495,22 +29695,17 @@ button.danger:hover:not(:disabled) {
     width: 14px;
   }
 
+  /* Sized so the longest label ("Connectors") fits a 5-up strip on a 390px
+     screen without the ellipsis kicking in. Longer translations still degrade
+     to an ellipsis rather than shearing, via the base rule. */
   .route-app .preferences-mobile-tabs .android-tab-label {
-    font-size: 0.58rem;
-    letter-spacing: 0;
+    font-size: 0.55rem;
+    letter-spacing: -0.02em;
     line-height: 1.05;
   }
 
   .route-app .preferences-mobile-section-tabs {
     border-radius: 9px;
-  }
-
-  .route-app .preferences-mobile-section-tabs-strip.columns-2 {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .route-app .preferences-mobile-section-tabs-strip.columns-3 {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .route-app .preferences-mobile-section-tabs .android-tab {
@@ -29790,73 +29985,13 @@ button.danger:hover:not(:disabled) {
     padding: 9px 10px 10px 22px;
   }
 
-  .route-app .failure-policy-group-list {
-    display: grid;
-    gap: 8px;
-  }
-
-  .route-app .failure-policy-group {
-    background: rgba(255, 255, 255, 0.02);
-    border: 1px solid rgba(224, 230, 226, 0.085);
-    border-radius: 8px;
-    overflow: hidden;
-  }
-
+  /* Only the spacing is mobile-specific; the group chrome itself is shared and
+     lives outside this query so desktop renders the same groups. */
   .route-app .failure-policy-group > summary {
-    align-items: center;
-    cursor: pointer;
-    display: grid;
-    gap: 8px;
-    grid-template-columns: minmax(0, 1fr) auto;
-    list-style: none;
-    min-height: 44px;
     padding: 9px;
   }
 
-  .route-app .failure-policy-group > summary::-webkit-details-marker {
-    display: none;
-  }
-
-  .route-app .failure-policy-group > summary span {
-    display: grid;
-    gap: 2px;
-    min-width: 0;
-  }
-
-  .route-app .failure-policy-group > summary strong {
-    color: var(--text);
-    font-size: 0.86rem;
-    line-height: 1.1;
-  }
-
-  .route-app .failure-policy-group > summary em {
-    color: rgba(196, 205, 202, 0.66);
-    font-size: 0.7rem;
-    font-style: normal;
-    font-weight: 760;
-    line-height: 1.18;
-  }
-
-  .route-app .failure-policy-group > summary b {
-    background: rgba(255, 255, 255, 0.045);
-    border: 1px solid rgba(224, 230, 226, 0.1);
-    border-radius: 999px;
-    color: rgba(224, 230, 226, 0.76);
-    font-size: 0.62rem;
-    line-height: 1;
-    padding: 5px 7px;
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
-
-  .route-app .failure-policy-group[open] > summary b {
-    background: rgba(125, 231, 176, 0.1);
-    border-color: rgba(125, 231, 176, 0.22);
-    color: #d8f9e6;
-  }
-
   .route-app .failure-policy-group .failure-policy-list {
-    border-top: 1px solid rgba(224, 230, 226, 0.07);
     gap: 7px;
     padding: 8px;
   }
@@ -29881,12 +30016,14 @@ button.danger:hover:not(:disabled) {
     overflow: hidden;
   }
 
+  /* Nested inside .rail-details, so the descendant `.rail-details summary::after`
+     +/- marker lands here too — that's a third child needing a third track. */
   .route-app .mobile-safety-rail-section > summary {
     align-items: center;
     cursor: pointer;
     display: grid;
     gap: 8px;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     list-style: none;
     min-height: 42px;
     padding: 9px 10px;
@@ -29914,6 +30051,17 @@ button.danger:hover:not(:disabled) {
     border: 0;
     border-radius: 0;
     border-top: 1px solid rgba(224, 230, 226, 0.07);
+  }
+
+  /* The wrapper's summary already names the rail, and the section it wraps prints
+     the same name again in its head. Drop the inner one and let the head keep just
+     its two pills, pushed right under the summary's title. */
+  .route-app .mobile-safety-rail-section .safety-rails-section-head strong {
+    display: none;
+  }
+
+  .route-app .mobile-safety-rail-section .safety-rails-section-head {
+    justify-content: flex-end;
   }
 
   .route-app .connector-keys-mount {
@@ -29980,7 +30128,10 @@ button.danger:hover:not(:disabled) {
     padding: 9px;
   }
 
-  .route-app .preferences-page .recipient-save-form,
+  /* The recipient rule form is deliberately absent here: its ADDRESS field wraps
+     a flex input + Paste button that collapses the input to ~10px in a half-width
+     column. It stays single-column via .recipient-rule-form above. The token and
+     policy forms have plain inputs and pair up fine. */
   .route-app .preferences-page .custom-token-save-form,
   .route-app .preferences-page .agent-policy-save-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -30422,7 +30573,12 @@ button.danger:hover:not(:disabled) {
   border-radius: 8px;
   display: grid;
   gap: 12px;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  /* The copy column needs a floor. With minmax(0, 1fr) it collapses to nothing
+     because the two auto tracks size to max-content first, and the count pills
+     are a wrapping flex row that reports its full unwrapped width as max-content
+     — so they never wrap and the title ends up one word per line. The floor
+     forces the pills to wrap instead. Below 760px the grid unwraps entirely. */
+  grid-template-columns: minmax(220px, 1fr) auto auto;
   margin: 10px 0 12px;
   padding: 12px;
 }
@@ -31934,6 +32090,60 @@ button.danger:hover:not(:disabled) {
   .route-docs .protocol-connector-meta {
     align-items: flex-start;
   }
+
+  /* On a phone the six groups hold ~21 connectors — an 8-screen wall. Turn each
+     group into a real disclosure: collapsed by default, count + chevron in the
+     head, tappable. Desktop keeps them open and static (rules above). */
+  .route-docs .protocol-connector-group > summary.protocol-connector-group-head {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.022);
+    border: 1px solid rgba(224, 230, 226, 0.09);
+    border-radius: 12px;
+    cursor: pointer;
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 12px 14px;
+  }
+
+  .route-docs .protocol-connector-group[open] > summary.protocol-connector-group-head {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+
+  .route-docs .protocol-connector-group-count {
+    align-items: center;
+    border: 1px solid rgba(139, 205, 170, 0.24);
+    border-radius: 999px;
+    color: var(--accent-2);
+    display: inline-flex;
+    font-size: 0.68rem;
+    font-weight: 900;
+    gap: 6px;
+    letter-spacing: 0.02em;
+    padding: 5px 9px;
+    white-space: nowrap;
+  }
+
+  .route-docs .protocol-connector-group-count::after {
+    color: rgba(196, 205, 202, 0.7);
+    content: "▾";
+    font-size: 0.82rem;
+    line-height: 1;
+  }
+
+  .route-docs .protocol-connector-group[open] > summary .protocol-connector-group-count::after {
+    content: "▴";
+  }
+
+  .route-docs .protocol-connector-group[open] {
+    background: rgba(255, 255, 255, 0.012);
+    border: 1px solid rgba(224, 230, 226, 0.07);
+    border-radius: 12px;
+    gap: 0;
+  }
+
+  .route-docs .protocol-connector-group[open] > .protocol-connector-card-grid {
+    padding: 12px;
+  }
 }
 
 @media (max-width: 430px) {
@@ -32932,7 +33142,12 @@ button.danger:hover:not(:disabled) {
     min-height: 112px;
   }
 
-  .receipt-field textarea {
+  /* .route-app-scoped on purpose. The ungated `.route-app .receipt-field textarea`
+     rule (min-height: 66px) is (0,2,1); a bare `.receipt-field textarea` is
+     (0,1,1) and loses, and media queries add no specificity — so the mobile
+     height never applied inside the app and the text you are about to sign was
+     cut at ~2 lines. Matching specificity lets source order settle it here. */
+  .route-app .receipt-field textarea {
     cursor: text;
     font-size: 16px;
     min-height: 112px;
@@ -33984,12 +34199,12 @@ button.danger:hover:not(:disabled) {
 }
 
 .android-tab-strip .android-tab.active {
-  background: rgba(125, 231, 176, 0.08);
+  background: var(--nav-selected-tint);
   color: var(--text);
 }
 
 .android-tab-strip .android-tab.active::after {
-  background: rgba(125, 231, 176, 0.78);
+  background: var(--nav-selected-bar);
   border-radius: 2px 2px 0 0;
   bottom: 0;
   content: "";
@@ -34015,6 +34230,13 @@ button.danger:hover:not(:disabled) {
 .android-tab-strip .android-tab-label {
   font-size: 0.62rem;
   line-height: 1.1;
+  /* nowrap without an overflow guard lets a long label (CONNECTORS, or its
+     longer translations) bleed past the tab on both sides and get sheared by
+     the card's overflow:hidden. Degrade to an ellipsis instead of a clipped
+     first letter. */
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -34848,11 +35070,12 @@ button.danger:hover:not(:disabled) {
     max-width: 100%;
   }
 
+  /* .receipt-proof-value is deliberately absent: the others are amounts, where a
+     big number is the point. The proof's is a severity word that reads by colour. */
   .route-app .review-plan-value strong,
   .route-app .inbox-approval-value strong,
   .route-app .recurring-card-value strong,
-  .route-app .completed-history-value strong,
-  .route-app .receipt-proof-value strong {
+  .route-app .completed-history-value strong {
     font-size: clamp(1.28rem, 7vw, 1.78rem);
     max-width: 100%;
     overflow-wrap: anywhere;
@@ -35046,8 +35269,7 @@ button.danger:hover:not(:disabled) {
   .route-app .review-plan-value strong,
   .route-app .inbox-approval-value strong,
   .route-app .recurring-card-value strong,
-  .route-app .completed-history-value strong,
-  .route-app .receipt-proof-value strong {
+  .route-app .completed-history-value strong {
     font-size: clamp(1.18rem, 8vw, 1.58rem);
   }
 
@@ -35619,6 +35841,28 @@ button.danger:hover:not(:disabled) {
     color: rgba(196, 205, 202, 0.44);
     content: "·";
     margin-right: 6px;
+  }
+
+  /* Same severity palette as the desktop card, so a proof reads the same on
+     both platforms. The dot separator stays neutral. */
+  .route-app .mobile-receipt-proof-verdict {
+    font-weight: 900;
+  }
+
+  .route-app .mobile-receipt-proof-verdict.tone-good {
+    color: var(--accent-2);
+  }
+
+  .route-app .mobile-receipt-proof-verdict.tone-warn {
+    color: var(--warn);
+  }
+
+  .route-app .mobile-receipt-proof-verdict.tone-danger {
+    color: var(--danger);
+  }
+
+  .route-app .mobile-receipt-proof-verdict.tone-neutral {
+    color: rgba(213, 223, 219, 0.82);
   }
 
   .route-app .mobile-receipt-proof-hash {
@@ -40552,7 +40796,10 @@ button.danger:hover:not(:disabled) {
 .positions-card-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
 .positions-tx { color: var(--muted); font-size: 0.78rem; margin-right: auto; text-decoration: underline; }
 .positions-connector { color: var(--muted); font-size: 0.72rem; font-weight: 600; }
-.positions-status { border-radius: 999px; flex: 0 0 auto; font-size: 0.7rem; font-weight: 600; margin-left: auto; padding: 3px 9px; text-transform: capitalize; white-space: nowrap; }
+.positions-status { align-items: center; border-radius: 999px; display: inline-flex; flex: 0 0 auto; font-size: 0.7rem; font-weight: 600; gap: 3px; margin-left: auto; padding: 3px 9px; text-transform: capitalize; white-space: nowrap; }
+/* The terminal "Complete" pill carries the same inline check the toasts use. currentColor keeps it on
+   the pill's tone; -2px pulls the glyph's own padding back so it optically centres with the text. */
+.positions-status svg { fill: currentColor; height: 14px; margin-left: -2px; width: 14px; }
 .positions-status.tone-good { background: rgba(61, 220, 151, 0.14); color: var(--accent, #3ddc97); }
 .positions-status.tone-warn { background: rgba(245, 196, 81, 0.16); color: #f5c451; }
 .positions-status.tone-bad { background: rgba(240, 114, 107, 0.16); color: #f0726b; }

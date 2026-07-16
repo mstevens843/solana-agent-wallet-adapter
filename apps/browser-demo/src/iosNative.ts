@@ -224,11 +224,23 @@ interface AgenticSystemPlugin {
   requestNotificationAuthorization(): Promise<{
     status: 'authorized' | 'provisional' | 'ephemeral' | 'denied' | 'unknown';
   }>;
+  /** Prompt (if needed) + register for APNs; resolves the hex device token to POST to the cloud. */
+  registerForPush(): Promise<{
+    ok: boolean;
+    status?: string;
+    platform?: 'ios';
+    token?: string;
+    message?: string;
+  }>;
   appLifecycleState(): Promise<{ state: 'active' | 'inactive' | 'background' | 'unknown' }>;
   keyboardMetrics(): Promise<{ keyboardInset?: number; visible?: boolean }>;
   addListener(
     eventName: 'keyboardInsetChange',
     listener: (event: { keyboardInset?: number; visible?: boolean }) => void,
+  ): Promise<{ remove: () => Promise<void> }>;
+  addListener(
+    eventName: 'pushNotificationTap',
+    listener: (event: Record<string, string>) => void,
   ): Promise<{ remove: () => Promise<void> }>;
   devLog(options: {
     component?: string;
@@ -2051,6 +2063,62 @@ export async function iosNativeEnsureReturnNotificationPermission(): Promise<Ios
 /** Whether a resolved status lets us post return notifications. */
 export function iosNativeNotificationStatusCanNotify(status: IosNativeNotificationAuthStatus): boolean {
   return status === 'authorized' || status === 'provisional' || status === 'ephemeral';
+}
+
+export interface IosNativePushRegistration {
+  ok: boolean;
+  status?: string;
+  token?: string;
+  message?: string;
+}
+
+/** Post an immediate LOCAL notification through the native bridge. Native-only; no-throw. */
+export async function iosNativeShowNotification(options: { title: string; body?: string; tag?: string }): Promise<boolean> {
+  if (!safeIsNativePlatform()) return false;
+  try {
+    const result = await AgenticSystem.showNotification(options);
+    return Boolean(result?.ok);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Prompt for authorization + register for APNs push, resolving the hex device token to POST to
+ * /api/push/register-device. Native-only; returns { ok:false } off-native or on any failure so the
+ * caller can fall back to local-only alerts without a throw.
+ */
+export async function iosNativeRegisterForPush(): Promise<IosNativePushRegistration> {
+  if (!safeIsNativePlatform()) return { ok: false, status: 'unsupported' };
+  try {
+    const result = await AgenticSystem.registerForPush();
+    return {
+      ok: Boolean(result?.ok && result.token),
+      ...(result?.status ? { status: result.status } : {}),
+      ...(result?.token ? { token: result.token } : {}),
+      ...(result?.message ? { message: result.message } : {}),
+    };
+  } catch (err) {
+    return { ok: false, status: 'error', message: err instanceof Error ? err.message : 'registerForPush failed' };
+  }
+}
+
+/**
+ * Subscribe to notification taps (the payload carries the routing hint the server set, e.g.
+ * { tab:'positions', section:'orders' }). Returns a disposer; no-op off-native.
+ */
+export async function iosNativeOnPushTap(
+  listener: (route: Record<string, string>) => void,
+): Promise<() => void> {
+  if (!safeIsNativePlatform()) return () => {};
+  try {
+    const handle = await AgenticSystem.addListener('pushNotificationTap', listener);
+    return () => {
+      void handle.remove();
+    };
+  } catch {
+    return () => {};
+  }
 }
 
 /**

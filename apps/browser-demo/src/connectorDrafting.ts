@@ -556,12 +556,18 @@ function connectorOperationDisplayLabel(
   actionKind: string | undefined,
 ): string {
   const connectorLabel = compactConnectorName(connector?.name ?? form.connectorId);
-  // When a specific sub-action branch is chosen, its label is the authoritative
-  // action - don't also prepend the parent form's both-directions operationLabel
-  // (e.g. Lulo's "Deposit or withdraw"), which leaks "Or Withdraw" into the title.
-  const baseParts = branch
-    ? [branch.label]
-    : [form.operationLabel];
+  // A parent form whose label spans both directions (Lulo's "Deposit or
+  // withdraw") is fully described by whichever branch was chosen, and prepending
+  // it leaks "Or Withdraw" into the title. But most parents name a distinct
+  // facet the branch does not repeat - Raydium's "Liquidity" before "CLMM Open
+  // Position", Tensor's "Bid" before "Collection" - and dropping those loses
+  // real information. Only collapse to the branch for the both-directions case.
+  const parentSpansBranches = /\bor\b/i.test(form.operationLabel ?? '');
+  const baseParts = !branch
+    ? [form.operationLabel]
+    : parentSpansBranches
+      ? [branch.label]
+      : [form.operationLabel, branch.label];
   const normalizedBase = baseParts
     .map(connectorTitleSegment)
     .filter(Boolean)

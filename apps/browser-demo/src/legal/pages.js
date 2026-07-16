@@ -151,26 +151,27 @@ export function deleteAccountPage() {
       <div class="section-heading">
         <p class="eyebrow mini">Legal</p>
         <h2 id="delete-account-title">Delete your Agentic account and data</h2>
-        <p class="legal-meta">Last updated: 2026-05-20</p>
+        <p class="legal-meta">Last updated: 2026-07-16</p>
       </div>
       <article class="legal-prose">
         <p>This page explains how to delete your Agentic account and the data SolPulse holds about you. Agentic is operated by SolPulse LLC. If you have any difficulty completing the steps below, email <a href="mailto:support@solpulse.trade">support@solpulse.trade</a> and we will process your request manually.</p>
 
         <h3>What counts as your "account"</h3>
         <p>Agentic does not use usernames, passwords, OAuth providers, email accounts, or phone numbers. Your Solana wallet public key is the account identifier. Cloud sync is optional: signed-out users have no server-side state to delete.</p>
-        <p>If you have never connected a wallet to Agentic Cloud (the "Connect Cloud Storage" tab in Preferences), there is nothing for you to delete here. On-device data such as drafts, approvals, and receipts saved on the "Saved on device" path can be cleared by clearing your browser site data or uninstalling the app.</p>
+        <p>If you have never connected a wallet to Agentic Cloud (the "Connect Cloud Storage" tab on the Home screen), there is nothing for you to delete here. On-device data such as drafts, approvals, and receipts saved on the "Saved on device" path can be cleared by clearing your browser site data or uninstalling the app.</p>
 
         <h3>How to delete your cloud data</h3>
+        <p>The deletion control lives in two places inside the app - use whichever is quicker to reach:</p>
         <ol>
           <li>Open <a href="/app">agentic-signer.com/app</a>.</li>
           <li>Connect the wallet whose data you want to delete.</li>
-          <li>Open <strong>Preferences → Connect Cloud Storage</strong>.</li>
-          <li>Scroll to <strong>Danger Zone</strong> at the bottom of the panel.</li>
+          <li>Go to <strong>Home → Connect Cloud Storage</strong>, or <strong>Preferences → Workspace (Backup &amp; alerts)</strong>.</li>
+          <li>Scroll to the <strong>Danger zone</strong> at the bottom of the panel.</li>
           <li>Tap <strong>Delete all app data</strong>.</li>
           <li>Sign the deletion-confirmation message in your wallet when prompted.</li>
           <li>All cloud data scoped to that wallet is removed immediately. After the cloud delete succeeds, the current app clears its local browser or webview storage and reloads into a fresh state.</li>
         </ol>
-        <p>On the desktop, Android, and iOS apps, the same flow is available inside the bundled app under <strong>Preferences → Connect Cloud Storage → Danger Zone</strong>.</p>
+        <p>On the desktop, Android, and iOS apps, the same flow is available inside the bundled app under <strong>Home → Connect Cloud Storage → Danger zone</strong> or <strong>Preferences → Workspace → Danger zone</strong>.</p>
 
         <h3>What gets deleted</h3>
         <ul>

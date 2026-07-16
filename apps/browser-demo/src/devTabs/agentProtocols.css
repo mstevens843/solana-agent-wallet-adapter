@@ -85,3 +85,20 @@
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
+
+/* Native shells can report width >= 900px, where the media query above never
+   fires. Force the full-width 3-up subtab strip so the primary nav matches the
+   phone layout regardless of reported width. */
+.route-app.android-shell .agent-protocols-tab-control,
+.route-app.ios-native-shell .agent-protocols-tab-control {
+  display: grid;
+  grid-template-columns: 1fr;
+  justify-self: stretch;
+  max-width: 100%;
+}
+
+.route-app.android-shell .agent-protocols-tab-list,
+.route-app.ios-native-shell .agent-protocols-tab-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}

@@ -572,8 +572,11 @@ import {
   iosNativeAppUrl,
   iosNativeCloudSessionToken,
   iosNativeEnsureReturnNotificationPermission,
+  iosNativeOnPushTap,
   iosNativeOpenExternalUrl,
   iosNativeReForegroundJupiter,
+  iosNativeRegisterForPush,
+  iosNativeShowNotification,
   isIosQrScannerAvailable,
   listIosNativeWalletOptions,
   restoreLatestIosNativeWallet,
@@ -583,6 +586,24 @@ import {
   type IosNativeWalletId,
   type IosNativeWalletOption,
 } from './iosNative.js';
+import {
+  androidNotificationsBridgeAvailable,
+  consumeAndroidPendingPushToken,
+  consumeAndroidPushRoute,
+  onAndroidPushTap,
+  requestNotificationPermission as androidRequestNotificationPermission,
+  showNotification as androidShowNotification,
+} from './androidConfigClient.js';
+import {
+  hasAnyPushCategory,
+  notificationCardBlurbKey,
+  notificationSurface,
+  pushAvailability,
+  pushCategoryMapForRegistration,
+  surfaceIsNativeApp,
+  type NotificationCategoryMap,
+  type NotificationSurface,
+} from './pushNotifications.js';
 import {
   buildIosPairBridge,
   iosForwardPlanRequest,
@@ -713,10 +734,22 @@ import {
 } from './connectorDrafting.js';
 import {
   POSITION_BROWSE_TYPES,
+  POSITION_COMPLETE_LINGER_MS,
+  POSITION_MANAGE_NOTE_MS,
+  POSITION_SETTLE_MIN_AGE_MS,
+  POSITION_SETTLE_MS,
+  POSITION_SETTLE_POLL_MS,
+  type PositionManageIntent,
+  type PositionManagePhase,
   chatManageNeedsPrompt,
+  liveRowForPosition,
   manageProposalParams,
   manageValueField,
   matchPositionBrowseType,
+  positionManageDetailValue,
+  positionManageIsTerminal,
+  positionManagePhaseAt,
+  positionManageVerbKey,
 } from './chatPositions.js';
 import {
   connectorOptionCacheKey,
@@ -1134,7 +1167,9 @@ type CommandCenterIconId =
   | 'aiConnected'
   | 'cloud'
   | 'connectors'
-  | 'guardrails';
+  | 'guardrails'
+  | 'tokens'
+  | 'backup';
 type CommandPreferenceSnapshotAction =
   | { type: 'command'; view: CommandCenterView }
   | { type: 'preferences'; view: PreferencesView };
@@ -1148,7 +1183,10 @@ type RuntimePathId = 'exec' | 'install' | 'desktop';
 type AppRoute = (typeof ROUTE_PATHS)[number];
 type InboxFilter = 'all' | 'ready' | 'scheduled' | 'attention' | 'one-time' | 'recurring';
 type CompletedPlanFilter = 'all' | 'one-time' | 'recurring' | 'proofs' | 'receipts';
-type ArtifactFilter = 'all' | 'verified' | 'warnings' | 'blocked';
+// The segmented control is one axis: what the review concluded. Signature
+// validity is a different question ("did the bytes verify?"), so it is not a
+// peer of these — it surfaces as its own chip, and only when it actually fails.
+type ArtifactFilter = 'all' | 'recorded' | 'warnings' | 'blocked' | 'unverified';
 type AppListPageKey = 'review' | 'inbox' | 'recurring' | 'receiptArchive';
 type TemplateOutcome = 'queueable' | 'proof' | 'audit';
 type TemplateOutcomeFilter = TemplateOutcome | 'all';
@@ -1642,6 +1680,11 @@ const FAILURE_POLICIES_STORAGE_KEY = 'solana-agent-wallet-failure-policies-v1';
 const PROGRAM_RULES_STORAGE_KEY = 'solana-agent-wallet-program-rules-v1';
 const POSITIONS_STORAGE_KEY = 'solana-agent-wallet-positions-v1';
 const POSITIONS_CLOSED_STORAGE_KEY = 'solana-agent-wallet-positions-closed-v1';
+const NOTIFIED_RECORDS_STORAGE_KEY = 'solana-agent-wallet-notified-records-v1';
+// Cap the persisted dedupe map. It was in-memory only, so every reload re-armed every notification —
+// a confirmed tx from an hour ago would buzz again on the next open. Persisting it fixes that; the cap
+// keeps it from growing without bound (oldest-first eviction, keyed by the ISO timestamp value).
+const NOTIFIED_RECORDS_MAX = 500;
 const TOKEN_RULES_STORAGE_KEY = 'solana-agent-wallet-token-rules-v1';
 const SPEND_CAPS_STORAGE_KEY = 'solana-agent-wallet-spend-caps-v1';
 const SLIPPAGE_CAP_STORAGE_KEY = 'solana-agent-wallet-slippage-cap-v1';
@@ -2420,10 +2463,14 @@ interface PositionRecord {
   txid?: string;
   status: PositionStatus;
   closedAt?: string;
-  // Set when a manage/close action (withdraw/repay/cancel/…) for this position has been signed
-  // but the authoritative live read hasn't reconciled yet. Keeps the card visible ("Updating…")
-  // through the confirm gap; a successful empty live read past the settle window then auto-closes
-  // it (full withdraw / cancel / period-ended → Done). A partial withdraw keeps it open via live.
+  // The manage/close action (withdraw/repay/unstake/remove/cancel) that has CONFIRMED against this
+  // position, and how far it has settled. Carries its own deadline, so the card's pill resolves from
+  // this record alone at render time — a live read only makes the answer arrive sooner and sharper.
+  manage?: PositionManageIntent;
+  // DEPRECATED (kept one release for records written before `manage` existed): the bare "a manage
+  // action was signed" flag. It could only be cleared by a successful live read, so a failing or
+  // permanently-partial section left it set forever → a card stuck on "Updating…". `loadPositions`
+  // migrates it; nothing writes it any more.
   manageRequestedAt?: string;
 }
 
@@ -3432,6 +3479,10 @@ interface NotificationSettingsState {
   pending: boolean;
   confirmed: boolean;
   failed: boolean;
+  // New push-capable categories (server-sourced; reach a closed app). Absent on old persisted state.
+  limitFilled: boolean;
+  dcaFilled: boolean;
+  borrowAtRisk: boolean;
 }
 
 type SafetyRailsMode = 'warn' | 'block';
@@ -4193,10 +4244,26 @@ const FAILURE_RECOMMENDED_AUTO: ReadonlySet<TransactionFailureKind> = new Set([
 const DEFAULT_FAILURE_POLICY: FailureRetryPolicy = { kind: 'rpc_timeout', mode: 'ask', maxAttempts: 2 };
 
 function defaultNotificationSettings(): NotificationSettingsState {
-  const permission = typeof Notification !== 'undefined' && Notification.permission
-    ? Notification.permission
-    : ('unsupported' as const);
-  return { permission, browser: false, due: false, pending: false, confirmed: false, failed: false };
+  // Capability, native-aware: on the app shells the WebView doesn't expose `Notification`, but the
+  // native bridge does. 'unsupported' must mean "genuinely no way to notify", not just "no browser
+  // API" — otherwise the card shows its dead-end string on a phone that can notify fine.
+  const permission: NotificationPermission | 'unsupported' =
+    IS_IOS_APP || IS_ANDROID_APP
+      ? 'default'
+      : typeof Notification !== 'undefined' && Notification.permission
+        ? Notification.permission
+        : ('unsupported' as const);
+  return {
+    permission,
+    browser: false,
+    due: false,
+    pending: false,
+    confirmed: false,
+    failed: false,
+    limitFilled: false,
+    dcaFilled: false,
+    borrowAtRisk: false,
+  };
 }
 
 function notificationSettingsFromPersisted(
@@ -4210,6 +4277,9 @@ function notificationSettingsFromPersisted(
     pending: persistedSettings?.pending === true,
     confirmed: persistedSettings?.confirmed === true,
     failed: persistedSettings?.failed === true,
+    limitFilled: persistedSettings?.limitFilled === true,
+    dcaFilled: persistedSettings?.dcaFilled === true,
+    borrowAtRisk: persistedSettings?.borrowAtRisk === true,
   };
 }
 
@@ -4871,7 +4941,7 @@ const state: DemoState = {
   attachTxModal: null,
   debugLog: [],
   notificationSettings: notificationSettingsFromPersisted(persisted.notificationSettings),
-  notifiedRecords: {},
+  notifiedRecords: loadNotifiedRecords(),
   balances: null,
   walletBalance: emptyWalletBalanceViewState(),
   preparedActions: initialBrowserWorkflow.preparedActions,
@@ -4994,7 +5064,6 @@ let slippageReopenOnRender: string | null = null;
 let artifactPickerController: AbortController | null = null;
 let selectPickerController: AbortController | null = null;
 let selectPickerOpenOrder = 0;
-let preferencesMobilePickerController: AbortController | null = null;
 let demoLanguagePickerController: AbortController | null = null;
 let mobileRailSheetController: AbortController | null = null;
 let nativeKeyboardInsetsBound = false;
@@ -5334,6 +5403,10 @@ async function startApp(): Promise<void> {
       startSystemHealthPolling();
     }
     startNotificationTicker();
+    initPushTapRouting();
+    // A device already opted into push (has a saved token) should re-attest on launch, since the
+    // 7-day session expires but push must outlive it. No-op when nothing is registered.
+    if (rememberedPushDevice()) void syncPushDeviceRegistration();
     startAgentBackgroundWatch();
     startRelayPresenceWatch();
     window.addEventListener('popstate', () => render());
@@ -5952,6 +6025,7 @@ function hydrateLocalWorkspaceForWallet(): void {
   state.positionsClosed = loadPositionsClosed(state.address);
   state.positionsLive = {}; // old wallet's live data must not bleed across a switch
   state.positionsPrefetched = false;
+  ensurePositionSettleInterval(); // a manage action still settling when the app reloaded resumes here
   refreshBrowserWorkflowData();
   if (recovered.changed) saveGeneratedPlans();
   selectFallbackGeneratedPlan();
@@ -11145,8 +11219,23 @@ function isAppRoute(pathname: string): pathname is AppRoute {
   return ROUTE_PATH_SET.has(pathname);
 }
 
+// "/docs/connectors" -> ["route-docs", "route-docs-connectors"].
+//
+// A nested route emits its parent's class as well as its own. Without this,
+// "/docs/connectors" produced only `route-docs-connectors`, which `.route-docs`
+// does not match (it is a class selector, not a prefix) — so every rule written
+// for "the docs pages" silently applied to the /docs index alone.
+function routeShellClasses(activeRoute: AppRoute | null): string {
+  if (!activeRoute) return 'route-unknown';
+  if (activeRoute === '/') return 'route-home';
+  const segments = activeRoute.slice(1).split('/').filter(Boolean);
+  return segments
+    .map((_, index) => `route-${segments.slice(0, index + 1).join('-').replace(/[^a-z0-9-]/g, '-')}`)
+    .join(' ');
+}
+
 function pageShell(content: string, activeRoute: AppRoute | null): string {
-  const routeClass = activeRoute ? `route-${activeRoute === '/' ? 'home' : activeRoute.slice(1).replace(/[^a-z0-9-]/g, '-')}` : 'route-unknown';
+  const routeClass = routeShellClasses(activeRoute);
   const iosShellClass = state.iosNativeEnvironment.isIosNative || IS_IOS_APP
     ? `ios-native-shell${state.iosLayoutContract === 'css-safe-area-v1' ? ' ios-css-safe-area' : ''}`
     : '';
@@ -11294,22 +11383,29 @@ function homePage(): string {
   `;
 }
 
-const DOCS_NAV: ReadonlyArray<{ id: string; label: string; route: string }> = [
+// `short` is the label used in the mobile 2-row tab grid, where a full-width
+// sidebar label would not fit a one-third-width cell. Omit it when the full
+// label already fits.
+const DOCS_NAV: ReadonlyArray<{ id: string; label: string; short?: string; route: string }> = [
   { id: 'overview', label: 'Overview', route: '/docs' },
   { id: 'how-it-works', label: 'How it works', route: '/docs/how-it-works' },
   { id: 'ai-connectors', label: 'AI Connectors', route: '/docs/ai-connectors' },
   { id: 'cloud-storage', label: 'Cloud Storage', route: '/docs/cloud-storage' },
   { id: 'connectors', label: 'Connectors', route: '/docs/connectors' },
-  { id: 'agent-payments', label: 'Agent Payments & Skills', route: '/docs/agent-payments' },
+  { id: 'agent-payments', label: 'Agent Payments & Skills', short: 'Payments & Skills', route: '/docs/agent-payments' },
 ];
 
 // Shared docs shell: a left sidebar of anchor links (SPA-intercepted by bindRouteLinks)
 // beside the page content. Every /docs sub-page renders through this, so styling and
 // navigation stay identical across pages.
 function docsLayout(activePage: string, contentHtml: string): string {
-  const nav = DOCS_NAV.map((item) =>
-    `<a href="${item.route}" data-site-link="${item.route}" class="docs-sidebar-link${item.id === activePage ? ' active' : ''}"${item.id === activePage ? ' aria-current="page"' : ''}>${escapeHtml(item.label)}</a>`,
-  ).join('');
+  const nav = DOCS_NAV.map((item) => {
+    const full = escapeHtml(item.label);
+    // Two labels; CSS shows the full one on desktop and the short one in the
+    // mobile tab grid. When there is no short, the full label serves both.
+    const short = item.short ? escapeHtml(item.short) : full;
+    return `<a href="${item.route}" data-site-link="${item.route}" class="docs-sidebar-link${item.id === activePage ? ' active' : ''}"${item.id === activePage ? ' aria-current="page"' : ''}><span class="docs-sidebar-link-full">${full}</span><span class="docs-sidebar-link-short">${short}</span></a>`;
+  }).join('');
   return `
     <div class="docs-layout">
       <nav class="docs-sidebar" aria-label="${escapeHtml(t('Documentation'))}">
@@ -13846,16 +13942,27 @@ function protocolConnectorFlowCard(title: string, detail: string): string {
 }
 
 function protocolConnectorDocsGroup(group: ProtocolConnectorDocsGroup): string {
+  // A <details> so the ~21 connectors across six groups don't force an
+  // 8-screen scroll on a phone. It ships open on desktop (where all cards fit)
+  // and collapsed on mobile as a real disclosure. The open/closed choice is made
+  // here at render, not in CSS — a <details> without the `open` attribute cannot
+  // be reliably forced open by CSS, and this SPA renders per-client so the
+  // viewport check is accurate. Desktop keeps the marker hidden and non-clickable
+  // via the CSS above.
+  const openOnDesktop = isMobileAppViewport() ? '' : ' open';
   return `
-    <section class="protocol-connector-group" aria-label="${escapeHtml(tf('{title} connectors', { title: group.title }))}">
-      <div class="protocol-connector-group-head">
-        <h3>${escapeHtml(group.title)}</h3>
-        <p>${escapeHtml(group.detail)}</p>
-      </div>
+    <details class="protocol-connector-group"${openOnDesktop} aria-label="${escapeHtml(tf('{title} connectors', { title: group.title }))}">
+      <summary class="protocol-connector-group-head">
+        <div class="protocol-connector-group-head-copy">
+          <h3>${escapeHtml(group.title)}</h3>
+          <p>${escapeHtml(group.detail)}</p>
+        </div>
+        <span class="protocol-connector-group-count">${escapeHtml(tf('{count} connectors', { count: group.connectorIds.length }))}</span>
+      </summary>
       <div class="protocol-connector-card-grid">
         ${group.connectorIds.map(protocolConnectorDocsCard).join('')}
       </div>
-    </section>
+    </details>
   `;
 }
 
@@ -16909,12 +17016,6 @@ function preferencesViewOption(view: PreferencesView): (typeof PREFERENCES_VIEW_
   return PREFERENCES_VIEW_OPTIONS.find((option) => option.view === view) ?? PREFERENCES_VIEW_OPTIONS[0]!;
 }
 
-function preferencesMobileLabel(option: (typeof PREFERENCES_VIEW_OPTIONS)[number]): string {
-  return option.view === 'access' && isMobileAiPathPolicySurface()
-    ? t('Protocol Connectors')
-    : t(option.mobileLabel);
-}
-
 function preferencesMobileViewOptions(): Array<(typeof PREFERENCES_VIEW_OPTIONS)[number]> {
   return MOBILE_PREFERENCES_VIEW_ORDER
     .map((view) => preferencesViewOption(view as PreferencesView));
@@ -16942,7 +17043,7 @@ function preferencesMobileTabButton(option: (typeof PREFERENCES_VIEW_OPTIONS)[nu
       data-preferences-view="${escapeHtml(option.view)}"
       title="${escapeHtml(preferencesViewSummary(option.view))}"
     >
-      <span class="android-tab-icon">${commandCenterIcon(preferencesMobileTabIcon(option.view))}</span>
+      <span class="android-tab-icon">${commandCenterIcon(preferencesViewIcon(option.view))}</span>
       <span class="android-tab-label">${escapeHtml(preferencesMobileShortLabel(option))}</span>
     </button>
   `;
@@ -16956,69 +17057,21 @@ function preferencesMobileShortLabel(option: (typeof PREFERENCES_VIEW_OPTIONS)[n
   return t('AI');
 }
 
-function preferencesMobileTabIcon(view: PreferencesView): CommandCenterIconId {
+// One glyph per section, shared by the desktop card strip and the native tab
+// strip so a section reads the same on both surfaces.
+function preferencesViewIcon(view: PreferencesView): CommandCenterIconId {
   switch (view) {
     case 'access':
       return 'connectors';
     case 'rules':
-    case 'tokens':
       return 'guardrails';
+    case 'tokens':
+      return 'tokens';
     case 'ai':
       return 'ai';
     case 'workspace':
-      return 'recurring';
+      return 'backup';
   }
-}
-
-function preferencesMobilePicker(): string {
-  const active = preferencesViewOption(state.preferencesView);
-  return `
-    <div class="preferences-mobile-picker template-picker" data-preferences-mobile-picker>
-      <button
-        id="preferencesMobilePickerButton"
-        class="template-picker-trigger preferences-mobile-picker-trigger"
-        type="button"
-        aria-haspopup="listbox"
-        aria-expanded="false"
-        aria-controls="preferencesMobilePickerMenu"
-        aria-label="${escapeHtml(t('Choose Preferences section'))}"
-      >
-        <span class="template-picker-current preferences-mobile-picker-current">
-          <strong id="preferencesMobilePickerValue">${escapeHtml(preferencesMobileLabel(active))}</strong>
-          <em>${escapeHtml(preferencesViewSummary(active.view))}</em>
-        </span>
-        <span class="template-picker-caret" aria-hidden="true"></span>
-      </button>
-      <div
-        id="preferencesMobilePickerMenu"
-        class="template-picker-menu preferences-mobile-picker-menu"
-        role="listbox"
-        aria-label="${escapeHtml(t('Preferences sections'))}"
-        hidden
-      >
-        <div class="template-picker-group preferences-mobile-picker-group">
-          ${PREFERENCES_VIEW_OPTIONS.map(preferencesMobilePickerOption).join('')}
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-function preferencesMobilePickerOption(option: (typeof PREFERENCES_VIEW_OPTIONS)[number]): string {
-  const selected = state.preferencesView === option.view;
-  return `
-    <button
-      class="template-picker-option preferences-mobile-picker-option ${selected ? 'selected active' : ''}"
-      type="button"
-      role="option"
-      aria-selected="${selected ? 'true' : 'false'}"
-      data-preferences-mobile-view="${escapeHtml(option.view)}"
-      tabindex="${selected ? '0' : '-1'}"
-    >
-      <strong>${escapeHtml(preferencesMobileLabel(option))}</strong>
-      <em>${escapeHtml(preferencesViewSummary(option.view))}</em>
-    </button>
-  `;
 }
 
 function preferencesStoragePolicy(): string {
@@ -17295,7 +17348,8 @@ function preferencesViewButton(view: PreferencesView, title: string, detail: str
       role="tab"
       aria-selected="${active ? 'true' : 'false'}"
     >
-      <span>${escapeHtml(t(detail))}</span>
+      <span class="preferences-subtab-icon">${commandCenterIcon(preferencesViewIcon(view))}</span>
+      <span class="preferences-subtab-eyebrow">${escapeHtml(t(detail))}</span>
       <strong>${escapeHtml(t(title))}</strong>
       <em>${escapeHtml(preferencesViewSummary(view))}</em>
     </button>
@@ -17454,6 +17508,7 @@ function preferencesActiveView(): string {
           ${workspaceBackupPanel()}
           ${notificationPreferencesPanel()}
         </div>
+        ${workspaceCloudDeletePanel()}
       `);
     case 'ai':
       return preferencesGroup(t('AI Connector'), t('Personalize prompts and connector behavior without changing signing authority.'), aiReviewPreferencesPanel());
@@ -17606,7 +17661,6 @@ function aiReviewPreferencesPanel(): string {
       <div class="ai-review-preferences-head">
         <div>
           <span>${escapeHtml(t('AI connector'))}</span>
-          <strong>${escapeHtml(t('Planner personalization'))}</strong>
           <p>${escapeHtml(t('Saved prompts and review extras affect the AI connector only. Wallet approval, submission, and signing stay separate.'))}</p>
         </div>
         <em>${escapeHtml(status)}</em>
@@ -18214,6 +18268,10 @@ function protocolConnectorCredentialInline(connector: ProtocolConnector | undefi
   `;
 }
 
+// Roughly two rows of chips before a connector's action list starts reading as
+// a wall instead of a summary.
+const CONNECTOR_ACTION_CHIP_CAP = 8;
+
 function connectedDappRow(adapter: ConnectedDappAdapter): string {
   const entry = state.connectedDapps.entries[adapter.id];
   const clusterOk = isClusterSupported(adapter, state.cluster);
@@ -18224,9 +18282,21 @@ function connectedDappRow(adapter: ConnectedDappAdapter): string {
   const clusterChip = clusterOk
     ? ''
     : `<span class="connected-dapp-cluster-chip cluster-mismatch" title="${escapeHtml(t('Switch cluster to use this connector'))}">${tf('{clusters} only', { clusters: escapeHtml(adapter.supportedClusters.join(', ')) })}</span>`;
-  const actionChips = adapter.supportedActions
+  // Jupiter alone exposes ~20 actions, which rendered as an unbroken pill wall
+  // that buried the rest of the card. Cap the row and let it expand — the full
+  // surface still has to be reachable, it just should not be the default state.
+  const actionsExpandKey = `connector-actions:${adapter.id}`;
+  const actionsExpanded = state.expandedCardIds.has(actionsExpandKey);
+  const hiddenActionCount = Math.max(0, adapter.supportedActions.length - CONNECTOR_ACTION_CHIP_CAP);
+  const visibleActions = actionsExpanded || hiddenActionCount === 0
+    ? adapter.supportedActions
+    : adapter.supportedActions.slice(0, CONNECTOR_ACTION_CHIP_CAP);
+  const actionChipMore = hiddenActionCount > 0
+    ? `<button type="button" class="connected-dapp-action-chip connected-dapp-action-chip-more" data-card-expand="${escapeHtml(actionsExpandKey)}" aria-expanded="${actionsExpanded ? 'true' : 'false'}">${escapeHtml(actionsExpanded ? t('Hide details') : tf(' +{n} more', { n: hiddenActionCount }).trim())}</button>`
+    : '';
+  const actionChips = `${visibleActions
     .map((label) => `<span class="connected-dapp-action-chip" title="${escapeHtml(label)}">${escapeHtml(compactConnectorActionLabel(label))}</span>`)
-    .join('');
+    .join('')}${actionChipMore}`;
   const capabilityChips = adapter.capabilities
     .map((capability) => {
       const fullLabel = connectorCapabilityLabel(capability);
@@ -20775,8 +20845,8 @@ function commandCenterOverviewPanel(): string {
     ? ''
     : `
           <div class="command-center-actions">
+            ${chatTabHidden() ? '' : `<button type="button" class="utility" data-tab="chat">${escapeHtml(t('Chat'))}</button>`}
             <button type="button" class="primary" data-one-time-view="create">${escapeHtml(t('New Request'))}</button>
-            <button type="button" class="utility" data-tab="labs">${escapeHtml(t('Sign Proof'))}</button>
           </div>
         `;
   return `
@@ -21999,6 +22069,41 @@ function workspaceBackupPanel(): string {
   `;
 }
 
+// Cloud-storage deletion surfaced in Preferences → Workspace, so the in-app delete
+// path matches what /delete-account documents (it previously only lived under
+// Home → Connect Cloud Storage). Reuses the SAME data-cloud-action button + the
+// app-shell delete modal as the Home danger zone — no extra wiring or handler.
+function workspaceCloudDeletePanel(): string {
+  const signedIn = state.cloudSession.status === 'signed-in';
+  const matched = cloudSessionMatchesWallet();
+  const canDelete = signedIn && matched;
+  const reason = canDelete
+    ? t('Deletes cloud workspace data and clears this device\'s app storage for a full reset.')
+    : signedIn
+      ? tf('Connect {address} to delete this cloud workspace.', { address: short(state.cloudSession.walletAddress) })
+      : t('Connect your wallet and sign in to Agentic Cloud.');
+  return `
+    <section class="workspace-cloud-delete" aria-label="${escapeHtml(t('Delete cloud and app data'))}">
+      <div class="command-storage-danger-zone">
+        <div>
+          <span>${escapeHtml(t('Danger zone'))}</span>
+          <strong>${escapeHtml(t('Delete cloud and app data'))}</strong>
+          <p>${escapeHtml(reason)} ${escapeHtml(t('On-chain history stays.'))}</p>
+        </div>
+        <button
+          type="button"
+          class="utility danger"
+          data-cloud-action="delete-workspace"
+          ${!canDelete || state.busy ? 'disabled' : ''}
+          title="${escapeHtml(canDelete ? t('Requires a wallet signature before deletion.') : reason)}"
+        >
+          ${escapeHtml(t('Delete all app data'))}
+        </button>
+      </div>
+    </section>
+  `;
+}
+
 function workspaceBackupNotesMarkup(unresolved: number): string {
   const list = `
     <ul class="workspace-backup-notes">
@@ -22450,6 +22555,8 @@ function commandCenterIcon(icon: CommandCenterIconId): string {
     cloud: '<path d="M7.25 17.75h9.25a4 4 0 0 0 .62-7.95 5.25 5.25 0 0 0-9.97-1.66 3.75 3.75 0 0 0 .1 9.61Z" /><path d="m9.25 13.25 1.85 1.85 3.9-4.1" />',
     connectors: '<path d="M8.25 7.25h-1.5a3 3 0 0 0 0 6h1.5" /><path d="M15.75 7.25h1.5a3 3 0 0 1 0 6h-1.5" /><path d="M8.75 10.25h6.5" /><path d="M6.5 16.75h11" /><path d="M9.5 19.25h5" />',
     guardrails: '<path d="M12 3.75 18.25 6v5.25c0 4.05-2.44 7.25-6.25 9-3.81-1.75-6.25-4.95-6.25-9V6L12 3.75Z" /><path d="m8.85 12.35 2.05 2.05 4.25-4.65" />',
+    tokens: '<path d="M12.9 4.35a2 2 0 0 0-1.42-.6H5.75a2 2 0 0 0-2 2v5.73a2 2 0 0 0 .59 1.42l6.36 6.36a2 2 0 0 0 2.83 0l5.73-5.73a2 2 0 0 0 0-2.83Z" /><circle cx="8.35" cy="8.35" r="1.2" />',
+    backup: '<path d="M20.25 14.25v4a2 2 0 0 1-2 2H5.75a2 2 0 0 1-2-2v-4" /><path d="M12 3.75v10.5" /><path d="m7.75 10.5 4.25 4.25 4.25-4.25" />',
   };
   return `
     <svg class="command-center-card-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -40641,7 +40748,10 @@ function artifactArchiveControls(visibleCount: number): string {
   return `
     <div class="artifact-archive-control-panel">
       <div class="artifact-archive-primary-row">
-        <span class="signature-state artifact-visible-count">${escapeHtml(tf('{count} visible', { count: visibleCount }))}</span>
+        <span class="artifact-visible-count-group">
+          <span class="signature-state artifact-visible-count">${escapeHtml(tf('{count} visible', { count: visibleCount }))}</span>
+          ${artifactUnverifiedChip()}
+        </span>
       <div class="template-filter-row artifact-filter-row" role="group" aria-label="${escapeHtml(t('Saved proof filter'))}">
         ${artifactFilterOptions(false).map(([filter, label]) => `
           <button
@@ -40702,16 +40812,46 @@ function artifactArchiveControlsMobile(visibleCount: number): string {
       </div>
       <div class="mobile-artifact-status-line" aria-label="${escapeHtml(t('Saved proof archive summary'))}">
         <strong>${escapeHtml(tf('{count} visible', { count: visibleCount }))}</strong>
+        ${artifactUnverifiedChip()}
         <span>${escapeHtml(artifactMobileArchiveStatusText())}</span>
       </div>
     </div>
   `;
 }
 
+// One axis: the review outcome. 'Verified' used to sit here, but it reads the
+// signature boolean, not the outcome — so a proof could be both Verified and
+// Blocked, and next to Warnings/Blocked it implied a fourth "this one is fine"
+// tier. Signature failures now surface via the unverified chip instead.
+// Proofs in scope whose signature did not verify. Normally zero.
+function unverifiedArtifactCount(): number {
+  return state.labArtifacts.filter(
+    (artifact) => recordMatchesWalletScope(artifact, state.address) && !artifact.verified,
+  ).length;
+}
+
+// A failed signature is an anomaly, not an outcome tier, so this only appears
+// when there is something to report. It toggles rather than adding a fifth
+// permanent segment implying every proof has a signature question.
+function artifactUnverifiedChip(): string {
+  const count = unverifiedArtifactCount();
+  if (count === 0) return '';
+  const active = state.artifactFilter === 'unverified';
+  return `
+    <button
+      type="button"
+      class="artifact-unverified-chip${active ? ' active' : ''}"
+      data-artifact-filter="${active ? 'all' : 'unverified'}"
+      aria-pressed="${active ? 'true' : 'false'}"
+      ${state.busy ? 'disabled' : ''}
+    >${escapeHtml(tf('{count} unverified', { count }))}</button>
+  `;
+}
+
 function artifactFilterOptions(mobile: boolean): Array<[ArtifactFilter, string]> {
   return [
     ['all', t('All')],
-    ['verified', t('Verified')],
+    ['recorded', t('Recorded')],
     ['warnings', mobile ? t('Warn') : t('Warnings')],
     ['blocked', t('Blocked')],
   ];
@@ -40728,7 +40868,7 @@ function artifactTypeFilterOptions(): SelectPickerOption[] {
     })),
     ...ADVANCED_EVIDENCE_LABS.map((lab) => ({
       value: lab.id,
-      label: tf('Legacy / {title}', { title: lab.title }),
+      label: tf('Advanced / {title}', { title: lab.title }),
       meta: t('Advanced evidence'),
       detail: lab.description,
     })),
@@ -40838,9 +40978,10 @@ function filteredLabArtifacts(): LabArtifact[] {
   const search = state.artifactSearch.trim().toLowerCase();
   return state.labArtifacts.filter((artifact) => {
     if (!recordMatchesWalletScope(artifact, state.address)) return false;
-    if (state.artifactFilter === 'verified' && !artifact.verified) return false;
+    if (state.artifactFilter === 'recorded' && artifact.payload.status !== 'observed') return false;
     if (state.artifactFilter === 'warnings' && artifact.payload.status !== 'warn') return false;
     if (state.artifactFilter === 'blocked' && artifact.payload.status !== 'blocked') return false;
+    if (state.artifactFilter === 'unverified' && artifact.verified) return false;
     if (state.artifactTypeFilter !== 'all' && artifact.labId !== state.artifactTypeFilter) return false;
     if (!search) return true;
     return artifactSearchText(artifact).includes(search);
@@ -40866,28 +41007,52 @@ function artifactSearchText(artifact: LabArtifact): string {
   ].join(' ').toLowerCase();
 }
 
+interface SavedProofHeader {
+  legacy: boolean;
+  title: string;
+  verdict: string;
+  verdictTone: 'good' | 'warn' | 'danger' | 'neutral';
+}
+
+// One derivation for both card layouts. These used to be duplicated per
+// platform and had drifted: desktop computed a title it never rendered, while
+// mobile rendered one that contradicted its own kind pill.
+function savedProofHeader(artifact: LabArtifact): SavedProofHeader {
+  const lab = labById(artifact.labId);
+  // "Legacy" means the lab definition is gone (an imported or older record) —
+  // NOT that the proof is an advanced one. Advanced proofs are the newest thing
+  // in this tab; titling all fifteen of them "Legacy receipt" was simply wrong.
+  const legacy = !lab;
+  const status = artifact.payload.status;
+  return {
+    legacy,
+    title: lab ? t(lab.title) : receiptLabelForKind(artifact.kind),
+    // Older stored artifacts may predate `status`; fall back to signature state.
+    verdict: status ? receiptVerdictDisplayLabel(status) : (artifact.verified ? t('verified') : t('signed')),
+    verdictTone: status ? receiptVerdictTone(status) : 'neutral',
+  };
+}
+
 function signedArtifactRow(artifact: LabArtifact): string {
   if (isMobileAppViewport()) return signedArtifactRowMobile(artifact);
-  const lab = labById(artifact.labId);
-  const legacy = !lab || lab.category === 'advanced';
-  const receiptLabel = legacy ? t('Legacy receipt') : receiptLabelForKind(artifact.kind);
+  const { legacy, title, verdict, verdictTone } = savedProofHeader(artifact);
   const requested = receiptRequestedText(artifact);
   const proves = receiptProvesText(artifact);
   const signatureHash = `${short(artifact.signature)} / ${short(artifact.artifactHash)}`;
   const searchText = artifactSearchText(artifact);
-  const verdict = artifact.payload.metrics.find((metric) => metric.label.toLowerCase() === 'verdict')?.value ?? (artifact.verified ? t('verified') : t('signed'));
   return `
     <article class="signed-artifact-row receipt-proof-card ${legacy ? 'legacy' : ''}" data-artifact-search-text="${escapeHtml(searchText)}">
       <div class="receipt-proof-card-head">
         <div class="receipt-proof-title-block">
           <div class="receipt-proof-meta">
             <span class="status-pill ${artifact.verified ? 'tx-confirmed' : 'tx-pending'}">${artifact.verified ? t('wallet verified') : t('signed')}</span>
-            <span class="receipt-proof-type-label">${escapeHtml(labKindLabel(artifact.kind))}</span>
+            <span class="receipt-proof-kind-pill">${escapeHtml(labKindLabel(artifact.kind))}</span>
             <time class="receipt-proof-date" datetime="${escapeHtml(artifact.createdAt)}">${escapeHtml(formatDateTime(artifact.createdAt))}</time>
           </div>
+          <h3 class="receipt-proof-type-label">${escapeHtml(title)}</h3>
           <p>${escapeHtml(artifact.payload.summary ?? artifact.payload.thesis)}</p>
         </div>
-        <div class="receipt-proof-value" title="${escapeHtml(`${verdict} - ${artifact.artifactHash}`)}">
+        <div class="receipt-proof-value tone-${escapeHtml(verdictTone)}" title="${escapeHtml(`${verdict} - ${artifact.artifactHash}`)}">
           <strong>${escapeHtml(verdict)}</strong>
           <span>${escapeHtml(short(artifact.artifactHash))}</span>
         </div>
@@ -40920,14 +41085,11 @@ function signedArtifactRow(artifact: LabArtifact): string {
 }
 
 function signedArtifactRowMobile(artifact: LabArtifact): string {
-  const lab = labById(artifact.labId);
-  const legacy = !lab || lab.category === 'advanced';
-  const receiptLabel = legacy ? t('Legacy receipt') : receiptLabelForKind(artifact.kind);
+  const { legacy, title, verdict, verdictTone } = savedProofHeader(artifact);
   const requested = receiptRequestedText(artifact);
   const proves = receiptProvesText(artifact);
   const signatureHash = `${short(artifact.signature)} / ${short(artifact.artifactHash)}`;
   const searchText = artifactSearchText(artifact);
-  const verdict = artifact.payload.metrics.find((metric) => metric.label.toLowerCase() === 'verdict')?.value ?? (artifact.verified ? t('verified') : t('signed'));
   return `
     <article class="signed-artifact-row receipt-proof-card mobile-receipt-proof-card ${legacy ? 'legacy' : ''}" data-artifact-search-text="${escapeHtml(searchText)}">
       <div class="mobile-receipt-proof-head">
@@ -40935,17 +41097,17 @@ function signedArtifactRowMobile(artifact: LabArtifact): string {
           <span class="status-pill ${artifact.verified ? 'tx-confirmed' : 'tx-pending'}">${artifact.verified ? t('wallet verified') : t('signed')}</span>
           <span class="mobile-receipt-proof-kind">${escapeHtml(labKindLabel(artifact.kind))}</span>
         </div>
-        <h3>${escapeHtml(receiptLabel)}</h3>
+        <h3>${escapeHtml(title)}</h3>
         <p>
           <time datetime="${escapeHtml(artifact.createdAt)}">${escapeHtml(formatDateTime(artifact.createdAt))}</time>
-          <span>${escapeHtml(verdict)}</span>
+          <span class="mobile-receipt-proof-verdict tone-${escapeHtml(verdictTone)}">${escapeHtml(verdict)}</span>
         </p>
         <strong class="mobile-receipt-proof-hash">${escapeHtml(short(artifact.artifactHash))}</strong>
       </div>
       <p class="mobile-receipt-proof-summary">${escapeHtml(artifact.payload.summary ?? artifact.payload.thesis)}</p>
       <dl class="mobile-receipt-proof-rows" aria-label="${escapeHtml(t('Saved proof summary'))}">
-        ${receiptProofSummaryItem(t('Signed by'), short(artifact.walletAddress), artifact.walletAddress, artifact.walletAddress)}
-        ${receiptProofSummaryItem(t('Hash'), short(artifact.artifactHash), artifact.artifactHash, artifact.artifactHash)}
+        ${receiptProofSummaryItem(t('Requested'), requested)}
+        ${receiptProofSummaryItem(t('Proves'), proves)}
       </dl>
       <div class="mobile-receipt-proof-footer">
         <button data-share-receipt="${escapeHtml(artifact.id)}">${t('Share')}</button>
@@ -40954,8 +41116,7 @@ function signedArtifactRowMobile(artifact: LabArtifact): string {
           <summary>${t('More')}</summary>
           <div class="mobile-receipt-proof-more-body">
             <dl class="mobile-receipt-proof-detail-rows">
-              ${receiptProofSummaryItem(t('Requested'), requested)}
-              ${receiptProofSummaryItem(t('Proves'), proves)}
+              ${receiptProofSummaryItem(t('Signed by'), short(artifact.walletAddress), artifact.walletAddress, artifact.walletAddress)}
               ${receiptProofSummaryItem(t('Signature'), signatureHash, `${artifact.signature} / ${artifact.artifactHash}`, `${artifact.signature} / ${artifact.artifactHash}`)}
             </dl>
             <div class="receipt-proof-storage-badges">
@@ -41291,7 +41452,6 @@ function bind(): void {
   bindTemplatePicker();
   bindArtifactPicker();
   bindSelectPickers();
-  bindPreferencesMobilePicker();
   bindDemoLanguagePicker();
   bindWalletBalanceOverlay();
   bindMobileRailSheet();
@@ -44352,131 +44512,6 @@ function bindSelectPickers(): void {
 function closeSelectPickerInteractions(): void {
   selectPickerController?.abort();
   selectPickerController = null;
-}
-
-function bindPreferencesMobilePicker(): void {
-  const picker = document.querySelector<HTMLElement>('[data-preferences-mobile-picker]');
-  if (!picker) return;
-  const trigger = picker.querySelector<HTMLButtonElement>('#preferencesMobilePickerButton');
-  const menu = picker.querySelector<HTMLElement>('#preferencesMobilePickerMenu');
-  const options = [...picker.querySelectorAll<HTMLButtonElement>('[data-preferences-mobile-view]')];
-  if (!trigger || !menu || options.length === 0) return;
-
-  const openPicker = (focusOption: 'selected' | 'first' | 'last' | false = false): void => {
-    if (trigger.disabled) return;
-    closePreferencesMobilePickerInteractions();
-    picker.classList.add('open');
-    trigger.setAttribute('aria-expanded', 'true');
-    menu.hidden = false;
-    positionTemplatePickerMenu(trigger, menu);
-    window.requestAnimationFrame(() => positionTemplatePickerMenu(trigger, menu));
-
-    const selectedOption = options.find((option) => option.dataset.preferencesMobileView === state.preferencesView) ?? options[0]!;
-    const activeOption = focusOption === 'first'
-      ? options[0]!
-      : focusOption === 'last'
-        ? options[options.length - 1]!
-        : selectedOption;
-    setActiveTemplateOption(options, activeOption, Boolean(focusOption));
-
-    preferencesMobilePickerController = new AbortController();
-    const { signal } = preferencesMobilePickerController;
-    window.addEventListener('pointerdown', (event) => {
-      if (event.target instanceof Node && picker.contains(event.target)) return;
-      closePicker(false);
-    }, { signal });
-    window.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        closePicker(true);
-      }
-    }, { signal });
-    window.addEventListener('resize', () => positionTemplatePickerMenu(trigger, menu), { signal });
-    window.visualViewport?.addEventListener('resize', () => positionTemplatePickerMenu(trigger, menu), { signal });
-  };
-
-  const closePicker = (returnFocus: boolean): void => {
-    picker.classList.remove('open');
-    trigger.setAttribute('aria-expanded', 'false');
-    menu.hidden = true;
-    closePreferencesMobilePickerInteractions();
-    if (returnFocus) {
-      trigger.focus({ preventScroll: true });
-    }
-  };
-
-  const chooseOption = (option: HTMLButtonElement): void => {
-    const view = option.dataset.preferencesMobileView as PreferencesView | undefined;
-    if (!view || !isPreferencesView(view)) return;
-    closePicker(false);
-    if (!setPreferencesView(view)) {
-      if (document.contains(trigger)) {
-        trigger.focus({ preventScroll: true });
-      }
-    }
-  };
-
-  bindOnce(trigger, 'click', (event) => {
-    event.stopPropagation();
-    if (menu.hidden) {
-      openPicker(false);
-    } else {
-      closePicker(false);
-    }
-  });
-
-  bindOnce(trigger, 'keydown', (event) => {
-    if (event.key === 'ArrowDown') {
-      event.preventDefault();
-      openPicker('selected');
-      focusAdjacentTemplateOption(options, 1);
-    }
-    if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      openPicker('selected');
-      focusAdjacentTemplateOption(options, -1);
-    }
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault();
-      openPicker('selected');
-    }
-  });
-
-  bindOnce(menu, 'keydown', (event) => {
-    if (event.key === 'ArrowDown') {
-      event.preventDefault();
-      focusAdjacentTemplateOption(options, 1);
-    }
-    if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      focusAdjacentTemplateOption(options, -1);
-    }
-    if (event.key === 'Home') {
-      event.preventDefault();
-      setActiveTemplateOption(options, options[0]!, true);
-    }
-    if (event.key === 'End') {
-      event.preventDefault();
-      setActiveTemplateOption(options, options[options.length - 1]!, true);
-    }
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault();
-      const activeOption = document.activeElement instanceof HTMLButtonElement
-        ? document.activeElement
-        : options.find((option) => option.classList.contains('active')) ?? options[0]!;
-      chooseOption(activeOption);
-    }
-  });
-
-  for (const option of options) {
-    bindOnce(option, 'click', () => chooseOption(option));
-    bindOnce(option, 'pointermove', () => setActiveTemplateOption(options, option, false));
-  }
-}
-
-function closePreferencesMobilePickerInteractions(): void {
-  preferencesMobilePickerController?.abort();
-  preferencesMobilePickerController = null;
 }
 
 interface VirtualKeyboardLike extends EventTarget {
@@ -48822,25 +48857,138 @@ function upsertPositionFromAction(action: PreparedAction, category: ActionCatego
   savePositions();
 }
 
-// A manage/close action signed (withdraw/repay/cancel/…) → mark the most-recent matching open
-// position (same category + connector) as manage-pending, but DO NOT close it. The authoritative
-// live read decides remaining-vs-gone: a partial withdraw leaves a smaller live position (card
-// stays), a full withdraw / cancel / period-end leaves an empty live read that the reconcile step
-// in fetchPositionCategory then retires to Done. Marking (not closing) here also stops the card
-// from vanishing-then-reappearing during the confirm gap.
+// The live detail carrying a position's TOKEN balance, per category. The hero is NOT always it:
+// Jupiter lend, LP and Drift promote the USD 'Value' to the hero (extractHeadline), and a dollar
+// figure must never be read as a token amount — it would prefill "Max" with the wrong number and
+// turn the settle detail into a nonsense "0.03 / $7.50".
+const POSITION_BALANCE_DETAIL_LABELS: Readonly<Partial<Record<ActionCategory, readonly string[]>>> = {
+  lend: ['Supplied'],
+  borrow: ['Debt'],
+  stake: ['mSOL', 'Staked', 'Balance'],
+  perps: ['Size'],
+};
+
+function posIsTokenAmountText(value: string): boolean {
+  const v = value.trim();
+  return Boolean(v) && !v.startsWith('$') && !v.endsWith('%') && /\d/.test(v);
+}
+
+// A position's balance as display text ("0.05 SOL"), preferring the labelled token-balance detail and
+// only then a hero that isn't a USD/percentage figure. Undefined when nothing trustworthy is present.
+function positionLiveTokenAmountText(row: PositionLiveRow): string | undefined {
+  for (const label of POSITION_BALANCE_DETAIL_LABELS[row.kind] ?? []) {
+    const d = row.headline?.label === label ? row.headline : row.details.find((x) => x.label === label);
+    if (d && posIsTokenAmountText(d.value)) return d.value;
+  }
+  if (row.headline && posIsTokenAmountText(row.headline.value)) return row.headline.value;
+  return undefined;
+}
+
+// "0.05 SOL" → "SOL"; a bare number → undefined.
+function positionAmountUnit(text: string): string | undefined {
+  return /^[\d.,\s]+(.+)$/.exec(text.trim())?.[1]?.trim() || undefined;
+}
+
+function positionLiveRowById(positionId: string): PositionLiveRow | undefined {
+  return Object.values(state.positionsLive)
+    .flatMap((entry) => entry?.rows ?? [])
+    .find((row) => row.id === positionId || row.cancel?.orderId === positionId);
+}
+
+// The token symbol a seed opened with, for labelling an amount when no live read is available.
+// A truncated mint ("EPjF…Dt1v") is not a unit, so it degrades to undefined rather than being shown.
+function positionSeedAssetLabel(p: PositionRecord | undefined): string | undefined {
+  const params = (p?.params ?? {}) as Record<string, unknown>;
+  const mint = ['token', 'inputToken', 'assetMint', 'collateralMint', 'lstMint']
+    .map((k) => (typeof params[k] === 'string' ? (params[k] as string) : ''))
+    .find(Boolean);
+  if (!mint) return undefined;
+  const symbol = posSymbol(mint);
+  return symbol && symbol !== '-' && !symbol.includes('…') ? symbol : undefined;
+}
+
+// The position's size at manage time. `fromLive` is the honesty flag: a seed's amount predates any
+// interest accrued since it opened, so it can label a unit but must never anchor a "X of Y" ratio.
+function positionManageBeforeAmount(positionId: string): { text?: string; fromLive: boolean; assetLabel?: string } {
+  const liveRow = positionLiveRowById(positionId);
+  const liveText = liveRow ? positionLiveTokenAmountText(liveRow) : undefined;
+  const seed = state.positions.find((p) => p.id === positionId);
+  if (liveText) return { text: liveText, fromLive: true, assetLabel: positionAmountUnit(liveText) ?? positionSeedAssetLabel(seed) };
+  const seedAmount = seed?.params?.amount;
+  const text = typeof seedAmount === 'string' ? seedAmount : typeof seedAmount === 'number' ? String(seedAmount) : undefined;
+  return { text, fromLive: false, assetLabel: positionSeedAssetLabel(seed) };
+}
+
+// The amount a manage action actually moved, straight out of the signed params.
+function manageRequestedAmount(action: PreparedAction): string | undefined {
+  const raw = (action.params as Record<string, unknown> | undefined)?.[manageValueField(action.kind)];
+  if (typeof raw === 'string' && raw.trim()) return raw.trim();
+  if (typeof raw === 'number' && Number.isFinite(raw)) return String(raw);
+  return undefined;
+}
+
+// The identifier that joins a seed record to its live row / manage action (assetMint for Jupiter lend,
+// orderId for trigger + recurring, …). Empty for legacy seeds whose live id was never known.
+function positionJoinKey(p: PositionRecord): string | undefined {
+  return positionSeedManage(p)?.orderId || undefined;
+}
+
+// A manage/close action (withdraw/repay/unstake/remove/cancel) CONFIRMED on chain → record the intent
+// against the position it targets, but DO NOT close it: the authoritative live read decides
+// remaining-vs-gone (a partial withdraw leaves a smaller live position, a full one leaves an empty
+// read). Recording rather than closing also stops the card vanishing-then-reappearing across the gap.
+//
+// Targeting is exact wherever it can be — same wallet (reconcile REQUIRES this; omitting it here left
+// records only reconcile could see and never clear), cluster, category and connector, then
+// discriminated by the manage join key so withdrawing USDC cannot mark the SOL position. Falls back to
+// the newest match only for legacy seeds that carry no id.
 function markManagePendingForAction(action: PreparedAction, category: ActionCategory): void {
   const conn = connectorIdForKind(action.kind);
-  const match = state.positions.find(
-    (p) => p.status === 'open' && p.category === category && p.cluster === action.cluster && (!conn || p.connector === conn),
+  const candidates = state.positions.filter(
+    (p) =>
+      p.status === 'open' &&
+      p.category === category &&
+      p.cluster === action.cluster &&
+      p.walletAddress === action.walletAddress &&
+      (!conn || p.connector === conn),
   );
-  if (match) {
-    match.manageRequestedAt = new Date().toISOString();
-    savePositions();
-  }
+  if (!candidates.length) return;
+  const targetId = (action.params as Record<string, unknown> | undefined)?.[MANAGE_ID_FIELD_BY_KIND[action.kind] ?? 'orderId'];
+  const match = (targetId ? candidates.find((p) => positionJoinKey(p) === String(targetId)) : undefined) ?? candidates[0];
+  if (!match) return;
+  const before = positionManageBeforeAmount(match.id);
+  match.manage = {
+    actionId: action.id,
+    kind: action.kind,
+    requestedAt: new Date().toISOString(),
+    settleDeadlineAt: new Date(Date.now() + POSITION_SETTLE_MS).toISOString(),
+    phase: 'pending',
+    ...(action.txid ? { txid: action.txid } : {}),
+    ...(manageRequestedAmount(action) ? { requestedAmount: manageRequestedAmount(action) } : {}),
+    ...(before.text ? { amountBefore: before.text, amountBeforeFromLive: before.fromLive } : {}),
+    ...(before.assetLabel ? { assetLabel: before.assetLabel } : {}),
+  };
+  delete match.manageRequestedAt;
+  savePositions();
+  ensurePositionSettleInterval();
+}
+
+// A position is "settling" while its confirmed manage action hasn't been reconciled against live yet.
+function positionIsSettling(p: PositionRecord): boolean {
+  return Boolean(p.manage && positionManagePhaseAt(p.manage, Date.now()) === 'pending');
+}
+
+// A finished position keeps its card for a beat so the user actually SEES it land on "Complete"
+// before it retires to the Done tab.
+function positionIsLingeringComplete(p: PositionRecord): boolean {
+  if (p.status !== 'closed' || p.manage?.phase !== 'closed' || !p.manage.resolvedAt) return false;
+  return Date.now() - new Date(p.manage.resolvedAt).getTime() < POSITION_COMPLETE_LINGER_MS;
 }
 
 function openPositions(): PositionRecord[] {
-  return state.positions.filter((p) => p.status === 'open' && p.cluster === state.cluster);
+  return state.positions.filter(
+    (p) => p.cluster === state.cluster && (p.status === 'open' || positionIsLingeringComplete(p)),
+  );
 }
 
 // A seeded position is a BRIDGE record covering the just-signed→on-chain gap. It's "pending" for this
@@ -48851,9 +48999,18 @@ function positionIsRecentlyOpened(p: PositionRecord): boolean {
   return Number.isFinite(t0) && Date.now() - t0 < POSITION_PENDING_MS;
 }
 
-// Once a section has a successful live read, seeded bridge-records older than the pending window are
+// Once a connector answers a live read, seeded bridge-records older than the pending window are
 // redundant (live is authoritative) — close them so they can't resurface on a later live error.
-function expireStaleSeededForSection(sectionId: PositionSectionId, cluster: Cluster): void {
+// Authority is PER-CONNECTOR, not per-section: gating the whole section on a clean read meant one
+// chronically-failing connector (lending reads six) pinned `partial` forever, so seeds never expired
+// and accumulated for weeks — which is how a 13-day-old record was still `open` and markable.
+// `okConnectors` = the connectors that actually answered; a seed whose own connector stayed silent is
+// left alone. Records mid-settle are exempt: their own deadline resolves them.
+function expireStaleSeededForSection(
+  sectionId: PositionSectionId,
+  cluster: Cluster,
+  okConnectors: ReadonlySet<string>,
+): void {
   const section = POSITIONS_SECTIONS.find((s) => s.id === sectionId);
   if (!section) return;
   const cutoff = Date.now() - POSITION_PENDING_MS;
@@ -48862,7 +49019,10 @@ function expireStaleSeededForSection(sectionId: PositionSectionId, cluster: Clus
     if (
       p.status === 'open' &&
       p.cluster === cluster &&
+      p.walletAddress === state.address &&
       section.categories.includes(p.category) &&
+      (!p.connector || okConnectors.has(p.connector)) &&
+      !positionIsSettling(p) &&
       new Date(p.openedAt).getTime() < cutoff
     ) {
       p.status = 'closed';
@@ -48873,14 +49033,16 @@ function expireStaleSeededForSection(sectionId: PositionSectionId, cluster: Clus
   if (changed) savePositions();
 }
 
-// Reconcile manage-pending seeded records against a fresh live read (the authoritative source):
-//  • the position still appears live (partial withdraw/reduce) → clear the pending flag, keep open
-//    (the live card shows the remaining amount);
-//  • it's gone from a CLEAN (non-partial), non-empty-or-empty live read and the settle window has
-//    passed (full withdraw / cancel / lend-period-ended → funds auto-returned) → close it to Done.
-// Guards: only touch THIS section's categories, this wallet, this cluster; never auto-close on a
-// partial (some sources failed) read — that could retire a position a keyed connector just couldn't
-// read. Fresh opens carry no manageRequestedAt, so they are never auto-closed here.
+// Reconcile settling records against a fresh live read (the authoritative source):
+//  • the position still appears live → PROVEN partial reduce → 'reduced', card stays open and the
+//    live hero shows what's left;
+//  • gone from a CLEAN read → PROVEN full unwind → 'closed' → shows "Complete", then retires to Done;
+//  • gone from a PARTIAL read, past the deadline → we cannot prove absence (the connector that owns
+//    it may simply have failed), so resolve to 'unconfirmed' and deliberately do NOT close it. This
+//    branch is the fix for the old code's silent no-op, where `partial && !stillLive` matched neither
+//    arm and left the record settling forever.
+// Guards: only this section's categories, this wallet, this cluster. Fresh opens carry no manage
+// intent, so they are never touched here.
 function reconcileManagePendingForSection(
   sectionId: PositionSectionId,
   cluster: Cluster,
@@ -48892,25 +49054,89 @@ function reconcileManagePendingForSection(
   const now = Date.now();
   let changed = false;
   for (const p of state.positions) {
-    if (p.status !== 'open' || !p.manageRequestedAt) continue;
+    const manage = p.manage;
+    if (p.status !== 'open' || !manage || manage.phase !== 'pending') continue;
     if (p.cluster !== cluster || p.walletAddress !== state.address) continue;
     if (!section.categories.includes(p.category)) continue;
-    // Wait out the settle window before deciding — the just-signed manage tx may not be indexed on
-    // the very next read, so an early "still there"/"already gone" is unreliable.
-    if (now - new Date(p.manageRequestedAt).getTime() < POSITION_PENDING_MS) continue;
-    const stillLive = rows.some((r) => r.connectorId === p.connector && (r.kind as string) === p.category);
-    if (stillLive) {
-      delete p.manageRequestedAt; // confirmed partial reduce — position persists; stop "Updating…"
+    // A just-confirmed manage tx may not be indexed on the very next read, so give the indexer a
+    // brief grace before believing "still there" / "already gone". This is seconds, not minutes: the
+    // tx is already CONFIRMED by the time an intent is recorded, so there is no confirmation to await.
+    if (now - new Date(manage.requestedAt).getTime() < POSITION_SETTLE_MIN_AGE_MS) continue;
+    const match = liveRowForPosition(rows, p, positionJoinKey(p));
+    if (match) {
+      manage.phase = 'reduced';
+      manage.resolvedAt = new Date().toISOString();
+      const after = positionLiveTokenAmountText(match);
+      if (after) manage.amountAfter = after;
       changed = true;
     } else if (!partial) {
-      // Gone from a clean read after the settle window → full withdraw / cancel / period-ended → Done.
+      manage.phase = 'closed';
+      manage.resolvedAt = new Date().toISOString();
+      manage.amountAfter = '0';
       p.status = 'closed';
       p.closedAt = new Date().toISOString();
-      delete p.manageRequestedAt;
+      schedulePositionLingerRender();
+      changed = true;
+    } else if (now >= new Date(manage.settleDeadlineAt).getTime()) {
+      manage.phase = 'unconfirmed';
+      manage.resolvedAt = new Date().toISOString();
       changed = true;
     }
   }
   if (changed) savePositions();
+}
+
+// The settle pill, per phase. Split out (rather than inlined in the card) so both the seeded and the
+// live card render the same vocabulary, and so every branch is a statically-extractable t() literal.
+// "Confirmed" covers BOTH a proven partial reduce and an unprovable one: in each case the tx landed
+// and the position is not known to be gone, which is exactly what the word claims.
+function positionManagePillLabel(phase: PositionManagePhase): string {
+  switch (phase) {
+    case 'pending': return t('Updating…');
+    case 'reduced': return t('Confirmed');
+    case 'closed': return t('Complete');
+    case 'unconfirmed': return t('Confirmed');
+  }
+}
+
+function positionManagePillTone(phase: PositionManagePhase): PositionTone {
+  return phase === 'closed' ? 'good' : phase === 'pending' ? 'warn' : 'neutral';
+}
+
+// What a settling/settled manage action should show on its card, computed from the record ALONE —
+// no network, no timers, no reconcile. This is the never-stuck guarantee: past its deadline a record
+// reports terminal even if every live read has failed forever. Returns undefined once the note has
+// aged out (or when there's nothing to say), leaving the card to render its normal live state.
+function positionManageDisplayState(
+  p: PositionRecord,
+): { phase: PositionManagePhase; label: string; tone: PositionTone; icon: boolean; detailLabel?: string; detailValue?: string } | undefined {
+  const manage = p.manage;
+  if (!manage) return undefined;
+  const phase = positionManagePhaseAt(manage, Date.now());
+  // A resolved note is transient: it says what just happened, then gets out of the way.
+  if (positionManageIsTerminal(phase) && phase !== 'closed' && manage.resolvedAt) {
+    if (Date.now() - new Date(manage.resolvedAt).getTime() > POSITION_MANAGE_NOTE_MS) return undefined;
+  }
+  const detailValue = positionManageDetailValue(manage);
+  const detailLabel = detailValue ? positionManageVerbKey(manage.kind) : undefined;
+  return {
+    phase,
+    label: positionManagePillLabel(phase),
+    tone: positionManagePillTone(phase),
+    icon: phase === 'closed',
+    ...(detailLabel && detailValue ? { detailLabel, detailValue } : {}),
+  };
+}
+
+// The pill + the "Withdrew 0.03 / 0.05 SOL" tile, shared by the seeded and live cards.
+function positionManagePillHtml(display: ReturnType<typeof positionManageDisplayState>): string {
+  if (!display) return '';
+  return `<span class="positions-status tone-${display.tone}">${display.icon ? checkIcon() : ''}${escapeHtml(display.label)}</span>`;
+}
+
+function positionManageDetailHtml(display: ReturnType<typeof positionManageDisplayState>): string {
+  if (!display?.detailLabel || !display.detailValue) return '';
+  return `<div class="positions-details"><div class="positions-detail"><dt>${escapeHtml(positionDetailLabel(display.detailLabel))}</dt><dd>${escapeHtml(display.detailValue)}</dd></div></div>`;
 }
 
 // ---- Positions live fetch (Jupiter read-facts + Birdeye USD enrichment) ----
@@ -49612,6 +49838,13 @@ async function settleReads(
   return results.map((r) => (r.status === 'fulfilled' ? r.value : null));
 }
 
+// Which connectors actually answered a settleReads batch. A null is a source that failed or was
+// skipped (BYO-key connector with no key), and a seed belonging to a silent source must not be
+// retired on that read's say-so.
+function readOkConnectors(pairs: Array<[string, Record<string, unknown> | null | undefined]>): ReadonlySet<string> {
+  return new Set(pairs.filter(([, res]) => res != null).map(([id]) => id));
+}
+
 async function fetchPositionCategory(section: PositionSectionId, force = false): Promise<void> {
   if (!state.address) return;
   const cluster = state.cluster;
@@ -49622,6 +49855,9 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
   try {
     let rows: PositionLiveRow[] = [];
     let partial = false; // multi-source section where some (not all) connectors failed
+    // The connectors that ANSWERED — seed-expiry trusts a read only for these (see
+    // expireStaleSeededForSection), so one dead source can no longer freeze the whole section.
+    let okConnectors: ReadonlySet<string> = new Set<string>();
     if (section === 'orders') {
       const [trig, rec] = await settleReads([
         connectorRead('jupiter', 'trigger', { triggerOperation: 'orders', triggerState: 'open' }),
@@ -49629,6 +49865,9 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
       ]);
       if (trig === null && rec === null) throw new Error('unavailable');
       partial = [trig, rec].includes(null);
+      // Both sub-reads are 'jupiter' (limit + DCA), so the connector is only authoritative for
+      // seed-expiry when both answered — a seed can't say which of the two owns it.
+      okConnectors = trig !== null && rec !== null ? new Set(['jupiter']) : new Set<string>();
       const orderMints = [
         ...(trig ? posArray(((trig.result ?? trig) as Record<string, unknown>).orders) : []).map((o) => posStr(o.triggerMint) ?? posStr(o.outputMint)),
         ...(rec ? posArray(((rec.result ?? rec) as Record<string, unknown>).orders) : []).map((o) => posStr(o.inputMint)),
@@ -49651,8 +49890,10 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
         connectorRead('drift', 'positions'),
       ]);
       if ([jup, kam, sav, mfi, lulo, drift].every((r) => r === null)) throw new Error('unavailable');
-      // Only the always-on keyless connectors gate seed-expiry; Lulo (BYOK) / Drift being null is expected.
+      // Only the always-on keyless connectors mark the section partial; Lulo (BYOK) / Drift being null
+      // is expected. Seed-expiry no longer keys off `partial` at all — it keys off who answered.
       partial = [jup, kam, sav, mfi].includes(null);
+      okConnectors = readOkConnectors([['jupiter', jup], ['kamino', kam], ['save', sav], ['marginfi', mfi], ['lulo', lulo], ['drift', drift]]);
       const prices = jup ? await posPrices(posArray(jup.positions).map((p) => posStr(p.assetMint))) : new Map<string, WalletBalancePriceInfo>();
       const mfiLegs = mfi ? await readMarginfiLegs(mfi) : [];
       rows = [
@@ -49672,6 +49913,7 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
       ]);
       if (jup === null && sav === null && mfi === null) throw new Error('unavailable');
       partial = [jup, sav, mfi].includes(null);
+      okConnectors = readOkConnectors([['jupiter', jup], ['save', sav], ['marginfi', mfi]]);
       const mfiLegs = mfi ? await readMarginfiLegs(mfi) : [];
       rows = [
         ...parseBorrowRows(jup),
@@ -49686,6 +49928,7 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
       ]);
       if (m === null && j === null && s === null) throw new Error('unavailable');
       partial = [m, j, s].includes(null);
+      okConnectors = readOkConnectors([['marinade', m], ['jito', j], ['sanctum', s]]);
       rows = [...parseStakeRows('marinade', m), ...parseStakeRows('jito', j), ...parseStakeRows('sanctum', s)];
     } else if (section === 'liquidity') {
       const [me, o, ra] = await settleReads([
@@ -49695,6 +49938,7 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
       ]);
       if (me === null && o === null && ra === null) throw new Error('unavailable');
       partial = [me, o, ra].includes(null);
+      okConnectors = readOkConnectors([['meteora', me], ['orca', o], ['raydium', ra]]);
       const lpMints: Array<string | undefined> = [];
       for (const lpRes of [me, o, ra]) {
         if (!lpRes) continue;
@@ -49708,18 +49952,20 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
       // Phoenix Perpetuals is the only perps-action connector (Jupiter perps is read-only, no positions read).
       const res = await connectorRead('phoenix', 'positions');
       if (res === null) throw new Error('unavailable');
+      okConnectors = readOkConnectors([['phoenix', res]]);
       rows = parsePhoenixRows(res);
     }
     // Discard if the cluster changed mid-flight (stale fetch).
     if (state.cluster !== cluster) return;
     state.positionsLive[section] = { rows, fetchedAt: Date.now(), loading: false, cluster, ...(partial ? { partial: true } : {}) };
-    // Reconcile manage-pending records first (partial reduce keeps them, full close retires them),
-    // then retire stale seeded OPENs on any CLEAN (non-partial) read — including an empty one, which for
-    // an active-only read (DCA/limit) means the order completed or was cancelled and its seed should not
-    // resurface. `expireStaleSeededForSection`'s own 2-min age cutoff protects a just-opened, still-indexing
-    // position; a partial read (some source failed) is never authoritative, so seeds are kept.
+    // Reconcile settling records first (a surviving row proves a partial reduce and keeps the card; a
+    // clean empty read proves a full unwind and retires it), then retire stale seeded OPENs for the
+    // connectors that ANSWERED — including on an empty read, which for an active-only read (DCA/limit)
+    // means the order completed or was cancelled and its seed should not resurface.
+    // `expireStaleSeededForSection`'s own 2-min age cutoff protects a just-opened, still-indexing
+    // position, and its per-connector check protects one whose source didn't reply.
     reconcileManagePendingForSection(section, cluster, rows, partial);
-    if (!partial) expireStaleSeededForSection(section, cluster);
+    expireStaleSeededForSection(section, cluster, okConnectors);
   } catch (e) {
     if (state.cluster !== cluster) return;
     state.positionsLive[section] = {
@@ -49732,6 +49978,9 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
   }
   // Start/stop the DCA progress poll based on whether the just-fetched Orders section holds an active DCA.
   ensureDcaPollInterval();
+  // Same for the manage-settle watch: this read may have just resolved the last settling record (stop),
+  // or a reload may have restored one that was still in flight (start).
+  ensurePositionSettleInterval();
   render();
 }
 
@@ -49739,6 +49988,12 @@ async function fetchPositionCategory(section: PositionSectionId, force = false):
 // statically extractable AND translated at render with the active language.
 function positionDetailLabel(key: string): string {
   switch (key) {
+    // Past-tense manage verbs — the label on a settled card's "what just happened" tile
+    // (positionManageVerbKey), e.g. Withdrew | 0.03 / 0.05 SOL.
+    case 'Withdrew': return t('Withdrew');
+    case 'Repaid': return t('Repaid');
+    case 'Unstaked': return t('Unstaked');
+    case 'Removed': return t('Removed');
     case 'Trigger price': return t('Trigger price');
     case 'Current price': return t('Current price');
     case 'Size': return t('Size');
@@ -49873,6 +50128,10 @@ function positionLiveCard(row: PositionLiveRow): string {
     .join('');
   const statusLabel = formatPositionStatus(row.status);
   const tone = positionStatusTone(row.status);
+  // A confirmed manage action against THIS position takes over the pill while it settles and for a
+  // short while after ("Updating…" → "Confirmed", + "Withdrew 0.03 / 0.05 SOL"), then ages out and the
+  // row's own status returns. The remaining balance needs no work here — it IS the hero.
+  const manageDisplay = positionManageDisplayStateForLiveRow(row);
   // The hero stat: large label-over-value block under the title (the number the user came to see),
   // with an inline token logo when the parser supplied a heroMint.
   const heroLogo = row.heroMint ? tokenLogoChipHtml(row.heroMint) : '';
@@ -49885,12 +50144,26 @@ function positionLiveCard(row: PositionLiveRow): string {
     head: `
         <span class="positions-badge">${escapeHtml(positionCategoryLabel(row.kind))}</span>
         ${chip}
-        ${statusLabel ? `<span class="positions-status tone-${tone}">${escapeHtml(statusLabel)}</span>` : ''}`,
+        ${manageDisplay
+          ? positionManagePillHtml(manageDisplay)
+          : statusLabel ? `<span class="positions-status tone-${tone}">${escapeHtml(statusLabel)}</span>` : ''}`,
     summary: `<span class="positions-title positions-title--bold">${escapeHtml(row.title)}</span>${distance}`,
-    body: `${headline}${primaryGrid}${moreGrid}
+    body: `${headline}${positionManageDetailHtml(manageDisplay)}${primaryGrid}${moreGrid}
       ${progress}`,
     actions: `${cancelBtn}${extrasBtns}${positionManagePromptHtml(row.id)}`,
   });
+}
+
+// The settle display for the record whose confirmed manage action targets THIS live row — the reverse
+// of liveRowForPosition, using the same join key so a USDC withdraw's note can't land on the SOL card.
+function positionManageDisplayStateForLiveRow(row: PositionLiveRow): ReturnType<typeof positionManageDisplayState> {
+  const record = state.positions.find((p) => {
+    if (!p.manage || p.cluster !== state.cluster || p.walletAddress !== state.address) return false;
+    if (p.connector !== row.connectorId || p.category !== row.kind) return false;
+    const key = positionJoinKey(p);
+    return !key || key === row.cancel?.orderId || key === row.id || key === row.heroMint;
+  });
+  return record ? positionManageDisplayState(record) : undefined;
 }
 
 // The form field that identifies WHAT to manage, per manage-action kind (default 'orderId').
@@ -49952,14 +50225,17 @@ function dispatchPositionManage(positionId: string, kind: string, orderId: strin
   executePositionManage(positionId, kind, orderId, fields);
 }
 
-// Best-effort "Max" for a manage amount: the position's current size, parsed from the live hero stat or
-// the seed record's amount. Falls back to empty (the user types) when nothing numeric is available.
+// Best-effort "Max" for a manage amount: the position's current TOKEN size, from the live read or the
+// seed record's amount. Falls back to empty (the user types) when nothing numeric is available.
+//
+// It must come from positionLiveTokenAmountText, NOT the hero: Jupiter lend / LP / Drift promote the
+// USD 'Value' to the hero, so reading the hero here prefilled Max with a dollar figure ("$7.50") for a
+// 0.05 SOL position — a wrong amount typed straight into a token field.
 function positionManageMaxAmount(positionId: string): string {
-  const liveRow = Object.values(state.positionsLive)
-    .flatMap((entry) => entry?.rows ?? [])
-    .find((row) => row.id === positionId || row.cancel?.orderId === positionId);
+  const liveRow = positionLiveRowById(positionId);
   const candidates: string[] = [];
-  if (liveRow?.headline?.value) candidates.push(liveRow.headline.value);
+  const liveText = liveRow ? positionLiveTokenAmountText(liveRow) : undefined;
+  if (liveText) candidates.push(liveText);
   const seedAmount = state.positions.find((p) => p.id === positionId)?.params?.amount;
   if (typeof seedAmount === 'string') candidates.push(seedAmount);
   else if (typeof seedAmount === 'number') candidates.push(String(seedAmount));
@@ -56428,7 +56704,13 @@ async function runSetWorkflowModePreference(preference: WorkflowModePreference):
 async function refreshCloudSession(strict: boolean): Promise<void> {
   try {
     const response = parseSessionResponse(await cloudRequest('/api/session', { method: 'GET' }));
+    const wasSignedIn = state.cloudSession.status === 'signed-in';
     state.cloudSession = cloudSessionFromResponse(response);
+    // Push binds device→wallet through the session, so a fresh sign-in is when a device that already
+    // opted in must re-attest (the 7-day session expires; the device must outlive it).
+    if (!wasSignedIn && state.cloudSession.status === 'signed-in' && rememberedPushDevice()) {
+      void syncPushDeviceRegistration();
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     state.cloudSession = {
@@ -61118,6 +61400,88 @@ function clearDcaPollInterval(): void {
     window.clearInterval(dcaPollTimer);
     dcaPollTimer = null;
   }
+}
+
+// ---- Positions manage-settle watch ----
+//
+// A confirmed withdraw/repay/cancel leaves the card saying "Updating…" until an authoritative live read
+// says whether the position shrank or vanished. Nothing else re-reads on its own: the positions ticker
+// only rewrites "Updated 2m ago" text, and the panel's lazy-fetch only fires when a section has no
+// cached entry at all. So while anything is settling, poll its section — this is what turns a ~90s
+// worst-case deadline into a ~6s resolve.
+//
+// It is an OPTIMIZATION, not the exit: positionManageDisplayState resolves the pill from the record's
+// own deadline, so a card still goes terminal if this timer never runs (backgrounded WebView, reload,
+// no `window`).
+let positionSettleTimer: number | null = null;
+
+function settlingPositionSections(): PositionSectionId[] {
+  const ids = new Set<PositionSectionId>();
+  for (const p of state.positions) {
+    if (p.cluster === state.cluster && p.status === 'open' && positionIsSettling(p)) ids.add(sectionForCategory(p.category));
+  }
+  return [...ids];
+}
+
+// Persist what the renderer already computes: a record past its deadline is terminal. Doing it here
+// too keeps the render path free of mutations and stops a stale 'pending' from being re-polled forever.
+function retireExpiredSettlingPositions(): boolean {
+  let changed = false;
+  for (const p of state.positions) {
+    if (p.manage?.phase === 'pending' && positionManagePhaseAt(p.manage, Date.now()) === 'unconfirmed') {
+      p.manage.phase = 'unconfirmed';
+      p.manage.resolvedAt = new Date().toISOString();
+      changed = true;
+    }
+  }
+  if (changed) savePositions();
+  return changed;
+}
+
+function ensurePositionSettleInterval(): void {
+  if (typeof window === 'undefined') return;
+  if (!settlingPositionSections().length) {
+    clearPositionSettleInterval();
+    return;
+  }
+  if (positionSettleTimer !== null) return;
+  positionSettleTimer = window.setInterval(() => {
+    const expired = retireExpiredSettlingPositions();
+    const sections = settlingPositionSections();
+    if (!sections.length || !state.address) {
+      clearPositionSettleInterval();
+      if (expired) render();
+      return;
+    }
+    for (const section of sections) void fetchPositionCategory(section, true);
+  }, POSITION_SETTLE_POLL_MS);
+}
+
+function clearPositionSettleInterval(): void {
+  if (positionSettleTimer !== null) {
+    window.clearInterval(positionSettleTimer);
+    positionSettleTimer = null;
+  }
+}
+
+// A finished card shows "Complete" for a beat, then retires to Done. Renders are event-driven, so
+// without a nudge the card would sit on "Complete" until something else happened to re-render.
+//
+// The delay is computed from the record's OWN remaining linger, not a fixed POSITION_COMPLETE_LINGER_MS,
+// so this is correct from both callers: the live close (full window left) and a render that restored an
+// already-closed record from storage part-way through its window (which otherwise never retires at all,
+// because no transition happens on that path to schedule anything).
+let positionLingerTimer: number | null = null;
+function schedulePositionLingerRender(): void {
+  if (typeof window === 'undefined' || positionLingerTimer !== null) return;
+  const remaining = state.positions
+    .filter(positionIsLingeringComplete)
+    .map((p) => new Date(p.manage!.resolvedAt!).getTime() + POSITION_COMPLETE_LINGER_MS - Date.now());
+  if (!remaining.length) return;
+  positionLingerTimer = window.setTimeout(() => {
+    positionLingerTimer = null;
+    render();
+  }, Math.max(0, Math.min(...remaining)) + 250);
 }
 
 function ledgerWorkflowSource(action: PreparedAction): LedgerWorkflowSource {
@@ -68058,13 +68422,15 @@ function positionCard(p: PositionRecord): string {
     : { id: p.connector, name: p.connector ? positionConnectorName(p.connector) : undefined };
   const title = action ? preparedActionCardTitle(action) : positionCardSeedTitle(p);
   const hero = action ? chatActionHeroHtml(action) : positionHeroFromSeed(p);
-  const updating = p.manageRequestedAt
-    ? `<span class="positions-status tone-warn">${escapeHtml(t('Updating…'))}</span>`
-    : '';
+  // Updating… → Confirmed / Complete. Resolved from the record's own settle deadline, so it can never
+  // outlive a live read that never comes.
+  const display = positionManageDisplayState(p);
+  const updating = positionManagePillHtml(display);
   const explorer = p.txid
     ? `<a class="positions-tx" href="${escapeHtml(explorerUrl(p.txid, p.cluster))}" target="_blank" rel="noreferrer">${escapeHtml(t('View transaction'))}</a>`
     : '';
-  const manage = positionSeedManage(p);
+  // A finished position is done being managed — offering "Withdraw" on it again would only fail.
+  const manage = display?.phase === 'closed' ? undefined : positionSeedManage(p);
   const manageBtn = manage
     ? `<button class="utility positions-primary" data-position-cancel="${escapeHtml(p.id)}" data-position-cancel-kind="${escapeHtml(manage.kind)}" data-position-cancel-order-id="${escapeHtml(manage.orderId)}">${escapeHtml(manage.label)}</button>`
     : '';
@@ -68077,7 +68443,7 @@ function positionCard(p: PositionRecord): string {
         ${updating}
         <span class="positions-opened">${escapeHtml(tf('Opened {when}', { when: formatDateTime(p.openedAt) }))}</span>`,
     summary: `<span class="positions-title positions-title--bold">${escapeHtml(title)}</span>`,
-    body: `<div class="positions-hero">${hero}</div>`,
+    body: `<div class="positions-hero">${hero}</div>${positionManageDetailHtml(display)}`,
     actions: `
         ${manageBtn}
         ${explorer}
@@ -68231,18 +68597,33 @@ function renderPositionsSection(
     const partialNote = entry.partial
       ? `<p class="positions-note">${escapeHtml(t('Some sources couldn’t be reached. Tap refresh to retry.'))}</p>`
       : '';
+    // A record whose manage action is still settling, or that just finished and is showing "Complete"
+    // for its last beat, and that live does NOT have a row for. Without this it would fall through to
+    // positionsEmpty() and the user would never see the outcome land — the pending-confirmation filter
+    // below only admits positions opened in the last 2 minutes. Records live DOES still carry are left
+    // to their live card, which shows the same pill plus the real remaining balance; rendering both
+    // would double up the position.
+    const settling = seededCards.filter(
+      (p) =>
+        (positionIsSettling(p) || positionIsLingeringComplete(p)) &&
+        !liveRowForPosition(entry.rows, p, positionJoinKey(p)),
+    );
+    const settlingCards = settling.map(positionCard).join('');
     if (entry.rows.length) {
-      body = partialNote + entry.rows.map(positionLiveCard).join('');
+      body = partialNote + settlingCards + entry.rows.map(positionLiveCard).join('');
     } else {
       // Live read succeeded but is empty — a just-signed position may not be on-chain yet. Show recent
       // seeded bridge-records as "Pending confirmation" instead of a misleading "nothing open".
-      const pending = seededCards.filter(positionIsRecentlyOpened);
-      body = pending.length
-        ? `<p class="positions-note">${escapeHtml(t('Pending confirmation. Your new position is being confirmed on-chain and will appear here shortly.'))}</p>` +
-          pending.map(positionCard).join('')
-        : partialNote + positionsEmpty();
+      const pending = seededCards.filter((p) => positionIsRecentlyOpened(p) && !settling.includes(p));
+      const pendingNote = pending.length
+        ? `<p class="positions-note">${escapeHtml(t('Pending confirmation. Your new position is being confirmed on-chain and will appear here shortly.'))}</p>`
+        : '';
+      body =
+        settling.length || pending.length
+          ? settlingCards + pendingNote + pending.map(positionCard).join('')
+          : partialNote + positionsEmpty();
     }
-    return { toolbar, body, hasContent: entry.rows.length > 0, loading: false };
+    return { toolbar, body, hasContent: entry.rows.length > 0 || settling.length > 0, loading: false };
   }
   // No live source reachable, or the read failed. A connected wallet is NEVER offered Sign-in:
   // the public read fallback (connectorRead) means the only real cause here is a transient
@@ -68271,6 +68652,9 @@ function positionsAllAggregateEntry(): PositionsLiveEntry {
 function positionsPanel(): string {
   const mobile = isMobileAppViewport();
   ensurePositionsTicker();
+  // A card that finished while the app was closed comes back mid-linger with no transition to schedule
+  // its own retirement, so arm it here too (idempotent — one timer, keyed off the real remaining time).
+  schedulePositionLingerRender();
   const open = openPositions();
   const filter = state.positionsCategory;
   const isAll = filter === 'all';
@@ -72481,7 +72865,9 @@ function statusLabelToneClass(tone: StatusLabel['tone']): string {
 }
 
 function labArtifactCard(artifact: LabArtifact): string {
-  const legacy = labById(artifact.labId)?.category === 'advanced';
+  // Currently unreachable (nothing calls this), but keep the flag honest:
+  // "legacy" means the lab definition is missing, not that the proof is advanced.
+  const legacy = !labById(artifact.labId);
   return `
     <article class="lab-artifact artifact-summary-card">
       <div class="artifact-summary-head">
@@ -74516,8 +74902,8 @@ function labIndexLabel(): string {
   }
   const index = ADVANCED_EVIDENCE_LABS.findIndex((candidate) => candidate.id === lab.id);
   return index >= 0
-    ? tf('advanced lab {index} of {total}', { index: index + 1, total: ADVANCED_EVIDENCE_LABS.length })
-    : t('legacy lab');
+    ? tf('advanced proof {index} of {total}', { index: index + 1, total: ADVANCED_EVIDENCE_LABS.length })
+    : t('Advanced proof');
 }
 
 function receiptFieldValue(labId: string, fieldId: string): string {
@@ -74578,8 +74964,7 @@ function receiptInputSummary(lab: LabDefinition, values: Record<string, string>)
 
 async function labPayload(labId: string, input: string, createdAt: string, fieldValues: Record<string, string> = {}): Promise<LabPayload> {
   const lab = labById(labId);
-  const unsafe = /\bunlimited\b|seed phrase|private key|unknown custody/i.test(input);
-  const status = receiptStatus(lab, fieldValues, input, unsafe);
+  const status = receiptStatus(lab, fieldValues);
   const baseEvidence: Array<[string, string, 'good' | 'warn' | 'danger' | 'neutral']> = [
     ...receiptEvidenceEntries(lab, fieldValues, input, status),
     ['Wallet boundary', 'This receipt is evidence only. It does not approve or submit a transaction.', 'good'],
@@ -74616,21 +75001,36 @@ async function labPayload(labId: string, input: string, createdAt: string, field
   };
 }
 
+// Severity comes from structured input only, never from scanning the note.
+//
+// This used to keyword-match the free text: `unsafe` blocked on "seed phrase"
+// or "private key", and a second regex warned on "authority" / "unknown" /
+// "override". Those are exactly the words a careful author uses when ruling a
+// risk OUT, so "No private-key handoff. No authority grants." — an assertion of
+// safety — got stamped blocked/warning. A substring cannot tell "no new
+// authority grants" from "grants authority", and the stamp it produces is
+// baked into the signed artifact and travels through Share proof / Copy JSON.
+//
+// A proof records what its author asserted. Anything we cannot read off a
+// structured field is 'observed' ("recorded") — true of every evidence record,
+// and it claims nothing we have not been told.
 function receiptStatus(
   lab: LabDefinition | null,
   fieldValues: Record<string, string>,
-  input: string,
-  unsafe: boolean,
 ): LabPayload['status'] {
-  if (unsafe || lab?.id === 'rejection-receipt') return 'blocked';
+  if (lab?.id === 'rejection-receipt') return 'blocked';
   const explicit = (fieldValues.verdict || fieldValues.result || '').toLowerCase();
   if (explicit.includes('blocked')) return 'blocked';
   if (explicit.includes('warning')) return 'warn';
-  if (explicit.includes('pass')) return 'approved';
-  if (/unknown|authority|insurance|override/i.test(input)) return 'warn';
-  return lab?.category === 'receipt' ? 'observed' : 'approved';
+  if (explicit.includes('pass') || explicit.includes('approved')) return 'approved';
+  return 'observed';
 }
 
+// Canonical, deliberately NOT localized: this value is written into
+// payload.verdict and payload.metrics, and the whole payload is hashed into
+// preSignatureHash and signed. Translating it would make the same proof hash
+// differently per UI language and bake a localized string into signed evidence.
+// Display goes through receiptVerdictDisplayLabel instead.
 function receiptVerdictLabel(status: LabPayload['status']): string {
   switch (status) {
     case 'approved':
@@ -74641,6 +75041,37 @@ function receiptVerdictLabel(status: LabPayload['status']): string {
       return 'warning';
     case 'observed':
       return 'recorded';
+  }
+}
+
+// Display-side twin of receiptVerdictLabel. Reads the canonical stored status
+// so the shown word follows the UI language while the signed bytes do not move.
+function receiptVerdictDisplayLabel(status: LabPayload['status']): string {
+  switch (status) {
+    case 'approved':
+      return t('approved');
+    case 'blocked':
+      return t('blocked');
+    case 'warn':
+      return t('warning');
+    case 'observed':
+      return t('recorded');
+  }
+}
+
+// Mirrors the tone already computed for the Verdict metric in labPayload. The
+// cards previously rendered the verdict with no tone at all, so blocked and
+// recorded were indistinguishable on an evidence surface.
+function receiptVerdictTone(status: LabPayload['status']): 'good' | 'warn' | 'danger' | 'neutral' {
+  switch (status) {
+    case 'blocked':
+      return 'danger';
+    case 'warn':
+      return 'warn';
+    case 'observed':
+      return 'neutral';
+    case 'approved':
+      return 'good';
   }
 }
 
@@ -75910,7 +76341,7 @@ function isPersistedIosWalletId(value: string): value is IosNativeWalletId {
 
 function isPersistedNotificationSettings(value: unknown): value is Partial<Omit<NotificationSettingsState, 'permission'>> {
   if (!isJsonObject(value)) return false;
-  return ['browser', 'due', 'pending', 'confirmed', 'failed'].every((key) =>
+  return ['browser', 'due', 'pending', 'confirmed', 'failed', 'limitFilled', 'dcaFilled', 'borrowAtRisk'].every((key) =>
     value[key] === undefined || typeof value[key] === 'boolean',
   );
 }
@@ -76442,6 +76873,9 @@ function savePersistedState(): void {
           pending: state.notificationSettings.pending,
           confirmed: state.notificationSettings.confirmed,
           failed: state.notificationSettings.failed,
+          limitFilled: state.notificationSettings.limitFilled,
+          dcaFilled: state.notificationSettings.dcaFilled,
+          borrowAtRisk: state.notificationSettings.borrowAtRisk,
         },
       }),
     );
@@ -78739,6 +79173,29 @@ function isPositionRecord(value: unknown): value is PositionRecord {
   );
 }
 
+// Records written before `manage` existed carry a bare `manageRequestedAt`. That flag could ONLY be
+// cleared by a successful live read, so a failing or permanently-partial section left it set forever
+// and the card sat on "Updating…" indefinitely — the bug this lifecycle exists to kill. One still
+// inside its settle window becomes a real intent (deadline and all) so it can resolve; one already
+// past it is simply dropped: its txid and amount can't be reconstructed, and a stale flag has no
+// business surviving a reload.
+function migrateLegacyManageFlag(p: PositionRecord): PositionRecord {
+  if (p.manageRequestedAt && !p.manage) {
+    const requestedAt = new Date(p.manageRequestedAt).getTime();
+    if (Number.isFinite(requestedAt) && Date.now() - requestedAt < POSITION_SETTLE_MS) {
+      p.manage = {
+        actionId: '',
+        kind: positionSeedManage(p)?.kind ?? p.kind,
+        requestedAt: p.manageRequestedAt,
+        settleDeadlineAt: new Date(requestedAt + POSITION_SETTLE_MS).toISOString(),
+        phase: 'pending',
+      };
+    }
+  }
+  delete p.manageRequestedAt;
+  return p;
+}
+
 function loadPositions(walletAddress = ''): PositionRecord[] {
   try {
     const legacy = localStorageJsonArray(POSITIONS_STORAGE_KEY);
@@ -78749,7 +79206,7 @@ function loadPositions(walletAddress = ''): PositionRecord[] {
     for (const value of [...legacy, ...scoped]) {
       if (!isPositionRecord(value)) continue;
       if (walletAddress && value.walletAddress && value.walletAddress !== walletAddress) continue;
-      byId.set(value.id, value);
+      byId.set(value.id, migrateLegacyManageFlag(value));
     }
     return [...byId.values()];
   } catch {
@@ -80220,80 +80677,291 @@ function fireNotificationOnce(category: string, recordId: string, title: string,
   const key = `${category}:${recordId}`;
   if (state.notifiedRecords[key]) return;
   state.notifiedRecords[key] = new Date().toISOString();
+  saveNotifiedRecords();
   try {
-    new Notification(title, { body, tag: key });
+    // Route to whichever notification surface exists: the native bridge on the app shells (the
+    // WebView has no `Notification`), the Web Notification API in a browser.
+    if (IS_IOS_APP) {
+      void iosNativeShowNotification({ title, body, tag: key });
+    } else if (IS_ANDROID_APP) {
+      androidShowNotification({ title, body, tag: key });
+    } else {
+      new Notification(title, { body, tag: key });
+    }
   } catch (err) {
     logDebug({ level: 'warn', source: 'ui', message: `notification failed: ${err instanceof Error ? err.message : String(err)}` });
   }
 }
 
-async function handleNotificationAction(op: string): Promise<void> {
-  switch (op) {
-    case 'request-permission': {
-      if (typeof Notification === 'undefined') {
-        pushToast('error', t('Not supported'), t('This browser does not expose the Notification API.'));
-        return;
-      }
-      try {
-        const permission = await Notification.requestPermission();
-        state.notificationSettings.permission = permission;
-        if (permission === 'granted') state.notificationSettings.browser = true;
-        savePersistedState();
-        render();
-      } catch (err) {
-        const message = err instanceof Error ? err.message : t('Permission request failed.');
-        pushToast('error', t('Permission failed'), message);
+function loadNotifiedRecords(): Record<string, string> {
+  try {
+    const raw = window.localStorage.getItem(NOTIFIED_RECORDS_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed)) if (typeof value === 'string') out[key] = value;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function saveNotifiedRecords(): void {
+  try {
+    let entries = Object.entries(state.notifiedRecords);
+    if (entries.length > NOTIFIED_RECORDS_MAX) {
+      // Evict oldest by timestamp; the values are ISO strings so lexical sort is chronological.
+      entries = entries.sort((a, b) => (a[1] < b[1] ? 1 : -1)).slice(0, NOTIFIED_RECORDS_MAX);
+      state.notifiedRecords = Object.fromEntries(entries);
+    }
+    window.localStorage.setItem(NOTIFIED_RECORDS_STORAGE_KEY, JSON.stringify(state.notifiedRecords));
+  } catch {
+    /* Best-effort browser persistence. */
+  }
+}
+
+// Operator kill-switch for the whole push path (server-sent, closed-app). A build constant rather
+// than remote config: flipping it is a Render redeploy that reaches every surface's live bundle, and
+// it's the "server" half of the two-flags-must-agree gate (the other half is the binary bridge probe).
+const PUSH_NOTIFICATIONS_ENABLED = true;
+
+function notificationSurfaceNow(): NotificationSurface {
+  return notificationSurface({ isIosApp: IS_IOS_APP, isAndroidApp: IS_ANDROID_APP });
+}
+
+/** Does THIS binary expose the native push bridge? iOS Capacitor builds always do; Android needs the
+ *  capability bit an old APK lacks. */
+function notificationBridgeAvailable(): boolean {
+  if (IS_IOS_APP) return true;
+  if (IS_ANDROID_APP) return androidNotificationsBridgeAvailable();
+  return false;
+}
+
+function notificationPushAvailability(): ReturnType<typeof pushAvailability> {
+  return pushAvailability({
+    surface: notificationSurfaceNow(),
+    serverEnabled: PUSH_NOTIFICATIONS_ENABLED,
+    bridgeAvailable: notificationBridgeAvailable(),
+    signedIn: state.cloudSession.status === 'signed-in' && cloudSessionMatchesWallet(),
+  });
+}
+
+// The category ids match the NotificationSettingsState field names 1:1 (minus the `browser` master),
+// so a category id indexes settings directly.
+function currentNotificationCategoryMap(): NotificationCategoryMap {
+  const s = state.notificationSettings;
+  return {
+    due: s.due,
+    confirmed: s.confirmed,
+    failed: s.failed,
+    limitFilled: s.limitFilled,
+    dcaFilled: s.dcaFilled,
+    borrowAtRisk: s.borrowAtRisk,
+    pending: s.pending,
+  };
+}
+
+let pushRegisterInFlight = false;
+
+/**
+ * Reconcile this device's push registration with the current toggles. Registers (fetching the native
+ * token) when push is available and any push-capable category is on; unregisters when none are. Called
+ * on every relevant toggle and on sign-in. Best-effort — a failure leaves local alerts working.
+ */
+async function syncPushDeviceRegistration(): Promise<void> {
+  const availability = notificationPushAvailability();
+  if (!availability.available || pushRegisterInFlight) return;
+  const categoryMap = currentNotificationCategoryMap();
+  pushRegisterInFlight = true;
+  try {
+    if (!hasAnyPushCategory(categoryMap)) {
+      await unregisterPushDevice();
+      return;
+    }
+    const registration = IS_IOS_APP ? await iosNativeRegisterForPush() : await androidRequestNotificationPermission();
+    if (!registration.ok || !registration.token) {
+      if (registration.status === 'denied') {
+        pushToast('info', t('Notifications off'), t('Enable notifications in system settings to receive alerts.'));
       }
       return;
     }
-    case 'toggle-browser':
-      state.notificationSettings.browser = !state.notificationSettings.browser;
-      savePersistedState();
-      render();
-      return;
-    case 'toggle-due':
-      state.notificationSettings.due = !state.notificationSettings.due;
-      savePersistedState();
-      render();
-      return;
-    case 'toggle-pending':
-      state.notificationSettings.pending = !state.notificationSettings.pending;
-      savePersistedState();
-      render();
-      return;
-    case 'toggle-confirmed':
-      state.notificationSettings.confirmed = !state.notificationSettings.confirmed;
-      savePersistedState();
-      render();
-      return;
-    case 'toggle-failed':
-      state.notificationSettings.failed = !state.notificationSettings.failed;
-      savePersistedState();
-      render();
-      return;
+    state.notificationSettings.permission = registration.status === 'denied' ? 'denied' : 'granted';
+    savePersistedState();
+    await cloudRequest('/api/push/register-device', {
+      method: 'POST',
+      body: JSON.stringify({
+        platform: IS_IOS_APP ? 'ios' : 'android',
+        token: registration.token,
+        categories: pushCategoryMapForRegistration(categoryMap),
+      }),
+    });
+    rememberPushDeviceToken(IS_IOS_APP ? 'ios' : 'android', registration.token);
+  } catch (err) {
+    logDebug({ level: 'warn', source: 'ui', message: `push register failed: ${err instanceof Error ? err.message : String(err)}` });
+  } finally {
+    pushRegisterInFlight = false;
+    render();
   }
+}
+
+// The registered token, kept so we can unregister the exact device later (the server keys on it).
+const PUSH_DEVICE_TOKEN_KEY = 'solana-agent-wallet-push-device-v1';
+function rememberPushDeviceToken(platform: 'ios' | 'android', token: string): void {
+  try {
+    window.localStorage.setItem(PUSH_DEVICE_TOKEN_KEY, JSON.stringify({ platform, token }));
+  } catch {
+    /* best-effort */
+  }
+}
+function rememberedPushDevice(): { platform: 'ios' | 'android'; token: string } | null {
+  try {
+    const raw = window.localStorage.getItem(PUSH_DEVICE_TOKEN_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (parsed && (parsed.platform === 'ios' || parsed.platform === 'android') && typeof parsed.token === 'string') {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function unregisterPushDevice(): Promise<void> {
+  const device = rememberedPushDevice();
+  if (!device) return;
+  try {
+    await cloudRequest('/api/push/unregister-device', { method: 'POST', body: JSON.stringify(device) });
+    window.localStorage.removeItem(PUSH_DEVICE_TOKEN_KEY);
+  } catch {
+    /* best-effort — server also reaps dead tokens on 410 */
+  }
+}
+
+/**
+ * A tapped notification carries a routing hint the server set ({ tab, section, … }). Navigate to it.
+ * Tolerant of unknown tabs: an old binary tapping a route for a tab it doesn't have just no-ops.
+ */
+function handlePushTapRoute(route: Record<string, string>): void {
+  const tab = route.tab;
+  if (!tab) return;
+  const known = new Set(['positions', 'completed', 'inbox', 'chat', 'overview']);
+  if (known.has(tab)) {
+    state.activeTab = tab as typeof state.activeTab;
+    if (tab === 'positions' && route.section) state.positionsCategory = route.section as PositionsFilterId;
+    render();
+  }
+}
+
+let pushTapWired = false;
+/** Wire notification-tap routing + drain any cold-launch tap the native side buffered. */
+function initPushTapRouting(): void {
+  if (pushTapWired || !surfaceIsNativeApp(notificationSurfaceNow())) return;
+  pushTapWired = true;
+  if (IS_IOS_APP) {
+    void iosNativeOnPushTap(handlePushTapRoute);
+  } else if (IS_ANDROID_APP) {
+    onAndroidPushTap(handlePushTapRoute);
+    const coldRoute = consumeAndroidPushRoute();
+    if (coldRoute) handlePushTapRoute(coldRoute);
+    // A token FCM rotated to while closed (couldn't register then) → re-register now.
+    const pendingToken = consumeAndroidPendingPushToken();
+    if (pendingToken) void syncPushDeviceRegistration();
+  }
+}
+
+async function handleNotificationAction(op: string): Promise<void> {
+  if (op === 'request-permission') {
+    if (surfaceIsNativeApp(notificationSurfaceNow())) {
+      // Native: prompt + register for push in one step. On iOS the plugin self-prompts; on Android
+      // this is the POST_NOTIFICATIONS runtime request that never existed before.
+      state.notificationSettings.browser = true;
+      // Turn on the always-useful defaults so a fresh grant actually delivers something.
+      if (!hasAnyPushCategory(currentNotificationCategoryMap())) {
+        state.notificationSettings.confirmed = true;
+        state.notificationSettings.due = true;
+      }
+      savePersistedState();
+      render();
+      await syncPushDeviceRegistration();
+      return;
+    }
+    if (typeof Notification === 'undefined') {
+      pushToast('error', t('Not supported'), t('This browser does not expose the Notification API.'));
+      return;
+    }
+    try {
+      const permission = await Notification.requestPermission();
+      state.notificationSettings.permission = permission;
+      if (permission === 'granted') state.notificationSettings.browser = true;
+      savePersistedState();
+      render();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : t('Permission request failed.');
+      pushToast('error', t('Permission failed'), message);
+    }
+    return;
+  }
+
+  // Only the boolean fields (never `permission`), so the indexed assignment below stays a boolean.
+  type NotificationToggleField = Exclude<keyof NotificationSettingsState, 'permission'>;
+  const toggleField: Partial<Record<string, NotificationToggleField>> = {
+    'toggle-browser': 'browser',
+    'toggle-due': 'due',
+    'toggle-pending': 'pending',
+    'toggle-confirmed': 'confirmed',
+    'toggle-failed': 'failed',
+    'toggle-limitFilled': 'limitFilled',
+    'toggle-dcaFilled': 'dcaFilled',
+    'toggle-borrowAtRisk': 'borrowAtRisk',
+  };
+  const field = toggleField[op];
+  if (!field) return;
+  state.notificationSettings[field] = !state.notificationSettings[field];
+  savePersistedState();
+  render();
+  // A push-category toggle changes what this device should receive — re-sync the registration.
+  if (field !== 'browser' && field !== 'pending') void syncPushDeviceRegistration();
 }
 
 function notificationPreferencesPanel(): string {
   const settings = state.notificationSettings;
-  const supported = settings.permission !== 'unsupported';
+  const surface = notificationSurfaceNow();
+  const native = surfaceIsNativeApp(surface);
+  const push = notificationPushAvailability();
+  // 'unsupported' now genuinely means "nowhere to notify" — native surfaces always have the bridge, so
+  // only a browser with no Notification API lands here.
+  const supported = native || settings.permission !== 'unsupported';
+
+  const blurb = t(notificationCardBlurbKey(surface, push));
+  // The primary CTA: on native it enables device notifications (permission + push register); on web it
+  // requests the browser permission. Shown until granted.
+  const needsCta = native ? !settings.browser : settings.permission !== 'granted';
+  const ctaLabel = native ? t('Turn on notifications') : t('Request permission');
+
+  // The push-capable categories the user can toggle. `pending` is web-only (a client-side timer with no
+  // server event), so it's hidden on native where push is the delivery model.
+  const rows: string[] = [
+    notificationToggleRow('toggle-confirmed', t('Transaction confirmed'), settings.confirmed),
+    notificationToggleRow('toggle-failed', t('Transaction failed'), settings.failed),
+    notificationToggleRow('toggle-due', t('Repeat payment due'), settings.due),
+    notificationToggleRow('toggle-limitFilled', t('Limit order filled'), settings.limitFilled),
+    notificationToggleRow('toggle-dcaFilled', t('DCA order filled'), settings.dcaFilled),
+    notificationToggleRow('toggle-borrowAtRisk', t('Borrow position at risk'), settings.borrowAtRisk),
+  ];
+  if (!native) rows.unshift(notificationToggleRow('toggle-pending', t('Pending transactions (>60s)'), settings.pending));
+
   return `
     <section class="notification-prefs-panel" aria-label="${escapeHtml(t('Notifications'))}">
       <div class="notification-prefs-head">
         <strong>${escapeHtml(t('Notifications'))}</strong>
-        <p>${escapeHtml(t('Browser notifications fire only when this tab is in the background. Tab title also shows the pending count.'))}</p>
+        <p>${escapeHtml(blurb)}</p>
       </div>
       ${supported ? `
-        <div class="notification-prefs-permission">
-          <span>${escapeHtml(t('Permission:'))} <strong>${escapeHtml(settings.permission)}</strong></span>
-          ${settings.permission !== 'granted' ? `<button type="button" class="primary" data-notification-action="request-permission">${escapeHtml(t('Request permission'))}</button>` : ''}
-        </div>
+        ${needsCta ? `<div class="notification-prefs-permission">
+          <button type="button" class="primary" data-notification-action="request-permission">${escapeHtml(ctaLabel)}</button>
+        </div>` : ''}
         <ul class="notification-prefs-list">
-          ${notificationToggleRow('toggle-browser', t('Browser notifications'), settings.browser)}
-          ${notificationToggleRow('toggle-due', t('Repeat payment due'), settings.due)}
-          ${notificationToggleRow('toggle-pending', t('Pending transactions (>60s)'), settings.pending)}
-          ${notificationToggleRow('toggle-confirmed', t('Transaction confirmed'), settings.confirmed)}
-          ${notificationToggleRow('toggle-failed', t('Transaction failed'), settings.failed)}
+          ${rows.join('\n          ')}
         </ul>
       ` : `<p>${escapeHtml(t('This browser does not expose the Notification API.'))}</p>`}
     </section>
@@ -80420,11 +81088,7 @@ function failurePoliciesPanel(): string {
         <div class="failure-policies-actions">
           <button type="button" class="utility" data-failure-policy-action="reset">${escapeHtml(t('Use recommended defaults'))}</button>
         </div>
-        ${mobile ? failurePolicyGroupedList(policies) : `
-          <div class="failure-policy-list">
-            ${policies.map(failurePolicyRow).join('')}
-          </div>
-        `}
+        ${failurePolicyGroupedList(policies)}
       </section>
     </details>
   `;
@@ -80433,6 +81097,10 @@ function failurePoliciesPanel(): string {
 function failurePolicyGroupedList(policies: FailureRetryPolicy[]): string {
   const policiesByKind = new Map(policies.map((policy) => [policy.kind, policy]));
   const groups = groupedFailureRetryKinds(FAILURE_RETRY_KINDS);
+  // Desktop has the room to show the whole matrix at once, so groups open by
+  // default there and only act as section headers. Mobile collapses the ones
+  // that are all-ask to keep the list scannable.
+  const collapsible = isMobileAppViewport();
   return `
     <div class="failure-policy-group-list">
       ${groups.map((group) => {
@@ -80441,7 +81109,7 @@ function failurePolicyGroupedList(policies: FailureRetryPolicy[]): string {
           .filter((policy): policy is FailureRetryPolicy => Boolean(policy));
         const autoCount = groupPolicies.filter((policy) => policy.mode === 'auto').length;
         return `
-          <details class="failure-policy-group" ${autoCount > 0 ? 'open' : ''}>
+          <details class="failure-policy-group" ${!collapsible || autoCount > 0 ? 'open' : ''}>
             <summary>
               <span>
                 <strong>${escapeHtml(group.title)}</strong>

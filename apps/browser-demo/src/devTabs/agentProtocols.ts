@@ -43,7 +43,9 @@ const subTabs: readonly AgentProtocolsSubTab[] = [
   },
 ];
 
-let activeSubTabId: AgentProtocolsSubTabId = 'external-agents';
+// Land on Profile (setup) rather than Incoming Requests (a live queue that's
+// empty for a first-time user). The queue is one tap away.
+let activeSubTabId: AgentProtocolsSubTabId = 'agent-card';
 
 const hotModule = (import.meta as ImportMeta & {
   hot?: { accept: (callback: () => void) => void };

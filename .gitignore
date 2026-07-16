@@ -34,3 +34,15 @@ apps/android-twa/app/release/
 *.pem
 FUTUREMOAT.MD
 voucher_ai_path.md
+
+# Playwright / browser-automation debug output (never commit).
+# Page snapshots, console logs and screenshots written by the Playwright
+# MCP/CLI when driving the app locally. Scratch output, not app code.
+.playwright-mcp/
+.playwright-cli/
+test-results/
+playwright-report/
+
+# Loose debug screenshots dropped at the repo root. Root-anchored on purpose:
+# real image assets under apps/*/src/assets and apps/*/public are unaffected.
+/*.png

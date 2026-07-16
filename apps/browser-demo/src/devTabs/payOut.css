@@ -1301,8 +1301,16 @@
     min-height: 36px;
   }
 
-  .pay-out-cart-input {
-    min-height: 220px;
+  /* Shrink the JSON editor on phones. These target the .pay-out-advanced-json
+     context specifically because its (0,2,0) base rules (190px shell / 160px
+     input) outrank a bare .pay-out-cart-input, so a 220px override here would be
+     dead. JSON paste is a developer path; it doesn't need a tall box on mobile. */
+  .pay-out-advanced-json .pay-out-editor-shell {
+    min-height: 150px;
+  }
+
+  .pay-out-advanced-json .pay-out-cart-input {
+    min-height: 124px;
   }
 
   .pay-out-request-title-row {
@@ -1313,4 +1321,56 @@
     text-align: left;
     white-space: normal;
   }
+}
+
+/* Native shells can report a CSS width >= 900px, where the width media queries
+   above never fire. These panels render under .route-app, so force the phone
+   layout for native shells regardless of reported width. Mirrors the 700px block. */
+.route-app.android-shell .pay-out-request-layout,
+.route-app.ios-native-shell .pay-out-request-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.route-app.android-shell .pay-out-field-grid,
+.route-app.ios-native-shell .pay-out-field-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.route-app.android-shell .pay-out-field--merchant,
+.route-app.ios-native-shell .pay-out-field--merchant,
+.route-app.android-shell .pay-out-field--recipient,
+.route-app.ios-native-shell .pay-out-field--recipient {
+  grid-column: 1 / -1;
+}
+
+.route-app.android-shell .pay-out-line-row,
+.route-app.ios-native-shell .pay-out-line-row {
+  grid-template-columns: minmax(62px, 0.42fr) minmax(0, 1fr) 38px;
+}
+
+.route-app.android-shell .pay-out-line-row label:first-child,
+.route-app.ios-native-shell .pay-out-line-row label:first-child {
+  grid-column: 1 / -1;
+}
+
+/* The terminal-style route diagram floors at 248px wide; hide it on native so it
+   never forces overflow. */
+.route-app.android-shell .pay-out-route-card,
+.route-app.ios-native-shell .pay-out-route-card {
+  display: none;
+}
+
+.route-app.android-shell .pay-out-entry-tabs,
+.route-app.ios-native-shell .pay-out-entry-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-left: 0;
+  width: 100%;
+}
+
+.route-app.android-shell .pay-out-button,
+.route-app.ios-native-shell .pay-out-button,
+.route-app.android-shell .pay-out-actions-end,
+.route-app.ios-native-shell .pay-out-actions-end {
+  width: 100%;
 }

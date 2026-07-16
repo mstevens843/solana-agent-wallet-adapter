@@ -157,5 +157,24 @@
             android:enabled="${agenticDeviceAgentEnabled}"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Cloud Messaging receiver: server-sent push for order fills, tx confirms, borrow health
+             and repeat dues. exported=false — only FCM dispatches to it. -->
+        <service
+            android:name=".push.AgenticPushMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- Route FCM system-tray notifications through our own channel + icon rather than the
+             app-name default. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="agentic.alerts" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_agentic_notification" />
     </application>
 </manifest>

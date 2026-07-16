@@ -117,22 +117,45 @@ describe('positions live-read gating (no false Sign in)', () => {
 });
 
 describe('positions lifecycle: partial withdraw + auto-Done', () => {
-  it('manage actions mark the position pending instead of hard-closing it', () => {
+  it('manage actions record a settle intent instead of hard-closing the position', () => {
     expect(mainSource).toContain('function markManagePendingForAction');
     expect(mainSource).not.toContain('function closePositionsForManageAction');
-    const mark = sourceBetween('function markManagePendingForAction', 'function openPositions');
-    expect(mark).toContain('match.manageRequestedAt = new Date().toISOString();');
+    const mark = sourceBetween('function markManagePendingForAction', 'function positionIsSettling');
+    expect(mark).toContain("phase: 'pending',");
+    expect(mark).toContain('settleDeadlineAt: new Date(Date.now() + POSITION_SETTLE_MS).toISOString(),');
     expect(mark).not.toContain("match.status = 'closed'");
+    // Targeting is wallet-scoped (reconcile REQUIRES it) and asset-discriminated, so withdrawing one
+    // Jupiter lend asset can't mark another's card.
+    expect(mark).toContain('p.walletAddress === action.walletAddress');
+    expect(mark).toContain('candidates.find((p) => positionJoinKey(p) === String(targetId))');
+    // The settle watch is armed here so the pill resolves in seconds rather than at the deadline.
+    expect(mark).toContain('ensurePositionSettleInterval();');
   });
 
-  it('reconciles against live: partial keeps open, clean-empty full close retires to Done after the settle window', () => {
-    const rec = sourceBetween('function reconcileManagePendingForSection', 'function fetchPositionCategory');
-    expect(rec).toContain('new Date(p.manageRequestedAt).getTime() < POSITION_PENDING_MS) continue');
-    expect(rec).toContain('const stillLive = rows.some');
-    expect(rec).toContain('delete p.manageRequestedAt;');
+  it('reconciles against live: survivor → reduced, clean-empty → closed, partial+gone → unconfirmed', () => {
+    const rec = sourceBetween('function reconcileManagePendingForSection', 'function positionManagePillLabel');
+    // The old 2-minute guard made the post-withdraw refetch a guaranteed no-op; the tx is already
+    // confirmed by this point, so only indexer lag is left to wait out.
+    expect(rec).toContain('new Date(manage.requestedAt).getTime() < POSITION_SETTLE_MIN_AGE_MS) continue');
+    expect(rec).not.toContain('POSITION_PENDING_MS');
+    expect(rec).toContain('const match = liveRowForPosition(rows, p, positionJoinKey(p));');
+    expect(rec).toContain("manage.phase = 'reduced';");
     expect(rec).toContain('} else if (!partial) {');
+    expect(rec).toContain("manage.phase = 'closed';");
     expect(rec).toContain("p.status = 'closed';");
+    // `partial && gone` matched NEITHER arm before — the silent no-op that wedged the card.
+    expect(rec).toContain("manage.phase = 'unconfirmed';");
     expect(rec).toContain('p.walletAddress !== state.address');
+  });
+
+  it('seed expiry is per-connector, not gated on a clean whole-section read', () => {
+    const expire = sourceBetween('function expireStaleSeededForSection', 'function reconcileManagePendingForSection');
+    expect(expire).toContain('okConnectors: ReadonlySet<string>');
+    expect(expire).toContain('(!p.connector || okConnectors.has(p.connector))');
+    expect(expire).toContain('!positionIsSettling(p)');
+    // One chronically-failing connector must no longer pin `partial` and freeze every seed forever.
+    expect(mainSource).toContain('expireStaleSeededForSection(section, cluster, okConnectors);');
+    expect(mainSource).not.toContain('if (!partial) expireStaleSeededForSection(');
   });
 
   it('completion side-effects force an authoritative refetch for stateful actions', () => {
@@ -140,11 +163,53 @@ describe('positions lifecycle: partial withdraw + auto-Done', () => {
     expect(effects).toContain('markManagePendingForAction(action, category as ActionCategory);');
     expect(effects).toContain('void fetchPositionCategory(sectionForCategory(category as ActionCategory), true);');
   });
+
+  it('the pill resolves from the record alone, and a legacy stuck flag is migrated away on load', () => {
+    // The never-stuck guarantee: no network, no timer, no reconcile in the render path.
+    const display = sourceBetween('function positionManageDisplayState', 'function positionManagePillHtml');
+    expect(display).toContain('positionManagePhaseAt(manage, Date.now())');
+    const pill = sourceBetween('function positionManagePillLabel', 'function positionManagePillTone');
+    expect(pill).toContain("case 'closed': return t('Complete');");
+    expect(pill).toContain("case 'reduced': return t('Confirmed');");
+    expect(pill).toContain("case 'unconfirmed': return t('Confirmed');");
+    // Nothing writes the old flag any more.
+    expect(mainSource).not.toContain('manageRequestedAt = new Date().toISOString()');
+    const migrate = sourceBetween('function migrateLegacyManageFlag', 'function loadPositions');
+    expect(migrate).toContain('delete p.manageRequestedAt;');
+    expect(migrate).toContain('Date.now() - requestedAt < POSITION_SETTLE_MS');
+  });
+
+  it('a finished card lingers on Complete before retiring, and settling seeds survive an empty read', () => {
+    const open = sourceBetween('function openPositions', 'const POSITION_PENDING_MS');
+    expect(open).toContain('positionIsLingeringComplete(p)');
+    // Without this a full withdraw's clean-empty read would hit positionsEmpty() and the Complete pill
+    // would never render — positionIsRecentlyOpened only admits positions opened in the last 2 minutes.
+    const section = sourceBetween('function renderPositionsSection', 'function positionsAllAggregateEntry');
+    expect(section).toContain('positionIsSettling(p) || positionIsLingeringComplete(p)');
+    expect(section).toContain('!liveRowForPosition(entry.rows, p, positionJoinKey(p))');
+  });
+
+  it('Max prefills a TOKEN amount, never the USD hero', () => {
+    // Jupiter lend / LP / Drift promote the USD 'Value' to the hero, so reading it here typed "$7.50"
+    // into a SOL amount field.
+    const max = sourceBetween('function positionManageMaxAmount', 'function executePositionManage');
+    expect(max).toContain('positionLiveTokenAmountText(liveRow)');
+    expect(max).not.toContain('liveRow?.headline?.value');
+    const tokenText = sourceBetween('function positionLiveTokenAmountText', 'function positionAmountUnit');
+    expect(tokenText).toContain('POSITION_BALANCE_DETAIL_LABELS[row.kind]');
+    expect(tokenText).toContain('posIsTokenAmountText');
+  });
 });
 
 describe('positions i18n + css', () => {
   it('adds the new user-facing strings to every catalog', () => {
-    const keys = ['All positions', 'Filter positions', 'Updating…', 'Every open position across orders, lending, borrowing, staking and liquidity.', "Couldn't reach live data right now. Showing what you opened. Tap Refresh to retry."];
+    const keys = [
+      'All positions', 'Filter positions', 'Updating…',
+      'Every open position across orders, lending, borrowing, staking and liquidity.',
+      "Couldn't reach live data right now. Showing what you opened. Tap Refresh to retry.",
+      // The manage-settle pill + its per-type "what just happened" tile.
+      'Complete', 'Confirmed', 'Withdrew', 'Repaid', 'Unstaked', 'Removed',
+    ];
     for (const lang of CATALOG_LANGS) {
       const entries = catalog(lang);
       for (const key of keys) {

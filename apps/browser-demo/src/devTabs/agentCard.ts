@@ -71,6 +71,10 @@ interface TabState {
   mppConfigDraft: MppConfigDraft;
   mppConfigBusy: MppConfigBusy;
   mppConfigBanner?: FormBanner;
+  // The MPP policy section is a disclosure, collapsed by default. Its open state
+  // lives here (not on the DOM <details>) because updateBody() rewrites innerHTML
+  // on every save/edit, which would otherwise snap the section shut mid-workflow.
+  mppAdvancedOpen: boolean;
 }
 
 interface ProfileIntentResponse {
@@ -95,6 +99,7 @@ const tabState: TabState = {
   fieldErrors: [],
   mppConfigDraft: createBlankMppConfigDraft(),
   mppConfigBusy: false,
+  mppAdvancedOpen: false,
 };
 let kickoffScheduled = false;
 
@@ -475,112 +480,117 @@ function renderMppConfigBanner(): string {
   return `<p class="${cls}">${escapeHtml(tabState.mppConfigBanner.message)}</p>`;
 }
 
+// The eight allowlist textareas, in the order shown, grouped by kind so the
+// section is scannable when expanded instead of a flat wall of identical boxes.
+const MPP_ALLOWLIST_GROUPS: ReadonlyArray<{
+  heading: string;
+  fields: ReadonlyArray<{ key: keyof MppConfigDraft; label: string; id: string }>;
+}> = [
+  {
+    heading: 'Origins',
+    fields: [
+      { key: 'allowedOrigins', label: 'Shared origins', id: 'dev-agent-card-mpp-origins' },
+      { key: 'allowedMerchantOrigins', label: 'Merchant origins', id: 'dev-agent-card-mpp-merchant-origins' },
+      { key: 'allowedResourceOrigins', label: 'Resource origins', id: 'dev-agent-card-mpp-resource-origins' },
+    ],
+  },
+  {
+    heading: 'URLs',
+    fields: [
+      { key: 'allowedMerchantUrls', label: 'Merchant URLs', id: 'dev-agent-card-mpp-merchant-urls' },
+      { key: 'allowedResourceUrls', label: 'Resource URLs', id: 'dev-agent-card-mpp-resource-urls' },
+    ],
+  },
+  {
+    heading: 'Recipients & assets',
+    fields: [
+      { key: 'allowedMerchantIds', label: 'Allowed merchant ids', id: 'dev-agent-card-mpp-merchant-ids' },
+      { key: 'allowedRecipients', label: 'Allowed recipients', id: 'dev-agent-card-mpp-recipients' },
+      { key: 'allowedMints', label: 'Allowed SPL mints', id: 'dev-agent-card-mpp-mints' },
+    ],
+  },
+];
+
+// How many allowlists carry at least one entry — drives the collapsed summary
+// so a user sees whether any restrictions are set without expanding.
+function mppConfiguredAllowlistCount(draft: MppConfigDraft): number {
+  return MPP_ALLOWLIST_GROUPS.reduce(
+    (total, group) => total + group.fields.filter((field) => String(draft[field.key]).trim().length > 0).length,
+    0,
+  );
+}
+
+function renderMppAllowlistField(draft: MppConfigDraft, field: { key: keyof MppConfigDraft; label: string; id: string }): string {
+  return `
+    <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
+      <label class="dev-agent-card-form-label" for="${field.id}">${t(field.label)}</label>
+      <textarea
+        id="${field.id}"
+        class="dev-agent-card-form-input dev-agent-card-form-textarea"
+        data-mpp-policy-field="${escapeHtml(field.key)}"
+        rows="2"
+      >${escapeHtml(String(draft[field.key]))}</textarea>
+    </div>
+  `;
+}
+
 function renderMppPolicySection(): string {
   const draft = tabState.mppConfigDraft;
   const busy = tabState.mppConfigBusy === 'save';
+  const open = tabState.mppAdvancedOpen;
+  const configuredCount = mppConfiguredAllowlistCount(draft);
+  const summaryStatus = configuredCount > 0
+    ? tf('{count} allowlists set', { count: configuredCount })
+    : t('Defaults');
+  // The whole MPP session policy is one collapsed disclosure. This keeps the
+  // Profile default view to a single Save (Save profile); the MPP rail — an
+  // inbound power-user feature — and its own Save live inside, out of the way
+  // until a user opens it. `open` is state-controlled (see toggle-mpp-advanced).
   return `
-    <section class="dev-agent-card-section dev-agent-card-mpp-policy" aria-label="${escapeHtml(t('MPP session payment policy'))}">
-      <div class="dev-agent-card-section-head">
-        <span>${t('MPP session rail')}</span>
-        <h3>${t('Bounded spend for incoming MPP challenges')}</h3>
-      </div>
-      ${renderMppConfigBanner()}
-      <div class="dev-agent-card-form-grid dev-agent-card-mpp-grid">
-        <div class="dev-agent-card-form-field">
-          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-rails">${t('Accepted rails')}</label>
-          <input
-            type="text"
-            id="dev-agent-card-mpp-rails"
-            class="dev-agent-card-form-input"
-            data-mpp-policy-field="acceptedRails"
-            value="${escapeHtml(draft.acceptedRails)}"
-            autocomplete="off"
-          />
+    <details class="dev-agent-card-mpp-policy"${open ? ' open' : ''} aria-label="${escapeHtml(t('MPP session payment policy'))}">
+      <summary class="dev-agent-card-mpp-summary" data-profile-action="toggle-mpp-advanced">
+        <span class="dev-agent-card-mpp-summary-copy">
+          <span class="dev-agent-card-mpp-summary-eyebrow">${t('MPP session rail')}</span>
+          <strong>${t('Bounded spend for incoming MPP challenges')}</strong>
+        </span>
+        <span class="dev-agent-card-mpp-summary-status">${escapeHtml(summaryStatus)}</span>
+      </summary>
+      <div class="dev-agent-card-mpp-body">
+        ${renderMppConfigBanner()}
+        <p class="dev-agent-card-mpp-intro">${t('Optional. Bound what incoming MPP challenges may spend and who may send them. Leave blank to accept the defaults.')}</p>
+        <div class="dev-agent-card-form-grid dev-agent-card-mpp-grid">
+          <div class="dev-agent-card-form-field">
+            <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-rails">${t('Accepted rails')}</label>
+            <input
+              type="text"
+              id="dev-agent-card-mpp-rails"
+              class="dev-agent-card-form-input"
+              data-mpp-policy-field="acceptedRails"
+              value="${escapeHtml(draft.acceptedRails)}"
+              autocomplete="off"
+            />
+          </div>
+          <div class="dev-agent-card-form-field">
+            <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-max">${t('Max challenge amount')}</label>
+            <input
+              type="text"
+              id="dev-agent-card-mpp-max"
+              class="dev-agent-card-form-input"
+              data-mpp-policy-field="maxChallengeAmount"
+              value="${escapeHtml(draft.maxChallengeAmount)}"
+              inputmode="decimal"
+              autocomplete="off"
+            />
+          </div>
         </div>
-        <div class="dev-agent-card-form-field">
-          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-max">${t('Max challenge amount')}</label>
-          <input
-            type="text"
-            id="dev-agent-card-mpp-max"
-            class="dev-agent-card-form-input"
-            data-mpp-policy-field="maxChallengeAmount"
-            value="${escapeHtml(draft.maxChallengeAmount)}"
-            inputmode="decimal"
-            autocomplete="off"
-          />
-        </div>
-        <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
-          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-origins">${t('Shared origins')}</label>
-          <textarea
-            id="dev-agent-card-mpp-origins"
-            class="dev-agent-card-form-input dev-agent-card-form-textarea"
-            data-mpp-policy-field="allowedOrigins"
-            rows="3"
-          >${escapeHtml(draft.allowedOrigins)}</textarea>
-        </div>
-        <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
-          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-merchant-ids">${t('Allowed merchant ids')}</label>
-          <textarea
-            id="dev-agent-card-mpp-merchant-ids"
-            class="dev-agent-card-form-input dev-agent-card-form-textarea"
-            data-mpp-policy-field="allowedMerchantIds"
-            rows="2"
-          >${escapeHtml(draft.allowedMerchantIds)}</textarea>
-        </div>
-        <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
-          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-merchant-origins">${t('Merchant origins')}</label>
-          <textarea
-            id="dev-agent-card-mpp-merchant-origins"
-            class="dev-agent-card-form-input dev-agent-card-form-textarea"
-            data-mpp-policy-field="allowedMerchantOrigins"
-            rows="2"
-          >${escapeHtml(draft.allowedMerchantOrigins)}</textarea>
-        </div>
-        <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
-          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-resource-origins">${t('Resource origins')}</label>
-          <textarea
-            id="dev-agent-card-mpp-resource-origins"
-            class="dev-agent-card-form-input dev-agent-card-form-textarea"
-            data-mpp-policy-field="allowedResourceOrigins"
-            rows="2"
-          >${escapeHtml(draft.allowedResourceOrigins)}</textarea>
-        </div>
-        <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
-          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-merchant-urls">${t('Merchant URLs')}</label>
-          <textarea
-            id="dev-agent-card-mpp-merchant-urls"
-            class="dev-agent-card-form-input dev-agent-card-form-textarea"
-            data-mpp-policy-field="allowedMerchantUrls"
-            rows="2"
-          >${escapeHtml(draft.allowedMerchantUrls)}</textarea>
-        </div>
-        <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
-          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-resource-urls">${t('Resource URLs')}</label>
-          <textarea
-            id="dev-agent-card-mpp-resource-urls"
-            class="dev-agent-card-form-input dev-agent-card-form-textarea"
-            data-mpp-policy-field="allowedResourceUrls"
-            rows="2"
-          >${escapeHtml(draft.allowedResourceUrls)}</textarea>
-        </div>
-        <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
-          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-recipients">${t('Allowed recipients')}</label>
-          <textarea
-            id="dev-agent-card-mpp-recipients"
-            class="dev-agent-card-form-input dev-agent-card-form-textarea"
-            data-mpp-policy-field="allowedRecipients"
-            rows="3"
-          >${escapeHtml(draft.allowedRecipients)}</textarea>
-        </div>
-        <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
-          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-mints">${t('Allowed SPL mints')}</label>
-          <textarea
-            id="dev-agent-card-mpp-mints"
-            class="dev-agent-card-form-input dev-agent-card-form-textarea"
-            data-mpp-policy-field="allowedMints"
-            rows="2"
-          >${escapeHtml(draft.allowedMints)}</textarea>
-        </div>
+        ${MPP_ALLOWLIST_GROUPS.map((group) => `
+          <div class="dev-agent-card-mpp-allowlist-group">
+            <span class="dev-agent-card-mpp-allowlist-heading">${t(group.heading)}</span>
+            <div class="dev-agent-card-form-grid dev-agent-card-mpp-grid">
+              ${group.fields.map((field) => renderMppAllowlistField(draft, field)).join('')}
+            </div>
+          </div>
+        `).join('')}
         <label class="dev-agent-card-discoverable-row dev-agent-card-form-toggle">
           <input
             type="checkbox"
@@ -594,12 +604,12 @@ function renderMppPolicySection(): string {
           </span>
           <span class="dev-agent-card-switch-control" aria-hidden="true"><span></span></span>
         </label>
+        <div class="dev-agent-card-form-actions">
+          <button type="button" class="button primary" data-profile-action="save-mpp-policy" ${busy ? 'disabled' : ''}>${busy ? t('Saving…') : t('Save MPP policy')}</button>
+          <span class="dev-agent-card-form-hint">${t('Incoming Requests uses this policy before showing Pay with Session.')}</span>
+        </div>
       </div>
-      <div class="dev-agent-card-form-actions">
-        <button type="button" class="button primary" data-profile-action="save-mpp-policy" ${busy ? 'disabled' : ''}>${busy ? t('Saving…') : t('Save MPP policy')}</button>
-        <span class="dev-agent-card-form-hint">${t('Incoming Requests uses this policy before showing Pay with Session.')}</span>
-      </div>
-    </section>
+    </details>
   `;
 }
 
@@ -1052,6 +1062,13 @@ if (typeof document !== 'undefined') {
           event.preventDefault();
           void saveMppPolicy();
           return;
+        case 'toggle-mpp-advanced':
+          // Controlled disclosure: preventDefault stops the native <details>
+          // toggle so open state stays purely in tabState and survives re-renders.
+          event.preventDefault();
+          tabState.mppAdvancedOpen = !tabState.mppAdvancedOpen;
+          updateBody();
+          return;
         case 'try-demo':
           event.preventDefault();
           tryDemoAgentPayment();
@@ -1162,5 +1179,6 @@ export function __getTabStateForTests(): Readonly<TabState> {
     mppConfigDraft: tabState.mppConfigDraft,
     mppConfigBusy: tabState.mppConfigBusy,
     mppConfigBanner: tabState.mppConfigBanner,
+    mppAdvancedOpen: tabState.mppAdvancedOpen,
   };
 }

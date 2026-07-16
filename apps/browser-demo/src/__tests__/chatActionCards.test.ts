@@ -445,7 +445,12 @@ describe('DCA lifecycle: per-fill + completion Done receipts + live poll', () =>
   });
 
   it('retires a completed DCA seed on a clean empty read so it cannot resurface on a later fetch error', () => {
-    expect(mainSource).toContain('if (!partial) expireStaleSeededForSection(section, cluster);');
+    // Expiry is no longer gated on the WHOLE section being clean — that let one chronically-failing
+    // connector pin `partial` and keep every seed alive forever. It now trusts the connectors that
+    // answered. For Orders that is unchanged in practice: jupiter counts only when both the trigger and
+    // recurring reads came back, which is exactly what `!partial` meant here. An empty read still retires.
+    expect(mainSource).toContain('expireStaleSeededForSection(section, cluster, okConnectors);');
+    expect(mainSource).toContain("okConnectors = trig !== null && rec !== null ? new Set(['jupiter']) : new Set<string>();");
     expect(mainSource).not.toContain('if (rows.length > 0) expireStaleSeededForSection(section, cluster);');
   });
 });

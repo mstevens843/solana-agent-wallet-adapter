@@ -317,6 +317,8 @@ export {
   getAuthorityTimeline,
   getHeliusTransactionHistory,
   getHeliusAsset,
+  createHeliusWebhook,
+  deleteHeliusWebhook,
   getHeliusAssetsByOwner,
   getHeliusPriorityFeeLevels,
   getMintCreationTxForMint,
@@ -325,10 +327,12 @@ export {
   hasHistoryBeforeTs,
   heliusConfigFromEnv,
   isRebateEligibleRpcUrl,
+  listHeliusWebhooks,
   parseHeliusTransactions,
   resolveRebateAddress,
   sendRawTransactionWithRebate,
   sendViaHeliusSender,
+  updateHeliusWebhook,
 } from './helius.js';
 export type {
   HeliusAuthorityCheck,
@@ -340,6 +344,9 @@ export type {
   HeliusTransferFilters,
   HeliusTransfersByAddressOptions,
   HeliusTransactionHistoryOptions,
+  HeliusWebhookInput,
+  HeliusWebhookRecord,
+  HeliusWebhookType,
 } from './helius.js';
 export {
   readSolanaHeliusHistory,

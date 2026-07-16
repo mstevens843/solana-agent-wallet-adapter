@@ -1,5 +1,7 @@
 import { pathToFileURL } from 'node:url';
 
+import { bootstrapHostConnectorFactories } from '@solana-agent-wallet-adapter/mcp-server';
+
 import { isRecurringNotificationStore, RecurringNotificationService } from './notificationService.js';
 import { PostgresWorkflowStore } from './postgresStore.js';
 import { createRecurringApprovalSink, createRecurringApprovalStatusReader } from './recurringApprovalSink.js';
@@ -14,12 +16,22 @@ type Command =
   | 'rollback'
   | 'materialize-due'
   | 'notifications-deliver'
+  | 'push-deliver'
+  | 'push-health'
+  | 'push-webhook-sync'
   | 'skills-execute'
   | 'aggregator-roll'
   | 'signals-fanout'
   | 'streaming-settle';
 
 export async function runCloudCommand(command: Command, args: readonly string[] = []): Promise<void> {
+  // Wire the connector SDK client factories once per process, exactly as the web server does in its
+  // ensureConnectorSdksConfigured(). Without this a cron that reads a keyless lender (Kamino/Save/
+  // MarginFi) — e.g. push:health reading borrow positions — gets "adapter is not configured" for
+  // every wallet, because those factories are otherwise only set inside the HTTP router's boot path.
+  bootstrapHostConnectorFactories({
+    rpcUrl: (process.env.SOLANA_RPC_URL ?? process.env.HELIUS_RPC_URL ?? 'https://api.mainnet-beta.solana.com').trim(),
+  });
   const store = new PostgresWorkflowStore();
   try {
     // Rollback runs against the existing schema; we must NOT call migrate()
@@ -48,6 +60,54 @@ export async function runCloudCommand(command: Command, args: readonly string[] 
       const result = await service.deliverDue();
       console.log(
         `Agentic recurring notifications delivered=${result.delivered} failed=${result.failed} abandoned=${result.abandoned}`,
+      );
+      return;
+    }
+    if (command === 'push-deliver') {
+      const { PushNotificationService } = await import('./pushNotificationService.js');
+      const { isPushStore } = await import('./pushTypes.js');
+      if (!isPushStore(store)) throw new Error('Configured store does not support push deliveries.');
+      const result = await new PushNotificationService(store).deliverDue();
+      // `skipped` is the interesting one in ops: a non-zero skipped with zero delivered means the
+      // FCM/APNs credentials aren't provisioned yet — the queue is intact and waiting, not broken.
+      console.log(
+        `Agentic push deliver delivered=${result.delivered} failed=${result.failed} abandoned=${result.abandoned} skipped=${result.skipped}`,
+      );
+      return;
+    }
+    if (command === 'push-health') {
+      const { PushNotificationService } = await import('./pushNotificationService.js');
+      const { isPushStore } = await import('./pushTypes.js');
+      const { runPushHealthTick } = await import('./pushHealthJob.js');
+      if (!isPushStore(store)) throw new Error('Configured store does not support push deliveries.');
+      const result = await runPushHealthTick({
+        store,
+        pushService: new PushNotificationService(store),
+        onError: (walletAddress, err) => {
+          console.warn(
+            `push_health_read_failed walletAddress=${walletAddress} err=${err instanceof Error ? err.message : String(err)}`,
+          );
+        },
+      });
+      console.log(
+        `Agentic push health wallets=${result.wallets} enqueued=${result.enqueued} errors=${result.errors}`,
+      );
+      return;
+    }
+    if (command === 'push-webhook-sync') {
+      const { isPushStore } = await import('./pushTypes.js');
+      const { heliusPushWebhookConfig, syncHeliusPushWebhook } = await import('./heliusWebhooks.js');
+      if (!isPushStore(store)) throw new Error('Configured store does not support push deliveries.');
+      const config = heliusPushWebhookConfig();
+      if (!config) {
+        console.log('Agentic push webhook sync skipped: HELIUS_API_KEY/HELIUS_WEBHOOK_SECRET/PUBLIC_WEB_ORIGIN not all set.');
+        return;
+      }
+      // Reconciles Helius's address list against our DB, so drift self-heals (a webhook deleted in the
+      // dashboard, a half-failed create, an address left behind by a failed unregister).
+      const result = await syncHeliusPushWebhook(await store.listPushWallets(), config);
+      console.log(
+        `Agentic push webhook sync action=${result.action} addresses=${result.addressCount}${result.webhookId ? ` webhookId=${result.webhookId}` : ''}`,
       );
       return;
     }
@@ -117,6 +177,9 @@ function parseCommand(value: string | undefined): Command {
     value === 'rollback' ||
     value === 'materialize-due' ||
     value === 'notifications-deliver' ||
+    value === 'push-deliver' ||
+    value === 'push-health' ||
+    value === 'push-webhook-sync' ||
     value === 'skills-execute' ||
     value === 'aggregator-roll' ||
     value === 'signals-fanout' ||
@@ -125,7 +188,7 @@ function parseCommand(value: string | undefined): Command {
     return value;
   }
   throw new Error(
-    'Usage: node dist/cloud/cli.js <migrate|rollback <id>|materialize-due|notifications-deliver|skills-execute|aggregator-roll|signals-fanout|streaming-settle>',
+    'Usage: node dist/cloud/cli.js <migrate|rollback <id>|materialize-due|notifications-deliver|push-deliver|push-health|push-webhook-sync|skills-execute|aggregator-roll|signals-fanout|streaming-settle>',
   );
 }
 

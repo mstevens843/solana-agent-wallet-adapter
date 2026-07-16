@@ -990,6 +990,105 @@ async function fetchHistoryUrl(url: URL, options: HeliusTransactionHistoryOption
   }
 }
 
+// ---------------------------------------------------------------------------- Webhooks
+//
+// Helius webhooks are the ONLY practical way to learn that a Jupiter limit order filled: the fill is
+// signed by Jupiter's keeper, and Jupiter's own Trigger API can't be polled server-side because
+// listOrders requires a per-wallet JWT minted from a live wallet signature (see triggerAuth.ts).
+//
+// One webhook holds every opted-in wallet in `accountAddresses` rather than one webhook per wallet —
+// Helius caps webhooks per project, not addresses per webhook.
+
+export const DEFAULT_HELIUS_WEBHOOK_BASE = 'https://api.helius.xyz';
+
+export type HeliusWebhookType = 'enhanced' | 'raw' | 'enhancedDevnet' | 'rawDevnet';
+
+export interface HeliusWebhookRecord {
+  webhookID: string;
+  wallet?: string;
+  webhookURL: string;
+  transactionTypes: string[];
+  accountAddresses: string[];
+  webhookType?: HeliusWebhookType;
+  authHeader?: string;
+}
+
+export interface HeliusWebhookInput {
+  webhookURL: string;
+  accountAddresses: string[];
+  /** `['Any']` keeps Helius from silently dropping fills whose parsed type we don't anticipate. */
+  transactionTypes?: string[];
+  webhookType?: HeliusWebhookType;
+  /** Echoed back verbatim in the Authorization header of every delivery — this is the receiver's auth. */
+  authHeader?: string;
+}
+
+function heliusWebhookUrl(path: string, options: HeliusRequestOptions = {}): string {
+  const env = options.env ?? process.env;
+  const apiKey = env.HELIUS_API_KEY?.trim();
+  if (!apiKey) {
+    throw new ProtocolError('unauthorized', 'Missing Helius API key. Set HELIUS_API_KEY to manage webhooks.');
+  }
+  const base = env.HELIUS_WEBHOOK_BASE?.trim() || DEFAULT_HELIUS_WEBHOOK_BASE;
+  return `${base}/v0/webhooks${path}?api-key=${encodeURIComponent(apiKey)}`;
+}
+
+export async function listHeliusWebhooks(options: HeliusRequestOptions = {}): Promise<HeliusWebhookRecord[]> {
+  const response = await (options.fetchImpl ?? fetch)(heliusWebhookUrl('', options), { method: 'GET' });
+  const payload = await readJson(response);
+  if (!response.ok) throw httpError('listHeliusWebhooks', response.status, payload);
+  return Array.isArray(payload) ? (payload as HeliusWebhookRecord[]) : [];
+}
+
+export async function createHeliusWebhook(
+  input: HeliusWebhookInput,
+  options: HeliusRequestOptions = {},
+): Promise<HeliusWebhookRecord> {
+  const response = await (options.fetchImpl ?? fetch)(heliusWebhookUrl('', options), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(webhookBody(input)),
+  });
+  const payload = await readJson(response);
+  if (!response.ok) throw httpError('createHeliusWebhook', response.status, payload);
+  return payload as HeliusWebhookRecord;
+}
+
+export async function updateHeliusWebhook(
+  webhookId: string,
+  input: HeliusWebhookInput,
+  options: HeliusRequestOptions = {},
+): Promise<HeliusWebhookRecord> {
+  const response = await (options.fetchImpl ?? fetch)(heliusWebhookUrl(`/${encodeURIComponent(webhookId)}`, options), {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(webhookBody(input)),
+  });
+  const payload = await readJson(response);
+  if (!response.ok) throw httpError('updateHeliusWebhook', response.status, payload);
+  return payload as HeliusWebhookRecord;
+}
+
+export async function deleteHeliusWebhook(webhookId: string, options: HeliusRequestOptions = {}): Promise<void> {
+  const response = await (options.fetchImpl ?? fetch)(heliusWebhookUrl(`/${encodeURIComponent(webhookId)}`, options), {
+    method: 'DELETE',
+  });
+  if (!response.ok && response.status !== 404) {
+    throw httpError('deleteHeliusWebhook', response.status, await readJson(response));
+  }
+}
+
+function webhookBody(input: HeliusWebhookInput): Record<string, unknown> {
+  return {
+    webhookURL: input.webhookURL,
+    // Helius rejects duplicate addresses and is case-sensitive on base58.
+    accountAddresses: [...new Set(input.accountAddresses)],
+    transactionTypes: input.transactionTypes ?? ['Any'],
+    webhookType: input.webhookType ?? 'enhanced',
+    ...(input.authHeader ? { authHeader: input.authHeader } : {}),
+  };
+}
+
 async function readJson(response: Response): Promise<unknown> {
   return response.json().catch(async () => {
     const text = await response.text().catch(() => '');

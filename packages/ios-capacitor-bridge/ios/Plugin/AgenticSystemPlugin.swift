@@ -15,6 +15,8 @@ public class AgenticSystemPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "haptic", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "showNotification", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestNotificationAuthorization", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "registerForPush", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
         CAPPluginMethod(name: "appLifecycleState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "keyboardMetrics", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "devLog", returnType: CAPPluginReturnPromise),
@@ -54,6 +56,11 @@ public class AgenticSystemPlugin: CAPPlugin, CAPBridgedPlugin {
             name: UIResponder.keyboardWillHideNotification,
             object: nil
         )
+        // Forward notification taps to JS. A tap that arrived before this listener was attached (cold
+        // launch from a notification) is buffered in the store and delivered here on attach.
+        AgenticPushTokenStore.shared.setTapListener { [weak self] route in
+            self?.notifyListeners("pushNotificationTap", data: route)
+        }
     }
 
     deinit {
@@ -246,6 +253,43 @@ public class AgenticSystemPlugin: CAPPlugin, CAPBridgedPlugin {
                 "status": status,
             ])
             call.resolve(["status": status])
+        }
+    }
+
+    /// Prompt for authorization (if needed) and register for remote (APNs) push, resolving the hex
+    /// device token JS forwards to /api/push/register-device. Rejects if the user denies, or times out
+    /// if APNs never answers (offline, no aps-environment) so JS is never left hanging.
+    @objc func registerForPush(_ call: CAPPluginCall) {
+        guard AgenticBridgeOrigin.validate(call, on: bridge) else { return }
+        AgenticLocalNotification.requestAuthorization { status in
+            guard status == "authorized" || status == "provisional" || status == "ephemeral" else {
+                AgenticIOSLog.fail("AgenticSystem", "registerForPush", "REJECT", "not authorized", ["status": status])
+                call.resolve(["ok": false, "status": status])
+                return
+            }
+            DispatchQueue.main.async {
+                UIApplication.shared.registerForRemoteNotifications()
+            }
+            var settled = false
+            let finish: (CAPPluginCallResultData) -> Void = { data in
+                guard !settled else { return }
+                settled = true
+                call.resolve(data)
+            }
+            AgenticPushTokenStore.shared.awaitToken { token, error in
+                if let token {
+                    AgenticIOSLog.info("AgenticSystem", "registerForPush", "DONE", "token acquired")
+                    finish(["ok": true, "status": status, "platform": "ios", "token": token])
+                } else {
+                    AgenticIOSLog.fail("AgenticSystem", "registerForPush", "FAIL", "apns error", ["error": error ?? "unknown"])
+                    finish(["ok": false, "status": status, "message": error ?? "APNs registration failed."])
+                }
+            }
+            // APNs can silently never call back (airplane mode, provisioning gap). A bounded wait keeps
+            // the JS promise from hanging; a later token still flows via the pushTokenChange listener.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
+                finish(["ok": false, "status": status, "message": "APNs registration timed out."])
+            }
         }
     }
 

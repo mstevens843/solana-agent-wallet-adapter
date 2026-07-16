@@ -20,6 +20,10 @@ interface BridgeShape {
   biometricStatus?: () => string;
   biometricPrompt?: (requestId: string, payloadJson: string) => void;
   appLifecycleState?: () => string;
+  appRuntimeInfo?: () => string;
+  requestNotificationPermission?: (requestId: string) => void;
+  consumePushRoute?: () => string;
+  consumePendingPushToken?: () => string;
 }
 
 function bridge(): BridgeShape | undefined {
@@ -455,5 +459,108 @@ export function getAppLifecycle(): AppLifecycleSnapshot | null {
     return isAppLifecycleSnapshot(parsed) ? parsed : null;
   } catch {
     return null;
+  }
+}
+
+// ---- Push notifications (POST_NOTIFICATIONS request + FCM token + tap route) ----
+
+export interface AndroidPushRegistration {
+  ok: boolean;
+  status?: string;
+  token?: string;
+  message?: string;
+}
+
+const PENDING_PUSH = new Map<string, { resolve(r: AndroidPushRegistration): void; timeoutHandle?: ReturnType<typeof setTimeout> }>();
+const PUSH_TIMEOUT_MS = 30_000;
+
+function installPushBridge(): void {
+  const globalAny = globalThis as typeof globalThis & {
+    __agenticAndroidPushBridge?: {
+      resolve(requestId: string, envelope: AndroidPushRegistration): void;
+      onTap?(route: Record<string, string>): void;
+    };
+  };
+  if (globalAny.__agenticAndroidPushBridge) return;
+  globalAny.__agenticAndroidPushBridge = {
+    resolve(requestId, envelope) {
+      const pending = PENDING_PUSH.get(requestId);
+      if (!pending) return;
+      PENDING_PUSH.delete(requestId);
+      if (pending.timeoutHandle) clearTimeout(pending.timeoutHandle);
+      pending.resolve(envelope);
+    },
+  };
+}
+
+/**
+ * Request the POST_NOTIFICATIONS permission (Android 13+) and resolve the FCM token. Always settles —
+ * off-Android or on any dispatch failure it resolves { ok:false } so callers need no try/catch.
+ * THIS is the piece whose absence meant the notification card could never deliver on a modern device.
+ */
+export function requestNotificationPermission(): Promise<AndroidPushRegistration> {
+  const fn = bridge()?.requestNotificationPermission;
+  if (!fn) return Promise.resolve({ ok: false, status: 'unsupported', message: 'push bridge not available' });
+  installPushBridge();
+  const requestId = `push-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+  return new Promise<AndroidPushRegistration>((resolve) => {
+    const timeoutHandle = setTimeout(() => {
+      if (!PENDING_PUSH.has(requestId)) return;
+      PENDING_PUSH.delete(requestId);
+      resolve({ ok: false, status: 'timeout', message: 'notification permission did not resolve in time' });
+    }, PUSH_TIMEOUT_MS);
+    PENDING_PUSH.set(requestId, { resolve, timeoutHandle });
+    try {
+      fn(requestId);
+    } catch (err) {
+      PENDING_PUSH.delete(requestId);
+      clearTimeout(timeoutHandle);
+      resolve({ ok: false, status: 'error', message: err instanceof Error ? err.message : 'dispatch failed' });
+    }
+  });
+}
+
+/** Subscribe to notification taps (warm re-focus). Returns a disposer. No-op off-Android. */
+export function onAndroidPushTap(listener: (route: Record<string, string>) => void): () => void {
+  const globalAny = globalThis as typeof globalThis & {
+    __agenticAndroidPushBridge?: { onTap?(route: Record<string, string>): void };
+  };
+  installPushBridge();
+  if (!globalAny.__agenticAndroidPushBridge) return () => {};
+  globalAny.__agenticAndroidPushBridge.onTap = listener;
+  return () => {
+    if (globalAny.__agenticAndroidPushBridge) globalAny.__agenticAndroidPushBridge.onTap = undefined;
+  };
+}
+
+/** A cold-launch notification tap route the native side buffered, or null. */
+export function consumeAndroidPushRoute(): Record<string, string> | null {
+  try {
+    const raw = bridge()?.consumePushRoute?.();
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) return parsed as Record<string, string>;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** An FCM token that rotated while the app was closed and couldn't register, or null. */
+export function consumeAndroidPendingPushToken(): string | null {
+  const token = bridge()?.consumePendingPushToken?.();
+  return token && token.trim() ? token.trim() : null;
+}
+
+/** True when this APK advertises the push bridge (appRuntimeInfo().notificationsBridge). */
+export function androidNotificationsBridgeAvailable(): boolean {
+  try {
+    const raw = bridge()?.appRuntimeInfo?.();
+    if (!raw) return typeof bridge()?.requestNotificationPermission === 'function';
+    const parsed = JSON.parse(raw) as { notificationsBridge?: unknown };
+    return parsed.notificationsBridge === true;
+  } catch {
+    // Fall back to duck-typing the method so a JSON hiccup doesn't hide a capable binary.
+    return typeof bridge()?.requestNotificationPermission === 'function';
   }
 }
