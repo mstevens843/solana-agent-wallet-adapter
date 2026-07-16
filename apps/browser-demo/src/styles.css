@@ -20361,7 +20361,7 @@ button.danger:hover:not(:disabled) {
     display: flex;
     flex-direction: column;
     gap: 7px;
-    justify-self: start;
+    justify-self: center;
     margin: -2px 0 0;
     width: max-content;
   }
