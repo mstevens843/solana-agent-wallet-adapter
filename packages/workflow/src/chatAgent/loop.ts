@@ -213,7 +213,8 @@ export async function runAgentChatLoop(opts: {
         return { call, content: `Could not prepare action: ${error}`, isError: true };
       }
       if (!CHAT_TOOL_NAMES.has(call.name)) {
-        return { call, content: `Unknown tool: ${call.name}`, isError: true };
+        // call.name is model-supplied; wrap it so every model-facing tool-result string is on one policy.
+        return { call, content: wrapUntrustedToolData(`Unknown tool: ${call.name}`, 'unknown'), isError: true };
       }
       await emit({ type: 'tool_status', tool: call.name, phase: 'start', label: chatToolStatusLabel(call.name, input) });
       try {
@@ -227,8 +228,10 @@ export async function runAgentChatLoop(opts: {
         const message = err instanceof Error ? err.message : String(err);
         await emit({ type: 'tool_status', tool: call.name, phase: 'done', label: 'Tool failed' });
         // A tool error message can reflect attacker-controlled upstream content (e.g. an API that
-        // echoes the queried token name into its error), so wrap it as untrusted too.
-        return { call, content: wrapUntrustedToolData(JSON.stringify({ error: message }), call.name), isError: true };
+        // echoes the queried token name into its error), so wrap it as untrusted AND size-cap it via
+        // boundedToolResultContent — same ceiling as the success branch, so a huge reflected error
+        // cannot blow the token budget.
+        return { call, content: wrapUntrustedToolData(boundedToolResultContent({ error: message }), call.name), isError: true };
       }
     }));
     if (signal?.aborted) return;

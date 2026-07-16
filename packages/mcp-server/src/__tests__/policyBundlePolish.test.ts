@@ -199,6 +199,27 @@ describe('applyServerSideReviewSafety — blocking evidence fact re-verification
     const out = applyServerSideReviewSafety(baseResult({ decision: 'approve' }), request);
     expect(out.decision).toBe('approve');
   });
+
+  it('merges the blocking fact id into an EXISTING decisionContract (not a fresh one)', () => {
+    // A benign fact the AI legitimately cites (so the evidence-id-strip block does not pre-empt) plus
+    // a blocking fact. The AI already produced a decisionContract; the downgrade must merge into it.
+    const request = baseRequest({
+      evidenceFacts: [
+        { id: 'fact.ok', severity: 'info' },
+        { id: 'fact.token_audit.mint_authority', severity: 'block' },
+      ],
+    });
+    const result = baseResult({
+      decision: 'approve',
+      evidence: { decisionContract: { evidenceFactIds: ['fact.ok'], blockingFactIds: ['pre.existing'] } },
+    });
+    const out = applyServerSideReviewSafety(result, request);
+    expect(out.decision).toBe('deny');
+    const contract = (out.evidence as { decisionContract?: { evidenceFactIds?: string[]; blockingFactIds?: string[] } }).decisionContract;
+    expect(contract?.evidenceFactIds).toContain('fact.ok');            // existing contract reused
+    expect(contract?.blockingFactIds).toContain('pre.existing');       // prior ids preserved
+    expect(contract?.blockingFactIds).toContain('fact.token_audit.mint_authority'); // new id merged
+  });
 });
 
 describe('applyServerSideReviewSafety — non-English language fail-closed enforcement', () => {
