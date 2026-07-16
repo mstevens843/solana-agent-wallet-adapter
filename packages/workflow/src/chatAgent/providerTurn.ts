@@ -574,7 +574,10 @@ const geminiAdapter: ChatTransportAdapter = {
       parts: results.map((r) => ({
         functionResponse: {
           name: r.call.name,
-          response: r.data !== undefined && r.data !== null && typeof r.data === 'object' ? (r.data as Record<string, unknown>) : { result: r.content },
+          // Use the wrapped string `content` (not raw `r.data`) so Gemini receives the same
+          // <UNTRUSTED_TOOL_DATA>-delimited, escaped payload as Anthropic/OpenAI. Sending the raw
+          // object here would bypass the injection wrapping the loop applies to `content`.
+          response: { result: r.content },
         },
       })),
     });

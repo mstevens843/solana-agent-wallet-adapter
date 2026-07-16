@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { ProtocolError } from '@solana-agent-wallet-adapter/core';
+import { validateChatProposedAction } from '@solana-agent-wallet-adapter/workflow';
 import { describe, expect, it } from 'vitest';
 
 import { AgentWalletActionService } from '../actionService.js';
@@ -139,6 +140,37 @@ describe('AgentWalletActionService prepare-time hardening', () => {
     });
     await expect(
       service.prepareTransferSol({ recipient: TREASURY, amountSol: '1' }),
+    ).rejects.toMatchObject({ code: 'unauthorized', message: expect.stringContaining('exceeds the configured mainnet cap') });
+  });
+});
+
+describe('chat-proposal amounts hit the mainnet transfer cap when prepared', () => {
+  // Answers the critique "no test that a spend cap blocks an oversized chat proposal". A chat
+  // proposal is INERT (validated, requiresApproval) and carries no cap — the deterministic cap is
+  // the real gate, and it fires when the proposal is promoted to a prepared action. This test wires
+  // the two halves: the workflow proposal validator's output params → the capped prepare path.
+  it('an oversized chat-proposed SOL transfer is blocked once prepared on a capped mainnet wallet', async () => {
+    const { proposal, error } = validateChatProposedAction({
+      kind: 'transfer_sol',
+      summary: 'Send 1 SOL',
+      params: { recipient: TREASURY, amountSol: '1' },
+      resolution: { recipientSource: 'user_input' },
+    });
+    expect(error).toBeUndefined();
+    expect(proposal?.requiresApproval).toBe(true); // proposal itself cannot move funds
+
+    const path = await tempPath();
+    const service = new AgentWalletActionService({
+      backend: createMockBackend(),
+      config: {
+        ...DEFAULT_CONFIG,
+        cluster: 'mainnet-beta',
+        mainnet: { ...DEFAULT_CONFIG.mainnet, enabled: true, maxSolTransfer: '0.05', allowArbitraryTransactions: true },
+      },
+      preparedActions: new JsonPreparedActionStore(path),
+    });
+    await expect(
+      service.prepareTransferSol(proposal!.params as { recipient: string; amountSol: string }),
     ).rejects.toMatchObject({ code: 'unauthorized', message: expect.stringContaining('exceeds the configured mainnet cap') });
   });
 });

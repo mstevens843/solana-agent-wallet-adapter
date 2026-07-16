@@ -1,3 +1,8 @@
+// DISPLAY / STATUS ONLY. This module computes envelope status, "remaining" caps, and next-event
+// for the Spend tab UI and spendRoutes list API. It does NOT enforce spend limits at signing —
+// the real, deterministic caps live in packages/mcp-server/src/actionService.ts
+// (assertMainnetTransferCap for per-transfer/-swap; enforceRecurringPolicy for lifetime/weekly/
+// monthly recurring caps), enforced at the prepare/execute choke points before a signature.
 import type {
   ApprovalRequestRecord,
   ApprovalStatus,

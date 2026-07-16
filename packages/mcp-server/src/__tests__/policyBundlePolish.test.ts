@@ -143,6 +143,64 @@ describe('#4 applyServerSideReviewSafety — policyBundle.hasBlockingFailure enf
   });
 });
 
+describe('applyServerSideReviewSafety — blocking evidence fact re-verification (server-side gate hardening)', () => {
+  // The evidence gate is computed client-side (browser/WebView) and handed in via
+  // context.evidenceGate. A non-WebView caller (raw MCP / CLI / reference-agent) could strip that
+  // gate or fake it to "pass" to skip gate enforcement. These tests prove the server independently
+  // refuses to approve over a fact the caller itself marked severity:'block'.
+
+  it('downgrades approve to deny when a blocking evidence fact is present and the gate is STRIPPED', () => {
+    const request = baseRequest({
+      // caller supplies facts but omits context.evidenceGate entirely
+      evidenceFacts: [
+        { id: 'fact.token_audit.mint_authority', severity: 'block' },
+        { id: 'fact.wallet.connected_public_key', severity: 'info' },
+      ],
+    });
+    const out = applyServerSideReviewSafety(baseResult({ decision: 'approve' }), request);
+    expect(out.decision).toBe('deny');
+    expect(out.reason).toMatch(/blocking evidence fact/i);
+    const contract = (out.evidence as { decisionContract?: { blockingFactIds?: string[] } }).decisionContract;
+    expect(contract?.blockingFactIds).toContain('fact.token_audit.mint_authority');
+    expect(contract?.blockingFactIds).not.toContain('fact.wallet.connected_public_key');
+  });
+
+  it('downgrades approve to deny even when the client FAKES the gate to pass', () => {
+    const request = baseRequest({
+      evidenceGate: { decision: 'pass' }, // attacker-supplied rosy gate
+      evidenceFacts: [{ id: 'fact.token_audit.freeze_authority', severity: 'block' }],
+    });
+    const out = applyServerSideReviewSafety(baseResult({ decision: 'approve' }), request);
+    expect(out.decision).toBe('deny');
+    expect(out.reason).toMatch(/blocking evidence fact/i);
+  });
+
+  it('does NOT over-fire on non-blocking facts (warn/info) with no gate — legit policyBundle-backed approve stands', () => {
+    const request = baseRequest({
+      evidenceFacts: [
+        { id: 'fact.wallet.connected_public_key', severity: 'info' },
+        { id: 'fact.market.liquidity', severity: 'warn' },
+      ],
+    });
+    const out = applyServerSideReviewSafety(baseResult({ decision: 'approve' }), request);
+    expect(out.decision).toBe('approve');
+  });
+
+  it('leaves deny/needs_input unchanged when a blocking fact is present (never upgrades)', () => {
+    const request = baseRequest({
+      evidenceFacts: [{ id: 'fact.token_audit.mint_authority', severity: 'block' }],
+    });
+    expect(applyServerSideReviewSafety(baseResult({ decision: 'deny' }), request).decision).toBe('deny');
+    expect(applyServerSideReviewSafety(baseResult({ decision: 'needs_input' }), request).decision).toBe('needs_input');
+  });
+
+  it('does nothing when there are no evidence facts at all (background-watch / pure-policyBundle path)', () => {
+    const request = baseRequest({}); // no evidenceFacts, no gate
+    const out = applyServerSideReviewSafety(baseResult({ decision: 'approve' }), request);
+    expect(out.decision).toBe('approve');
+  });
+});
+
 describe('applyServerSideReviewSafety — non-English language fail-closed enforcement', () => {
   it('forces needs_input when the policy bundle language requires input', () => {
     const request = baseRequest({

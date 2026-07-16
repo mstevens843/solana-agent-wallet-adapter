@@ -4984,6 +4984,37 @@ export function applyServerSideReviewSafety(
     }
   }
 
+  // Independent re-verification against the caller's own evidence facts. The evidence gate is
+  // computed client-side (browser/WebView) and handed in via context.evidenceGate; a non-WebView
+  // caller (raw MCP / CLI / reference-agent) could strip that gate or fake it to "pass" to skip
+  // the gate layer above. But the server must never let an `approve` stand over a fact the caller
+  // ITSELF marked severity:'block' — a blocking fact means the review must not approve. This
+  // mirrors the browser gate's own invariant (a blocking fact forces `block`, see
+  // agentEvidenceGate.ts) and enforces it server-side, independent of whatever gate the client
+  // supplied. It does NOT re-derive the full requirement set server-side (missing-required /
+  // staleness gating still relies on the client gate) — that is the larger "full server-side gate"
+  // path; this closes the concrete "trust the client's gate over its own blocking facts" hole.
+  const blockingFacts = (facts ?? []).filter(
+    (fact) => isJsonObjectLike(fact) && (fact as Record<string, unknown>).severity === 'block',
+  );
+  let factContract: Record<string, unknown> | undefined;
+  if (blockingFacts.length > 0 && decision === 'approve') {
+    const blockingFactIds = blockingFacts
+      .map((fact) => (typeof (fact as Record<string, unknown>).id === 'string' ? ((fact as Record<string, unknown>).id as string) : ''))
+      .filter(Boolean);
+    decision = 'deny';
+    reason = blockingFactIds.length > 0
+      ? `Server safety: ${blockingFacts.length} blocking evidence fact${blockingFacts.length === 1 ? '' : 's'} present (${blockingFactIds.join(', ')}); AI approval downgraded to deny.`
+      : `Server safety: ${blockingFacts.length} blocking evidence fact${blockingFacts.length === 1 ? '' : 's'} present; AI approval downgraded to deny.`;
+    safetyTriggered = true;
+    const targetContract = contract ?? { decision, reason, summary, evidenceFactIds: [] };
+    const existing = Array.isArray(targetContract.blockingFactIds)
+      ? (targetContract.blockingFactIds as unknown[]).filter((id): id is string => typeof id === 'string')
+      : [];
+    targetContract.blockingFactIds = Array.from(new Set([...existing, ...blockingFactIds]));
+    if (!contract) factContract = targetContract;
+  }
+
   // PolicyBundle enforcement: if the orchestrator detected a blocking failure (a user-stated
   // gate that definitively failed against resolved facts), the AI is not allowed to approve
   // over it. We downgrade to deny and cite the failing atoms in blockingFactIds.
@@ -5034,18 +5065,18 @@ export function applyServerSideReviewSafety(
       ? (evidence.missingFactIds as unknown[]).filter((id): id is string => typeof id === 'string')
       : [];
     evidence.missingFactIds = Array.from(new Set([...existingMissing, POLICY_LANGUAGE_MISSING_FACT_ID]));
-    const targetContract = contract ?? policyContract ?? { decision, reason, summary, evidenceFactIds: [] };
+    const targetContract = contract ?? policyContract ?? factContract ?? { decision, reason, summary, evidenceFactIds: [] };
     const contractMissing = Array.isArray(targetContract.missingFactIds)
       ? (targetContract.missingFactIds as unknown[]).filter((id): id is string => typeof id === 'string')
       : [];
     targetContract.missingFactIds = Array.from(new Set([...contractMissing, POLICY_LANGUAGE_MISSING_FACT_ID]));
-    if (!contract && !policyContract) {
+    if (!contract && !policyContract && !factContract) {
       policyContract = targetContract;
     }
   }
 
   if (!safetyTriggered) return result;
-  const finalContract = contract ?? policyContract;
+  const finalContract = contract ?? policyContract ?? factContract;
   if (finalContract) {
     finalContract.decision = decision;
     finalContract.reason = reason;

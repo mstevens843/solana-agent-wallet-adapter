@@ -2,6 +2,7 @@
 // injected provider-turn (the keyed model call) + an injected tool executor,
 // emitting the streaming events the surface renders. One loop, every runtime.
 
+import { wrapUntrustedToolData } from '../promptInjectionDefense.js';
 import { chatTransportAdapter, isTruncatedFinish } from './providerTurn.js';
 import { safeParseJsonObject } from './sse.js';
 import {
@@ -218,11 +219,16 @@ export async function runAgentChatLoop(opts: {
       try {
         const result = await executeTool(call.name, input, walletAddress);
         await emit({ type: 'tool_status', tool: call.name, phase: 'done', label: result.summary });
-        return { call, content: boundedToolResultContent(result.data), data: result.data };
+        // Wrap the third-party tool result in <UNTRUSTED_TOOL_DATA> before it reaches the model.
+        // Token names/symbols, connector facts, and market data are attacker-controllable; the
+        // system prompt instructs the model to treat wrapped content as data, never instructions.
+        return { call, content: wrapUntrustedToolData(boundedToolResultContent(result.data), call.name), data: result.data };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         await emit({ type: 'tool_status', tool: call.name, phase: 'done', label: 'Tool failed' });
-        return { call, content: JSON.stringify({ error: message }), isError: true };
+        // A tool error message can reflect attacker-controlled upstream content (e.g. an API that
+        // echoes the queried token name into its error), so wrap it as untrusted too.
+        return { call, content: wrapUntrustedToolData(JSON.stringify({ error: message }), call.name), isError: true };
       }
     }));
     if (signal?.aborted) return;

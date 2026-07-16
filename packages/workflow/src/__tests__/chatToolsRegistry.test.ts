@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { chatToolsAnthropic, chatToolStatusLabel, CHAT_TOOL_NAMES } from '../chatAgent/tools.js';
+import { chatToolsAnthropic, chatToolStatusLabel, CHAT_TOOL_NAMES, validateChatProposedAction } from '../chatAgent/tools.js';
 
 describe('chat tool registry', () => {
   const tools = chatToolsAnthropic();
@@ -94,5 +94,36 @@ describe('chat tool registry', () => {
     expect(chatToolStatusLabel('get_coin_market', { query: 'SOL' })).toContain('SOL');
     expect(chatToolStatusLabel('get_trending_coins', {})).toContain('trending');
     expect(chatToolStatusLabel('get_new_listings', {})).toContain('listings');
+  });
+
+  // ── Trust-boundary invariants: the chat agent can READ, and can only PROPOSE (never sign). ──
+  // These fail the moment someone adds a signing/execute tool to the surface — the regression the
+  // original suite did not guard.
+  const FORBIDDEN_ACTION = /sign|send|transfer|swap|execute|approve|broadcast|submit|withdraw|deposit/i;
+
+  it('CHAT_TOOL_NAMES (the read-tool executor allowlist) contains no signing/execute tool', () => {
+    const offenders = [...CHAT_TOOL_NAMES].filter((name) => FORBIDDEN_ACTION.test(name));
+    expect(offenders).toEqual([]);
+    // propose_wallet_action is handled specially by the loop and is deliberately NOT a read tool.
+    expect(CHAT_TOOL_NAMES.has('propose_wallet_action')).toBe(false);
+  });
+
+  it('advertises no tool that can sign or move funds; propose_wallet_action only prepares', () => {
+    const offenders = tools.map((t) => t.name as string).filter((name) => FORBIDDEN_ACTION.test(name));
+    expect(offenders).toEqual([]);
+    const propose = tools.find((t) => t.name === 'propose_wallet_action');
+    expect(propose, 'propose_wallet_action must be advertised').toBeDefined();
+    expect((propose?.description as string).toLowerCase()).toContain('never sign');
+  });
+
+  it('a chat proposal is always inert (requiresApproval:true) even for an absurd amount', () => {
+    const { proposal, error } = validateChatProposedAction({
+      kind: 'transfer_sol',
+      summary: 'Send everything',
+      params: { recipient: 'So11111111111111111111111111111111111111112', amountSol: '1000000000' },
+      resolution: { recipientSource: 'user_input' },
+    });
+    expect(error).toBeUndefined();
+    expect(proposal?.requiresApproval).toBe(true);
   });
 });
