@@ -7523,14 +7523,16 @@ code {
   text-transform: uppercase;
 }
 
+/* Darker status pills (deeper green/amber/red word + border, no fill) - applied
+   globally so every READY/tx pill matches the darker chat-card treatment. */
 .status-pill.tx-confirmed {
-  border-color: rgba(139, 205, 170, 0.28);
-  color: #bce3cc;
+  border-color: rgba(61, 220, 151, 0.4);
+  color: var(--accent);
 }
 
 .status-pill.tx-pending {
-  border-color: rgba(214, 168, 79, 0.32);
-  color: #e1c178;
+  border-color: rgba(214, 168, 79, 0.44);
+  color: #d6a84f;
 }
 
 .status-pill.needs-review {
@@ -7540,8 +7542,8 @@ code {
 }
 
 .status-pill.tx-failed {
-  border-color: rgba(239, 111, 120, 0.34);
-  color: #f3a5ab;
+  border-color: rgba(239, 111, 120, 0.46);
+  color: #e0727b;
 }
 
 .status-pill.warn {
@@ -21316,7 +21318,9 @@ button.danger:hover:not(:disabled) {
   --app-meta-size: 0.74rem;
   --app-label-size: 0.62rem;
   --app-label-tracking: 0.08em;
-  --app-card-bg: linear-gradient(180deg, rgba(28, 34, 32, 0.92), rgba(17, 21, 20, 0.96)), rgba(17, 21, 20, 0.94);
+  /* Neutral greyish card fill (was a green-tinted "swampish" gradient) so record cards
+     match the greyish form surfaces. */
+  --app-card-bg: linear-gradient(180deg, rgba(31, 34, 37, 0.92), rgba(19, 22, 24, 0.96)), rgba(19, 22, 24, 0.94);
   --app-card-border: rgba(224, 230, 226, 0.13);
   --app-cell-bg: rgba(255, 255, 255, 0.024);
   --app-cell-border: rgba(224, 230, 226, 0.09);
@@ -25977,16 +25981,17 @@ button.danger:hover:not(:disabled) {
   min-width: 0;
 }
 
-.route-app .recurring-payment-section .recurring-grid:not(.recurring-swap-grid) {
-  grid-template-columns: minmax(190px, 0.72fr) minmax(286px, 0.92fr) minmax(250px, 1.36fr);
-}
-
+/* Neat 2-column layout (matches New Request) so the AMOUNT column's extra quick-fill
+   row no longer misaligns the horizontal 3-column cram. Send: TOKEN | AMOUNT, then
+   RECIPIENT full-width. Swap: INPUT | OUTPUT, then AMOUNT | SLIPPAGE. */
+.route-app .recurring-payment-section .recurring-grid:not(.recurring-swap-grid),
 .route-app .recurring-payment-section .recurring-swap-grid {
-  grid-template-columns: minmax(210px, 1fr) minmax(230px, 1fr) minmax(286px, 0.98fr);
+  align-items: start;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.route-app .recurring-payment-section .recurring-swap-grid .slippage-control-field {
-  max-width: 300px;
+.route-app .recurring-payment-section .recurring-grid:not(.recurring-swap-grid) .recipient-field {
+  grid-column: 1 / -1;
 }
 
 .route-app .recurring-payment-section .token-choice-mode {
@@ -41866,4 +41871,52 @@ button.primary.approve-override {
   border: 1px solid rgba(224, 230, 226, 0.26);
   border-radius: 10px;
   box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.16);
+}
+
+/* ---- Native-mobile CONNECTIONS section (Home, android/ios app) -------------------
+   The grouped Connections container (header + subheader + cards) is native-only and
+   the native shell + connected-state rules kept it on the old green-tinted card look.
+   Scope the uniform slate treatment to the native shells with enough specificity to
+   win (including .configured/.connected states). Status PILLS stay green. */
+.route-app.android-shell .custody-panel[data-layout="app-rail"],
+.route-app.ios-native-shell .custody-panel[data-layout="app-rail"] {
+  background: linear-gradient(180deg, rgba(20, 23, 24, 0.96), rgba(13, 15, 16, 0.95));
+  border: 1px solid rgba(224, 230, 226, 0.14);
+  border-radius: 12px;
+}
+.route-app.android-shell .custody-panel .connection-summary,
+.route-app.ios-native-shell .custody-panel .connection-summary,
+.route-app.android-shell .custody-panel .rail-cloud-card,
+.route-app.ios-native-shell .custody-panel .rail-cloud-card,
+.route-app.android-shell .custody-panel .rail-ai-card,
+.route-app.ios-native-shell .custody-panel .rail-ai-card,
+.route-app.android-shell .custody-panel .rail-ai-card.configured,
+.route-app.ios-native-shell .custody-panel .rail-ai-card.configured,
+.route-app.android-shell .custody-panel .rail-cloud-card.connected,
+.route-app.ios-native-shell .custody-panel .rail-cloud-card.connected {
+  background: linear-gradient(180deg, rgba(30, 33, 36, 0.9), rgba(20, 23, 25, 0.96));
+  border-color: rgba(224, 230, 226, 0.14);
+  border-radius: 10px;
+}
+.route-app.android-shell .custody-panel input:not([type="checkbox"]):not([type="radio"]),
+.route-app.ios-native-shell .custody-panel input:not([type="checkbox"]):not([type="radio"]),
+.route-app.android-shell .custody-panel textarea,
+.route-app.ios-native-shell .custody-panel textarea,
+.route-app.android-shell .custody-panel select,
+.route-app.ios-native-shell .custody-panel select,
+.route-app.android-shell .custody-panel .select-picker-trigger,
+.route-app.ios-native-shell .custody-panel .select-picker-trigger {
+  background: var(--fk-input-fill);
+  border: 1px solid rgba(224, 230, 226, 0.26);
+  border-radius: 10px;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.16);
+}
+/* Brighten the grouped section's subheader + Required/Optional labels. */
+.route-app.android-shell .connections-rail-readiness,
+.route-app.ios-native-shell .connections-rail-readiness {
+  color: rgba(206, 216, 211, 0.82);
+}
+.route-app.android-shell .connection-group-label,
+.route-app.ios-native-shell .connection-group-label {
+  color: rgba(200, 212, 206, 0.7);
 }
