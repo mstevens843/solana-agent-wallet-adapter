@@ -54,8 +54,8 @@
     "@solana-agent-wallet-adapter/core": "workspace:*",
     "@solana-agent-wallet-adapter/mcp-server": "workspace:*",
     "@solana-agent-wallet-adapter/workflow": "workspace:*",
-    "@yao-pkg/pkg": "^6.19.0",
-    "esbuild": "^0.25.12",
+    "@yao-pkg/pkg": "^6.21.0",
+    "esbuild": "^0.28.1",
     "typescript": "^5.6.0"
   }
 }
