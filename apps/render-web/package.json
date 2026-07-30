@@ -39,12 +39,12 @@
     "@solana-agent-wallet-adapter/workflow": "workspace:*",
     "@solana/web3.js": "^1.95.0",
     "bs58": "^6.0.0",
-    "pg": "^8.20.0"
+    "pg": "^8.22.0"
   },
   "devDependencies": {
     "@types/node": "^22.7.0",
     "@types/pg": "^8.20.0",
     "typescript": "^5.6.0",
-    "vitest": "^2.1.0"
+    "vitest": "^4.1.10"
   }
 }
