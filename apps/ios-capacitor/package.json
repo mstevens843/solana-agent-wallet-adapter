@@ -13,13 +13,13 @@
     "open": "node scripts/open-ios.mjs"
   },
   "dependencies": {
-    "@capacitor/app": "^8.1.0",
-    "@capacitor/core": "^8.1.0",
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/core": "^8.5.0",
     "@solana-agent-wallet-adapter/ios-capacitor-bridge": "workspace:*"
   },
   "devDependencies": {
-    "@capacitor/cli": "^8.1.0",
-    "@capacitor/ios": "^8.1.0",
+    "@capacitor/cli": "^8.5.0",
+    "@capacitor/ios": "^8.5.0",
     "typescript": "^5.6.0"
   }
 }
