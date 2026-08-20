@@ -45933,12 +45933,16 @@ function positionTemplatePickerMenu(trigger: HTMLElement, menu: HTMLElement): vo
   // the right edge (right-aligned toolbar triggers like the Sign Approval / Done filters).
   const menuWidth = Math.min(menu.getBoundingClientRect().width || triggerRect.width, Math.floor(viewportWidth - 20));
   const overflowsRight = triggerRect.left + menuWidth > viewportWidth - 10;
-  // The New Request connector picker is a narrow, right-of-center trigger with a wide (width:max-content)
-  // menu, so the right-anchor flip below makes it appear to open sideways/left. On web/desktop, keep it
-  // dropping straight DOWN from the trigger's left, nudged left only as far as needed to stay on-screen.
-  // (Native/mobile and every other picker — incl. the right-aligned Sign Approval / Done filters — keep
-  // the flip.)
-  if (!isMobileAppViewport() && overflowsRight && trigger.closest('.connector-create-picker')) {
+  // Both connector-provider pickers — New Request (`.connector-create-picker`) and Repeat Payments
+  // (`.recurring-connector-picker`), which share `.top-connector-picker` — are narrow, right-of-center
+  // triggers with a wide (width:max-content) menu. The right-anchor flip in the `else` pins the menu's
+  // right edge to the trigger and grows it LEFTWARD, so it opens off the left screen edge — most visibly
+  // on native Android/iOS (isMobileAppViewport() === true), which the old guard wrongly excluded. For
+  // these, keep the menu dropping straight DOWN from the trigger's left, nudged left only as far as
+  // needed to stay on-screen. The nudge keeps BOTH edges visible because menuWidth is capped to
+  // viewportWidth-20 (so overflowPx <= triggerRect.left - 10, i.e. left edge stays >= 10px). Every other
+  // picker — incl. the genuinely right-aligned Sign Approval / Done toolbar filters — keeps the flip.
+  if (overflowsRight && trigger.closest('.top-connector-picker')) {
     const overflowPx = Math.max(0, Math.ceil(triggerRect.left + menuWidth - (viewportWidth - 10)));
     menu.style.left = `-${overflowPx}px`;
     menu.style.right = 'auto';

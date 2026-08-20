@@ -39,6 +39,8 @@ describe('isRebateEligibleRpcUrl', () => {
 
   it('rejects Sender, non-Helius providers, and junk', () => {
     expect(isRebateEligibleRpcUrl('https://sender.helius-rpc.com/fast')).toBe(false);
+    expect(isRebateEligibleRpcUrl('https://evilhelius-rpc.com/?api-key=x')).toBe(false);
+    expect(isRebateEligibleRpcUrl('https://mainnet.helius-rpc.com.evil.example/?api-key=x')).toBe(false);
     expect(isRebateEligibleRpcUrl('https://api.mainnet-beta.solana.com')).toBe(false);
     expect(isRebateEligibleRpcUrl('not a url')).toBe(false);
     expect(isRebateEligibleRpcUrl(undefined)).toBe(false);

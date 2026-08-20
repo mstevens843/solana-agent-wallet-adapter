@@ -361,8 +361,9 @@ export function resolveRebateAddress(env: NodeJS.ProcessEnv = process.env): stri
 export function isRebateEligibleRpcUrl(rpcUrl: string | undefined): boolean {
   if (!rpcUrl) return false;
   try {
-    const host = new URL(rpcUrl).host.toLowerCase();
-    return host.endsWith('helius-rpc.com') && !host.startsWith('sender.');
+    const hostname = new URL(rpcUrl).hostname.toLowerCase();
+    const isHeliusRpcHost = hostname === 'helius-rpc.com' || hostname.endsWith('.helius-rpc.com');
+    return isHeliusRpcHost && hostname !== 'sender.helius-rpc.com';
   } catch {
     return false;
   }
