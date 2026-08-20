@@ -24,6 +24,8 @@ type Command =
   | 'signals-fanout'
   | 'streaming-settle';
 
+const DATABASE_STARTUP_RETRY_DELAYS_MS = [5_000, 15_000, 30_000] as const;
+
 export async function runCloudCommand(command: Command, args: readonly string[] = []): Promise<void> {
   // Wire the connector SDK client factories once per process, exactly as the web server does in its
   // ensureConnectorSdksConfigured(). Without this a cron that reads a keyless lender (Kamino/Save/
@@ -47,7 +49,7 @@ export async function runCloudCommand(command: Command, args: readonly string[] 
       );
       return;
     }
-    await store.migrate();
+    await withDatabaseStartupRetry('migration', () => store.migrate());
     if (command === 'migrate') {
       console.log('Agentic Cloud database migrations complete.');
       return;
@@ -169,6 +171,60 @@ export async function runCloudCommand(command: Command, args: readonly string[] 
   } finally {
     await store.close();
   }
+}
+
+async function withDatabaseStartupRetry<T>(
+  operationName: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation();
+    } catch (err) {
+      const delayMs = DATABASE_STARTUP_RETRY_DELAYS_MS[attempt];
+      if (delayMs === undefined || !isTransientDatabaseStartupError(err)) {
+        throw err;
+      }
+      console.warn(
+        `Agentic Cloud ${operationName} database unavailable (${databaseStartupErrorLabel(err)}); ` +
+        `retrying in ${Math.round(delayMs / 1000)}s ` +
+        `(attempt ${attempt + 2}/${DATABASE_STARTUP_RETRY_DELAYS_MS.length + 1})`,
+      );
+      await sleep(delayMs);
+    }
+  }
+}
+
+function isTransientDatabaseStartupError(err: unknown): boolean {
+  const code = databaseErrorCode(err);
+  if (/^(ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EPIPE|ECONNRESET|57P01|57P02|57P03|08000|08001|08003|08004|08006|53300|53400)$/.test(code)) {
+    return true;
+  }
+  const message = databaseErrorMessage(err).toLowerCase();
+  return message.includes('database system is starting up') ||
+    message.includes('database system is shutting down') ||
+    message.includes('terminating connection due to administrator command') ||
+    message.includes('connection terminated unexpectedly');
+}
+
+function databaseStartupErrorLabel(err: unknown): string {
+  return databaseErrorCode(err) || 'transient_error';
+}
+
+function databaseErrorCode(err: unknown): string {
+  const error = err as { code?: unknown; cause?: unknown } | undefined;
+  const cause = error?.cause as { code?: unknown } | undefined;
+  return String(error?.code ?? cause?.code ?? '');
+}
+
+function databaseErrorMessage(err: unknown): string {
+  const error = err as { message?: unknown; cause?: unknown } | undefined;
+  const cause = error?.cause as { message?: unknown } | undefined;
+  return String(error?.message ?? cause?.message ?? '');
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function parseCommand(value: string | undefined): Command {
