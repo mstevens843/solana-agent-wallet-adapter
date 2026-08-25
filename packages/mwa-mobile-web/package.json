@@ -26,8 +26,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@solana-mobile/wallet-standard-mobile": "^0.5.2",
-    "@wallet-standard/base": "^1.1.0"
+    "@solana-mobile/wallet-standard-mobile": "^0.6.0",
+    "@wallet-standard/base": "^1.1.1"
   },
   "devDependencies": {
     "typescript": "^5.6.0",
