@@ -34,7 +34,7 @@
     "bs58": "^6.0.0"
   },
   "devDependencies": {
-    "@noble/curves": "^1.4.0",
+    "@noble/curves": "^2.3.0",
     "typescript": "^5.6.0",
     "vitest": "^4.1.1"
   }
