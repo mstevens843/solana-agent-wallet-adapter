@@ -1171,7 +1171,7 @@ async function resolveRecipientKnown(
     const recipientLower = recipient.toLowerCase();
     const sample = sigs.slice(0, 50).map((s) => s.signature);
     for (const sig of sample) {
-      const tx = await connection.getParsedTransaction(sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }).catch(() => null);
+      const tx = await connection.getParsedTransaction(sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 1 }).catch(() => null);
       if (!tx) continue;
       const accountKeys = tx.transaction.message.accountKeys.map((k) => (typeof k === 'string' ? k : k.pubkey.toBase58()));
       if (accountKeys.some((k) => k.toLowerCase() === recipientLower)) {
@@ -1592,7 +1592,7 @@ async function resolveDailyOutflow(
     for (const sigInfo of inWindow) {
       const tx = await connection.getParsedTransaction(sigInfo.signature, {
         commitment: 'confirmed',
-        maxSupportedTransactionVersion: 0,
+        maxSupportedTransactionVersion: 1,
       }).catch(() => null);
       if (!tx || !tx.meta) continue;
       const keys = tx.transaction.message.accountKeys.map((k) => (typeof k === 'string' ? k : k.pubkey.toBase58()));

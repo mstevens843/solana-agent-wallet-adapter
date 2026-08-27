@@ -80798,7 +80798,7 @@ async function resolveTransactionBySignature(cluster: Cluster, txid: string): Pr
   const connection = browserActionConnection(cluster);
   const tx = await connection.getTransaction(txid, {
     commitment: 'confirmed',
-    maxSupportedTransactionVersion: 0,
+    maxSupportedTransactionVersion: 1,
   });
   if (!tx) {
     return { found: false, confirmed: false, failed: false, txid, signers: [], programIds: [] };

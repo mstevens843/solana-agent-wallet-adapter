@@ -1979,7 +1979,7 @@ async function verifySolanaTransactionFinalization(
   try {
     const response = await connection.getTransaction(input.txid, {
       commitment: 'confirmed',
-      maxSupportedTransactionVersion: 0,
+      maxSupportedTransactionVersion: 1,
     });
     if (!response) {
       const status = await connection.getSignatureStatus(input.txid, { searchTransactionHistory: true });
