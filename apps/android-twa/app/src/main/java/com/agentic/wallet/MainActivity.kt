@@ -751,7 +751,7 @@ class MainActivity : FragmentActivity() {
 
     // ── Push notifications (POST_NOTIFICATIONS runtime request + FCM token) ──────────────────────
     // The one piece that genuinely requires a new APK: nothing here ever requested POST_NOTIFICATIONS,
-    // and with targetSdk 35, declaring it in the manifest is not enough — Android 13+ suppresses every
+    // and with targetSdk 36, declaring it in the manifest is not enough — Android 13+ suppresses every
     // notification until it's granted at runtime, so SystemBridge.showNotification returned
     // permission_not_granted on every modern device.
 

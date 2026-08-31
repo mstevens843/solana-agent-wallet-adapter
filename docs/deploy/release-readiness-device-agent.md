@@ -65,7 +65,7 @@ fixed and locked in by test coverage so they cannot silently regress.
 2. **Missing `POST_NOTIFICATIONS` permission for Android 13+ foreground notification.**
    `apps/android-twa/app/src/main/AndroidManifest.xml` — Manifest declared
    `FOREGROUND_SERVICE` and `FOREGROUND_SERVICE_DATA_SYNC` but not `POST_NOTIFICATIONS`.
-   With `targetSdk = 35`, the persistent notification promised by the new disclosure copy
+   With `targetSdk >= 33`, the persistent notification promised by the new disclosure copy
    would silently fail to show on Seeker (Android 13/14) when the user-grant default is
    "deny". Added the manifest declaration. The runtime grant prompt is intentionally
    deferred — when the user denies notifications the service still runs as a foreground

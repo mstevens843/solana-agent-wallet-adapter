@@ -212,10 +212,10 @@ if (isReleaseBuild && cloudApiUri.scheme != "https") {
 
 val appVersionCode = propertyOrEnv("AGENTIC_ANDROID_VERSION_CODE")
     ?: propertyOrEnv("agenticVersionCode")
-    ?: "9"
+    ?: "12"
 val appVersionName = propertyOrEnv("AGENTIC_ANDROID_VERSION_NAME")
     ?: propertyOrEnv("agenticVersionName")
-    ?: "1.0.9"
+    ?: "1.0.12"
 val parsedVersionCode = appVersionCode.toIntOrNull()
 if (parsedVersionCode == null || parsedVersionCode <= 0) {
     throw GradleException("AGENTIC_ANDROID_VERSION_CODE must be a positive integer. Current value: $appVersionCode")
@@ -258,7 +258,7 @@ android {
     defaultConfig {
         applicationId = "com.agentic.wallet"
         minSdk = 24
-        targetSdk = 35
+        targetSdk = 36
         versionCode = parsedVersionCode
         versionName = appVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
