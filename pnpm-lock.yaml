@@ -8,6 +8,7 @@ overrides:
   '@babel/core@<7.29.6': 7.29.6
   '@grpc/grpc-js@>=1.14.0 <1.14.4': 1.14.4
   '@hono/node-server@<1.19.15': 1.19.15
+  '@xmldom/xmldom': 0.9.11
   fast-uri: ^3.1.5
   hono: ^4.12.34
   ip-address: ^10.3.1
@@ -4818,8 +4819,8 @@ packages:
     resolution: {integrity: sha512-FLPbTbKN7BAMMs+qrSccij9+vuAthAJgXF4RvKZ0uo9QP8D6DY54ehA7sVYH+1/cuWU+Edn6iWTVgQRSmivsbg==}
     engines: {node: '>=16'}
 
-  '@xmldom/xmldom@0.9.10':
-    resolution: {integrity: sha512-A9gOqLdi6cV4ibazAjcQufGj0B1y/vDqYrcuP6d/6x8P27gRS8643Dj9o1dEKtB6O7fwxb2FgBmJS2mX7gpvdw==}
+  '@xmldom/xmldom@0.9.11':
+    resolution: {integrity: sha512-tW8bcK3hsG0/uqSnNz6TK4BkcuZSezoU7DlnYssILmZDktPnSHHuDJJFM0AJv+13gz2r0iGdrj6qqKeUnxXEDg==}
     engines: {node: '>=14.6'}
 
   '@xrplf/isomorphic@1.0.1':
@@ -17727,7 +17728,7 @@ snapshots:
       - zod
     optional: true
 
-  '@xmldom/xmldom@0.9.10': {}
+  '@xmldom/xmldom@0.9.11': {}
 
   '@xrplf/isomorphic@1.0.1(bufferutil@4.1.0)(utf-8-validate@5.0.10)':
     dependencies:
@@ -20995,7 +20996,7 @@ snapshots:
 
   plist@3.1.1:
     dependencies:
-      '@xmldom/xmldom': 0.9.10
+      '@xmldom/xmldom': 0.9.11
       base64-js: 1.5.1
       xmlbuilder: 15.1.1
 
